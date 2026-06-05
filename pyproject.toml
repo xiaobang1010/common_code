@@ -1,7 +1,7 @@
 [project]
 name = "common-code-py"
 version = "0.1.0"
-description = "Python reimplementation of Common Code CLI AI programming assistant"
+description = "Python-based Common Code CLI AI programming assistant"
 requires-python = ">=3.14"
 dependencies = [
     "openai>=1.0",
