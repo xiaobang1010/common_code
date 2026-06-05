@@ -4,9 +4,9 @@
 线程安全，使用 threading.Lock 保护共享状态。
 
 配置文件路径：
-  - 全局配置：~/.claude.json
-  - 项目配置：.claude/settings.json
-  - 本地项目配置：.claude/settings.local.json
+  - 全局配置：~/.agent.json
+  - 项目配置：.agent/settings.json
+  - 本地项目配置：.agent/settings.local.json
 
 LLM 配置项：
   - llm_base_url：默认 https://api.openai.com/v1
@@ -53,8 +53,8 @@ class ProjectConfig:
     mcp_servers: dict[str, Any] = field(default_factory=dict)
     has_trust_dialog_accepted: bool = False
     project_onboarding_seen_count: int = 0
-    has_claude_md_external_includes_approved: bool = False
-    has_claude_md_external_includes_warning_shown: bool = False
+    has_agent_md_external_includes_approved: bool = False
+    has_agent_md_external_includes_warning_shown: bool = False
     enabled_mcpjson_servers: list[str] = field(default_factory=list)
     disabled_mcpjson_servers: list[str] = field(default_factory=list)
     disabled_mcp_servers: list[str] = field(default_factory=list)
@@ -71,11 +71,11 @@ class ProjectConfig:
             mcp_servers=data.get("mcpServers", {}),
             has_trust_dialog_accepted=data.get("hasTrustDialogAccepted", False),
             project_onboarding_seen_count=data.get("projectOnboardingSeenCount", 0),
-            has_claude_md_external_includes_approved=data.get(
-                "hasClaudeMdExternalIncludesApproved", False
+            has_agent_md_external_includes_approved=data.get(
+                "hasAgentMdExternalIncludesApproved", False
             ),
-            has_claude_md_external_includes_warning_shown=data.get(
-                "hasClaudeMdExternalIncludesWarningShown", False
+            has_agent_md_external_includes_warning_shown=data.get(
+                "hasAgentMdExternalIncludesWarningShown", False
             ),
             enabled_mcpjson_servers=data.get("enabledMcpjsonServers", []),
             disabled_mcpjson_servers=data.get("disabledMcpjsonServers", []),
@@ -86,7 +86,7 @@ class ProjectConfig:
 
 @dataclass
 class GlobalConfig:
-    """全局配置，存储在 ~/.claude.json。"""
+    """全局配置，存储在 ~/.agent.json。"""
 
     num_startups: int = 0
     theme: str = "dark"
@@ -202,33 +202,33 @@ def _get_home_dir() -> Path:
 
 
 def get_global_config_path() -> Path:
-    """获取全局配置文件路径 ~/.claude.json。"""
+    """获取全局配置文件路径 ~/.agent.json。"""
     return _get_home_dir() / GLOBAL_CONFIG_FILENAME
 
 
 def get_config_home_dir() -> Path:
-    """获取配置主目录 ~/.claude/。"""
+    """获取配置主目录 ~/.agent/。"""
     return _get_home_dir() / PROJECT_CONFIG_DIR
 
 
 def get_project_config_dir(project_root: Path | None = None) -> Path:
-    """获取项目配置目录 .claude/。"""
+    """获取项目配置目录 .agent/。"""
     root = project_root or Path.cwd()
     return root / PROJECT_CONFIG_DIR
 
 
 def get_project_settings_path(project_root: Path | None = None) -> Path:
-    """获取项目设置文件路径 .claude/settings.json。"""
+    """获取项目设置文件路径 .agent/settings.json。"""
     return get_project_config_dir(project_root) / PROJECT_SETTINGS_FILENAME
 
 
 def get_local_settings_path(project_root: Path | None = None) -> Path:
-    """获取本地设置文件路径 .claude/settings.local.json。"""
+    """获取本地设置文件路径 .agent/settings.local.json。"""
     return get_project_config_dir(project_root) / LOCAL_SETTINGS_FILENAME
 
 
 def get_managed_settings_path() -> Path:
-    """获取管理设置文件路径 ~/.claude/managed-settings.json。"""
+    """获取管理设置文件路径 ~/.agent/managed-settings.json。"""
     return get_config_home_dir() / MANAGED_SETTINGS_FILENAME
 
 
@@ -292,7 +292,7 @@ def enable_configs() -> None:
 
 
 def get_global_config() -> GlobalConfig:
-    """读取全局配置 ~/.claude.json。
+    """读取全局配置 ~/.agent.json。
 
     使用缓存避免重复磁盘 I/O。
     线程安全。
@@ -330,7 +330,7 @@ def get_global_config() -> GlobalConfig:
 
 
 def save_global_config(config: GlobalConfig | dict) -> None:
-    """持久化全局配置到 ~/.claude.json。
+    """持久化全局配置到 ~/.agent.json。
 
     接受 GlobalConfig 对象或字典。线程安全。
     """
@@ -389,7 +389,7 @@ def save_current_project_config(
 
 
 def get_project_settings(project_root: Path | None = None) -> Settings:
-    """读取项目设置 .claude/settings.json。线程安全。"""
+    """读取项目设置 .agent/settings.json。线程安全。"""
     settings_path = get_project_settings_path(project_root)
     data = _read_json_file(settings_path)
 
@@ -399,7 +399,7 @@ def get_project_settings(project_root: Path | None = None) -> Settings:
 
 
 def get_local_settings(project_root: Path | None = None) -> Settings:
-    """读取本地项目设置 .claude/settings.local.json。线程安全。"""
+    """读取本地项目设置 .agent/settings.local.json。线程安全。"""
     settings_path = get_local_settings_path(project_root)
     data = _read_json_file(settings_path)
 
@@ -409,7 +409,7 @@ def get_local_settings(project_root: Path | None = None) -> Settings:
 
 
 def get_managed_settings() -> Settings:
-    """读取管理设置 ~/.claude/managed-settings.json。线程安全。"""
+    """读取管理设置 ~/.agent/managed-settings.json。线程安全。"""
     settings_path = get_managed_settings_path()
     data = _read_json_file(settings_path)
 
@@ -419,7 +419,7 @@ def get_managed_settings() -> Settings:
 
 
 def get_user_settings() -> Settings:
-    """读取用户设置 ~/.claude/settings.json。线程安全。"""
+    """读取用户设置 ~/.agent/settings.json。线程安全。"""
     settings_path = get_config_home_dir() / PROJECT_SETTINGS_FILENAME
     data = _read_json_file(settings_path)
 
@@ -435,10 +435,10 @@ def get_initial_settings(
     """多源设置合并。
 
     合并优先级（从低到高）：
-    1. 用户设置 (~/.claude/settings.json)
-    2. 项目设置 (.claude/settings.json)
-    3. 本地项目设置 (.claude/settings.local.json)
-    4. 策略设置 (~/.claude/managed-settings.json)
+    1. 用户设置 (~/.agent/settings.json)
+    2. 项目设置 (.agent/settings.json)
+    3. 本地项目设置 (.agent/settings.local.json)
+    4. 策略设置 (~/.agent/managed-settings.json)
     5. CLI 标志
 
     线程安全。
@@ -673,7 +673,7 @@ if __name__ == "__main__":
             _global_config_cache = None
             _config_reading_allowed = True
 
-            # 创建用户设置 (~/.claude/settings.json)
+            # 创建用户设置 (~/.agent/settings.json)
             user_dir = get_config_home_dir()
             user_dir.mkdir(parents=True, exist_ok=True)
             user_settings_path = user_dir / PROJECT_SETTINGS_FILENAME
@@ -689,7 +689,7 @@ if __name__ == "__main__":
                 },
             )
 
-            # 创建项目设置 (project/.claude/settings.json)
+            # 创建项目设置 (project/.agent/settings.json)
             proj_dir = Path(project_dir_root) / PROJECT_CONFIG_DIR
             proj_dir.mkdir(parents=True, exist_ok=True)
             project_settings_path = proj_dir / PROJECT_SETTINGS_FILENAME

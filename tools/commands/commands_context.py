@@ -28,6 +28,7 @@ class CommandContext:
         config: 查询配置快照（可能为 None）
         compact_fn: 压缩函数（async def compact(messages, model) -> list[dict]）
         repl: REPL 屏幕引用，用于直接操作 REPL 状态
+        project_root: 项目根目录路径，用于定位 spec 目录（.agent/specs/）等
         args: 命令附加参数（如 /compact [instructions] 中的 instructions）
     """
 
@@ -36,4 +37,5 @@ class CommandContext:
     config: QueryConfig | None = None
     compact_fn: Callable | None = None
     repl: Any = None  # REPLScreen
+    project_root: str | None = None
     args: str = ""

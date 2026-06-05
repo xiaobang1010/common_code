@@ -89,7 +89,7 @@ def _get_initial_state() -> dict[str, Any]:
         "last_api_request": None,
         "last_api_request_messages": None,
         "last_classifier_requests": None,
-        "cached_claude_md_content": None,
+        "cached_agent_md_content": None,
         # In-memory error log
         "in_memory_error_log": [],
         # Session-only plugins
@@ -118,7 +118,7 @@ def _get_initial_state() -> dict[str, Any]:
         "direct_connect_server_url": None,
         "system_prompt_section_cache": {},
         "last_emitted_date": None,
-        "additional_directories_for_claude_md": [],
+        "additional_directories_for_agent_md": [],
         "allowed_channels": [],
         "has_dev_channels": False,
         "session_project_dir": None,

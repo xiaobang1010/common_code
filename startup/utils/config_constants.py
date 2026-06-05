@@ -5,10 +5,10 @@
 """
 
 # 全局配置文件名（位于用户主目录下）
-GLOBAL_CONFIG_FILENAME = ".claude.json"
+GLOBAL_CONFIG_FILENAME = ".agent.json"
 
 # 项目配置目录名
-PROJECT_CONFIG_DIR = ".claude"
+PROJECT_CONFIG_DIR = ".agent"
 
 # 项目设置文件名
 PROJECT_SETTINGS_FILENAME = "settings.json"

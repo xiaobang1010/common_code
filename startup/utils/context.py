@@ -7,7 +7,7 @@
   - cache breaker（时间戳，防止缓存命中）
 
 用户上下文（get_user_context）：
-  - CLAUDE.md 文件内容（项目级指令）
+  - AGENT.md 文件内容（项目级指令）
   - 当前日期时间
   - 工作目录信息
 
@@ -56,15 +56,15 @@ def _get_git_root(cwd: str | None = None) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# CLAUDE.md 查找
+# AGENT.md 查找
 # ---------------------------------------------------------------------------
 
 
-def find_claude_md(cwd: str | None = None) -> str | None:
-    """查找 CLAUDE.md 文件。
+def find_agent_md(cwd: str | None = None) -> str | None:
+    """查找 AGENT.md 文件。
 
     从当前目录向上查找到 git root（或文件系统根），
-    返回找到的第一个 CLAUDE.md 的完整路径。
+    返回找到的第一个 AGENT.md 的完整路径。
     """
     start = Path(cwd or os.getcwd()).resolve()
 
@@ -77,9 +77,9 @@ def find_claude_md(cwd: str | None = None) -> str | None:
 
     current = start
     while True:
-        claude_md = current / "CLAUDE.md"
-        if claude_md.is_file():
-            return str(claude_md)
+        agent_md = current / "AGENT.md"
+        if agent_md.is_file():
+            return str(agent_md)
 
         # 到达上界
         if current == upper_bound:
@@ -151,17 +151,17 @@ def get_user_context() -> str:
     """获取用户上下文（memoized）。
 
     包含：
-      - CLAUDE.md 文件内容（项目级指令）
+      - AGENT.md 文件内容（项目级指令）
       - 当前日期时间
       - 工作目录信息
     """
     parts: list[str] = []
 
-    # CLAUDE.md 内容
-    claude_md_path = find_claude_md()
-    if claude_md_path:
+    # AGENT.md 内容
+    agent_md_path = find_agent_md()
+    if agent_md_path:
         try:
-            content = Path(claude_md_path).read_text(encoding="utf-8")
+            content = Path(agent_md_path).read_text(encoding="utf-8")
             if content.strip():
                 parts.append(content.strip())
         except OSError:
@@ -230,14 +230,14 @@ if __name__ == "__main__":
     print(f"  包含工作目录: {'Current working directory' in uctx}")
     print("  [PASS] get_user_context")
 
-    # 测试 3: find_claude_md
-    print("\n--- 测试 3: find_claude_md ---")
-    claude_md = find_claude_md()
-    if claude_md:
-        print(f"  找到 CLAUDE.md: {claude_md}")
+    # 测试 3: find_agent_md
+    print("\n--- 测试 3: find_agent_md ---")
+    agent_md = find_agent_md()
+    if agent_md:
+        print(f"  找到 AGENT.md: {agent_md}")
     else:
-        print("  未找到 CLAUDE.md（正常，取决于项目结构）")
-    print("  [PASS] find_claude_md")
+        print("  未找到 AGENT.md（正常，取决于项目结构）")
+    print("  [PASS] find_agent_md")
 
     # 测试 4: memoize
     print("\n--- 测试 4: memoize ---")
