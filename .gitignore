@@ -1,0 +1,4 @@
+__pycache__/
+context/
+.trae/
+.env
