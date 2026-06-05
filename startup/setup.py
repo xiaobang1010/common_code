@@ -125,6 +125,11 @@ async def setup(
 
     # 3. 捕获 hooks 配置快照
     #    IMPORTANT: 必须在 setCwd() 之后调用，确保 hooks 从正确目录加载
+
+    # 确保项目设置文件存在
+    from startup.utils.config import get_project_settings_path, _ensure_config_file
+    _ensure_config_file(get_project_settings_path())
+
     _hooks_snapshot = capture_hooks_config_snapshot()
     logger.info(
         "Hooks 快照已捕获: pre=%d, post=%d",

@@ -4,7 +4,7 @@
 线程安全，使用 threading.Lock 保护共享状态。
 
 配置文件路径：
-  - 全局配置：~/.agent.json
+  - 全局配置：~/.agent/config.json
   - 项目配置：.agent/settings.json
   - 本地项目配置：.agent/settings.local.json
 
@@ -18,6 +18,7 @@ LLM 配置项：
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 from dataclasses import asdict, dataclass, field
@@ -37,6 +38,8 @@ from startup.utils.config_constants import (
     PROJECT_SETTINGS_FILENAME,
 )
 from startup.utils.settings.types import Permissions, PermissionRule, Settings
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -202,8 +205,8 @@ def _get_home_dir() -> Path:
 
 
 def get_global_config_path() -> Path:
-    """获取全局配置文件路径 ~/.agent.json。"""
-    return _get_home_dir() / GLOBAL_CONFIG_FILENAME
+    """获取全局配置文件路径 ~/.agent/config.json。"""
+    return get_config_home_dir() / GLOBAL_CONFIG_FILENAME
 
 
 def get_config_home_dir() -> Path:
@@ -270,6 +273,90 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+def _ensure_config_file(path: Path, default_content: str = "{}") -> None:
+    """确保配置文件存在，不存在则创建默认配置。"""
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(default_content, encoding="utf-8")
+        logger.info("Created default config: %s", path)
+
+
+# 默认全局配置内容（~/.agent/config.json）
+_DEFAULT_GLOBAL_CONFIG = """\
+{
+  "llm_base_url": "",
+  "llm_api_key": "",
+  "llm_model": ""
+}
+"""
+
+# 默认用户设置内容（~/.agent/settings.json）
+_DEFAULT_USER_SETTINGS = """\
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python hooks/validate_command.py",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python hooks/protect_sensitive_files.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python hooks/audit_log.py",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python hooks/session_context.py",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python hooks/pre_compact_save.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
+"""
+
+
 # ---------------------------------------------------------------------------
 # 核心配置 API
 # ---------------------------------------------------------------------------
@@ -287,12 +374,16 @@ def enable_configs() -> None:
             return
         _config_reading_allowed = True
 
+    # 确保 ~/.agent/ 目录和配置文件存在
+    _ensure_config_file(get_global_config_path(), _DEFAULT_GLOBAL_CONFIG)
+    _ensure_config_file(get_config_home_dir() / PROJECT_SETTINGS_FILENAME, _DEFAULT_USER_SETTINGS)
+
     # 预加载全局配置以验证文件格式
     get_global_config()
 
 
 def get_global_config() -> GlobalConfig:
-    """读取全局配置 ~/.agent.json。
+    """读取全局配置 ~/.agent/config.json。
 
     使用缓存避免重复磁盘 I/O。
     线程安全。
@@ -330,7 +421,7 @@ def get_global_config() -> GlobalConfig:
 
 
 def save_global_config(config: GlobalConfig | dict) -> None:
-    """持久化全局配置到 ~/.agent.json。
+    """持久化全局配置到 ~/.agent/config.json。
 
     接受 GlobalConfig 对象或字典。线程安全。
     """

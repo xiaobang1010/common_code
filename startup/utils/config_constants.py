@@ -5,7 +5,7 @@
 """
 
 # 全局配置文件名（位于用户主目录下）
-GLOBAL_CONFIG_FILENAME = ".agent.json"
+GLOBAL_CONFIG_FILENAME = "config.json"
 
 # 项目配置目录名
 PROJECT_CONFIG_DIR = ".agent"
