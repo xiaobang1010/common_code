@@ -300,7 +300,7 @@ _DEFAULT_USER_SETTINGS = """\
         "hooks": [
           {
             "type": "command",
-            "command": "python hooks/validate_command.py",
+            "command": "python startup/utils/hooks/scripts/validate_command.py",
             "timeout": 10
           }
         ]
@@ -310,7 +310,7 @@ _DEFAULT_USER_SETTINGS = """\
         "hooks": [
           {
             "type": "command",
-            "command": "python hooks/protect_sensitive_files.py",
+            "command": "python startup/utils/hooks/scripts/protect_sensitive_files.py",
             "timeout": 10
           }
         ]
@@ -322,7 +322,7 @@ _DEFAULT_USER_SETTINGS = """\
         "hooks": [
           {
             "type": "command",
-            "command": "python hooks/audit_log.py",
+            "command": "python startup/utils/hooks/scripts/audit_log.py",
             "timeout": 15
           }
         ]
@@ -334,7 +334,7 @@ _DEFAULT_USER_SETTINGS = """\
         "hooks": [
           {
             "type": "command",
-            "command": "python hooks/session_context.py",
+            "command": "python startup/utils/hooks/scripts/session_context.py",
             "timeout": 15
           }
         ]
@@ -346,7 +346,7 @@ _DEFAULT_USER_SETTINGS = """\
         "hooks": [
           {
             "type": "command",
-            "command": "python hooks/pre_compact_save.py",
+            "command": "python startup/utils/hooks/scripts/pre_compact_save.py",
             "timeout": 10
           }
         ]
