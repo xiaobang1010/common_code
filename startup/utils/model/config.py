@@ -31,110 +31,13 @@ class ModelConfig:
 # 内置模型配置
 # ---------------------------------------------------------------------------
 
-_BUILTIN_MODELS: dict[str, ModelConfig] = {
-    "gpt-4o": ModelConfig(
-        name="gpt-4o",
-        context_window=128000,
-        max_output_tokens=16384,
-        supports_streaming=True,
-        supports_tools=True,
-        supports_vision=True,
-    ),
-    "gpt-4o-mini": ModelConfig(
-        name="gpt-4o-mini",
-        context_window=128000,
-        max_output_tokens=16384,
-        supports_streaming=True,
-        supports_tools=True,
-        supports_vision=True,
-    ),
-    "gpt-4-turbo": ModelConfig(
-        name="gpt-4-turbo",
-        context_window=128000,
-        max_output_tokens=4096,
-        supports_streaming=True,
-        supports_tools=True,
-        supports_vision=True,
-    ),
-    "claude-3-5-sonnet": ModelConfig(
-        name="claude-3-5-sonnet",
-        context_window=200000,
-        max_output_tokens=8192,
-        supports_streaming=True,
-        supports_tools=True,
-        supports_vision=True,
-    ),
-    "claude-3-5-sonnet-20241022": ModelConfig(
-        name="claude-3-5-sonnet-20241022",
-        context_window=200000,
-        max_output_tokens=8192,
-        supports_streaming=True,
-        supports_tools=True,
-        supports_vision=True,
-    ),
-    "claude-3-7-sonnet-20250219": ModelConfig(
-        name="claude-3-7-sonnet-20250219",
-        context_window=200000,
-        max_output_tokens=8192,
-        supports_streaming=True,
-        supports_tools=True,
-        supports_vision=True,
-    ),
-    "claude-sonnet-4-20250514": ModelConfig(
-        name="claude-sonnet-4-20250514",
-        context_window=200000,
-        max_output_tokens=16384,
-        supports_streaming=True,
-        supports_tools=True,
-        supports_vision=True,
-    ),
-    "deepseek-chat": ModelConfig(
-        name="deepseek-chat",
-        context_window=64000,
-        max_output_tokens=8192,
-        supports_streaming=True,
-        supports_tools=True,
-        supports_vision=False,
-    ),
-    "deepseek-reasoner": ModelConfig(
-        name="deepseek-reasoner",
-        context_window=64000,
-        max_output_tokens=8192,
-        supports_streaming=True,
-        supports_tools=False,
-        supports_vision=False,
-    ),
-    "Qwen/Qwen3-235B-A22B": ModelConfig(
-        name="Qwen/Qwen3-235B-A22B",
-        context_window=131072,
-        max_output_tokens=16384,
-        supports_streaming=True,
-        supports_tools=True,
-        supports_vision=False,
-    ),
-    "Qwen/Qwen3-30B-A3B": ModelConfig(
-        name="Qwen/Qwen3-30B-A3B",
-        context_window=131072,
-        max_output_tokens=16384,
-        supports_streaming=True,
-        supports_tools=True,
-        supports_vision=False,
-    ),
-    "Qwen/Qwen3-Coder": ModelConfig(
-        name="Qwen/Qwen3-Coder",
-        context_window=131072,
-        max_output_tokens=16384,
-        supports_streaming=True,
-        supports_tools=True,
-        supports_vision=False,
-    ),
-}
+_BUILTIN_MODELS: dict[str, ModelConfig] = {}
 
 # 默认模型配置
 _DEFAULT_MODEL_CONFIG = ModelConfig(
     name="default",
-    context_window=256000,
-    max_output_tokens=8192,
+    context_window=200000,
+    max_output_tokens=32768,
     supports_streaming=True,
     supports_tools=True,
     supports_vision=False,
@@ -198,77 +101,31 @@ if __name__ == "__main__":
     print("模型配置测试")
     print("=" * 60)
 
-    # 测试 1: 精确匹配
-    print("\n--- 测试 1: 精确匹配 ---")
-    cfg = get_model_config("gpt-4o")
-    assert cfg.name == "gpt-4o", f"期望 gpt-4o, got {cfg.name}"
-    assert cfg.context_window == 128000, f"期望 128000, got {cfg.context_window}"
-    assert cfg.max_output_tokens == 16384, f"期望 16384, got {cfg.max_output_tokens}"
-    print(f"  gpt-4o: context_window={cfg.context_window}, max_output={cfg.max_output_tokens}")
-
-    cfg = get_model_config("claude-3-5-sonnet")
-    assert cfg.name == "claude-3-5-sonnet"
-    assert cfg.context_window == 200000
-    print(f"  claude-3-5-sonnet: context_window={cfg.context_window}, max_output={cfg.max_output_tokens}")
-
-    cfg = get_model_config("deepseek-chat")
-    assert cfg.name == "deepseek-chat"
-    assert cfg.context_window == 64000
-    print(f"  deepseek-chat: context_window={cfg.context_window}, max_output={cfg.max_output_tokens}")
-    print("  [PASS] 精确匹配")
-
-    # 测试 2: 前缀匹配
-    print("\n--- 测试 2: 前缀匹配 ---")
-    cfg = get_model_config("gpt-4o-2024-05-13")
-    assert cfg.name == "gpt-4o", f"前缀匹配应返回 gpt-4o, got {cfg.name}"
-    print(f"  gpt-4o-2024-05-13 -> {cfg.name}")
-
-    cfg = get_model_config("claude-3-5-sonnet-20241022")
-    assert cfg.name == "claude-3-5-sonnet-20241022"
-    print(f"  claude-3-5-sonnet-20241022 -> {cfg.name}")
-    print("  [PASS] 前缀匹配")
-
-    # 测试 3: 默认值
-    print("\n--- 测试 3: 默认值 ---")
+    # 测试 1: 默认配置
+    print("\n--- 测试 1: 默认配置 ---")
     cfg = get_model_config("unknown-model")
     assert cfg.name == "default", f"未知模型应返回 default, got {cfg.name}"
-    assert cfg.context_window == 128000
-    assert cfg.max_output_tokens == 4096
+    assert cfg.context_window == 200000
+    assert cfg.max_output_tokens == 32768
+    assert cfg.supports_vision is False
     print(f"  unknown-model: context_window={cfg.context_window}, max_output={cfg.max_output_tokens}")
 
     cfg = get_model_config("")
     assert cfg.name == "default"
     print(f"  空字符串: context_window={cfg.context_window}")
-    print("  [PASS] 默认值")
+    print("  [PASS] 默认配置")
 
-    # 测试 4: get_effective_context_window
-    print("\n--- 测试 4: get_effective_context_window ---")
-    assert get_effective_context_window("gpt-4o") == 128000
-    assert get_effective_context_window("claude-3-5-sonnet") == 200000
-    assert get_effective_context_window("deepseek-chat") == 64000
-    assert get_effective_context_window("unknown") == 128000
-    print("  gpt-4o: 128000")
-    print("  claude-3-5-sonnet: 200000")
-    print("  deepseek-chat: 64000")
-    print("  unknown: 128000")
+    # 测试 2: get_effective_context_window
+    print("\n--- 测试 2: get_effective_context_window ---")
+    assert get_effective_context_window("unknown") == 200000
+    assert get_effective_context_window("") == 200000
+    print("  unknown: 200000")
+    print("  empty: 200000")
     print("  [PASS] get_effective_context_window")
 
-    # 测试 5: ModelConfig 属性
-    print("\n--- 测试 5: ModelConfig 属性 ---")
-    cfg = get_model_config("gpt-4o")
-    assert cfg.supports_streaming is True
-    assert cfg.supports_tools is True
-    assert cfg.supports_vision is True
-    print(f"  gpt-4o: streaming={cfg.supports_streaming}, tools={cfg.supports_tools}, vision={cfg.supports_vision}")
-
-    cfg = get_model_config("deepseek-chat")
-    assert cfg.supports_vision is False
-    print(f"  deepseek-chat: vision={cfg.supports_vision}")
-    print("  [PASS] ModelConfig 属性")
-
-    # 测试 6: frozen
-    print("\n--- 测试 6: frozen dataclass ---")
-    cfg = get_model_config("gpt-4o")
+    # 测试 3: frozen
+    print("\n--- 测试 3: frozen dataclass ---")
+    cfg = get_model_config("unknown")
     try:
         cfg.context_window = 999999  # type: ignore
         assert False, "frozen dataclass 不应允许修改"

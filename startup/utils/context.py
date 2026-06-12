@@ -4,7 +4,6 @@
 
 系统上下文（get_system_context）：
   - git status（当前分支、是否有未提交更改）
-  - cache breaker（时间戳，防止缓存命中）
 
 用户上下文（get_user_context）：
   - AGENT.md 文件内容（项目级指令）
@@ -19,7 +18,6 @@ from __future__ import annotations
 import functools
 import os
 import subprocess
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -105,7 +103,6 @@ def get_system_context() -> str:
 
     包含：
       - git status（当前分支、是否有未提交更改）
-      - cache breaker（时间戳，防止缓存命中）
     """
     parts: list[str] = []
 
@@ -134,10 +131,6 @@ def get_system_context() -> str:
 
         parts.append("\n\n".join(git_info_parts))
 
-    # Cache breaker
-    cache_breaker = f"[CACHE_BREAKER: {int(time.time())}]"
-    parts.append(cache_breaker)
-
     return "\n\n".join(parts)
 
 
@@ -147,13 +140,11 @@ def get_system_context() -> str:
 
 
 @functools.lru_cache(maxsize=1)
-def get_user_context() -> str:
-    """获取用户上下文（memoized）。
+def _get_user_context_cached() -> str:
+    """获取可缓存的用户上下文部分。
 
-    包含：
-      - AGENT.md 文件内容（项目级指令）
-      - 当前日期时间
-      - 工作目录信息
+    包含 AGENT.md 内容和工作目录，这些在会话期间不会变化。
+    日期不在此处缓存，由 get_user_context() 动态拼接。
     """
     parts: list[str] = []
 
@@ -167,16 +158,31 @@ def get_user_context() -> str:
         except OSError:
             pass
 
-    # 当前日期时间
-    now = datetime.now(timezone.utc)
-    local_date = now.strftime("%Y-%m-%d")
-    parts.append(f"Today's date is {local_date}.")
-
     # 工作目录
     cwd = os.getcwd()
     parts.append(f"Current working directory: {cwd}")
 
     return "\n\n".join(parts)
+
+
+def get_user_context() -> str:
+    """获取用户上下文。
+
+    包含：
+      - AGENT.md 文件内容（项目级指令，memoized）
+      - 当前日期时间（动态获取，不缓存）
+      - 工作目录信息（memoized）
+    """
+    cached = _get_user_context_cached()
+
+    # 当前日期时间（不缓存，每次动态获取）
+    now = datetime.now(timezone.utc)
+    local_date = now.strftime("%Y-%m-%d")
+    date_str = f"Today's date is {local_date}."
+
+    if cached:
+        return f"{cached}\n\n{date_str}"
+    return date_str
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +196,7 @@ def clear_context_cache() -> None:
     当系统提示注入变更时调用，确保下次获取上下文时重新计算。
     """
     get_system_context.cache_clear()
-    get_user_context.cache_clear()
+    _get_user_context_cached.cache_clear()
 
 
 # ---------------------------------------------------------------------------
@@ -206,16 +212,14 @@ if __name__ == "__main__":
     print("\n--- 测试 1: get_system_context ---")
     ctx = get_system_context()
     assert isinstance(ctx, str), "返回值应为字符串"
-    assert len(ctx) > 0, "系统上下文不应为空"
-    assert "CACHE_BREAKER" in ctx, "应包含 cache breaker"
-    print(f"  系统上下文长度: {len(ctx)}")
-    print(f"  包含 CACHE_BREAKER: {'CACHE_BREAKER' in ctx}")
     # 检查是否在 git 仓库中
     if _is_git_repo():
+        assert len(ctx) > 0, "git 仓库的系统上下文不应为空"
         assert "Current branch" in ctx or "Status" in ctx, "git 仓库应包含分支信息"
         print("  包含 git 信息: True")
     else:
         print("  不在 git 仓库中，跳过 git 信息检查")
+    print(f"  系统上下文长度: {len(ctx)}")
     print("  [PASS] get_system_context")
 
     # 测试 2: get_user_context
@@ -254,10 +258,8 @@ if __name__ == "__main__":
 
     # 测试 5: clear_context_cache
     print("\n--- 测试 5: clear_context_cache ---")
-    old_ctx = get_system_context()
     clear_context_cache()
     new_ctx = get_system_context()
-    # cache breaker 时间戳可能不同
     print("  缓存清除后重新获取: OK")
     print("  [PASS] clear_context_cache")
 
