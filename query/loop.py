@@ -16,7 +16,6 @@ from typing import Any, AsyncGenerator
 from query.config import QueryConfig, build_query_config
 from query.deps import QueryDeps, production_deps
 from query.stop_hooks import StopHookResult, run_stop_hooks
-from query.token_budget import TokenBudget, estimate_tokens, is_over_budget, remaining
 from query.services.api.errors import APIError, classify_error, is_recoverable_error
 from query.services.api.llm import StreamEvent, collect_tool_calls
 from query.services.compact.auto_compact import CompactTracking
@@ -184,10 +183,10 @@ async def query_loop(
     3. 调用模型（流式）
     4. 流式输出
     5. 检测工具调用
-    6. 执行工具
-    7. 追加结果到消息列表
-    8. 错误恢复
-    9. 完成检查
+    6. 错误恢复
+    7. 完成检查
+    8. 执行工具
+    9. 追加结果到消息列表
     10. 状态转换
 
     Args:
@@ -200,12 +199,6 @@ async def query_loop(
     """
     # 初始化压缩追踪
     tracking: CompactTracking = CompactTracking()
-
-    # Token 预算
-    budget = TokenBudget(
-        total=128000,
-        reserved=config.max_tokens,
-    )
 
     # eslint-disable-next-line no-constant-condition
     while True:
@@ -232,17 +225,7 @@ async def query_loop(
                 # 压缩失败不中断循环
                 pass
 
-        # ---- 2. Token 预算检查 ----
-        budget.used = estimate_tokens(messages)
-        if is_over_budget(budget):
-            yield StreamEvent(
-                type="error",
-                error=RuntimeError("Token budget exceeded"),
-                content="Token budget exceeded: cannot fit within context window",
-            )
-            return
-
-        # ---- 3. 构建 API 请求 ----
+        # ---- 2. 构建 API 请求 ----
         from startup.constants.prompts import build_system_messages, get_system_prompt_sections
 
         sections = config.system_prompt_sections or get_system_prompt_sections()
@@ -257,7 +240,7 @@ async def query_loop(
             temperature=config.temperature,
         )
 
-        # ---- 4. 调用模型（流式） ----
+	        # ---- 3. 调用模型（流式） ----
         yield StreamEvent(type="content", content="")  # stream_request_start 信号
 
         content_parts: list[str] = []
@@ -274,7 +257,7 @@ async def query_loop(
                 max_tokens=config.max_tokens,
                 temperature=config.temperature,
             ):
-                # ---- 5. 流式输出 ----
+	                # ---- 4. 流式输出 ----
                 yield event
                 stream_events.append(event)
 
@@ -300,15 +283,15 @@ async def query_loop(
         if usage_info:
             state.total_tokens_used += usage_info.get("total_tokens", 0)
 
-        # ---- 6. 检测工具调用 ----
+	        # ---- 5. 检测工具调用 ----
         tool_calls = collect_tool_calls(stream_events)
 
         # 构建 assistant 消息
         assistant_msg = _build_assistant_message(content_parts, tool_calls)
 
-        # ---- 8. 错误恢复 ----
+	        # ---- 6. 错误恢复 ----
 
-        # 8a. 上下文长度超限 → 尝试压缩恢复
+	        # 6a. 上下文长度超限 → 尝试压缩恢复
         if error_occurred and _is_context_length_error(error_occurred):
             api_error = classify_error(error_occurred)
             if is_recoverable_error(api_error):
@@ -340,7 +323,7 @@ async def query_loop(
                 )
                 return
 
-        # 8b. finish_reason=length → 恢复消息 → continue（最多 3 次）
+	        # 6b. finish_reason=length → 恢复消息 → continue（最多 3 次）
         if finish_reason == "length":
             if state.max_output_tokens_recovery_count < MAX_OUTPUT_TOKENS_RECOVERY_LIMIT:
                 recovery_msg = {
@@ -368,7 +351,7 @@ async def query_loop(
             )
             return
 
-        # 8c. 其他错误 → yield error → return
+	        # 6c. 其他错误 → yield error → return
         if error_occurred:
             yield StreamEvent(
                 type="error",
@@ -377,14 +360,14 @@ async def query_loop(
             )
             return
 
-        # ---- 9. 完成检查 ----
+        # ---- 7. 完成检查 ----
 
-        # 9a. finish_reason=stop → yield done → return
+        # 7a. finish_reason=stop → yield done → return
         if finish_reason == "stop":
             yield StreamEvent(type="done", finish_reason="stop")
             return
 
-        # 9b. 无工具调用 → yield done → return
+        # 7b. 无工具调用 → yield done → return
         if not tool_calls:
             # 运行停止钩子
             all_messages = [*messages, assistant_msg]
@@ -396,7 +379,7 @@ async def query_loop(
             yield StreamEvent(type="done", finish_reason="stop")
             return
 
-        # ---- 7. 执行工具 ----
+	        # ---- 8. 执行工具 ----
         from tools.protocol import ToolUseContext
 
         tool_use_context = ToolUseContext()
@@ -415,7 +398,7 @@ async def query_loop(
             )
             return
 
-        # 追加工具结果到消息
+        # ---- 9. 追加工具结果 ----
         tool_result_messages = _build_tool_result_messages(tool_results)
 
         # yield 工具结果
@@ -507,26 +490,8 @@ if __name__ == "__main__":
     print(f"  uuid1={uuid1}, uuid2={uuid2}")
     print("  [PASS] QueryDeps 工厂")
 
-    # ---- 测试 4: TokenBudget 计算 ----
-    print("\n--- 测试 4: TokenBudget 计算 ---")
-    budget = TokenBudget(used=50000, total=128000, reserved=8192)
-    r = remaining(budget)
-    assert r == 128000 - 50000 - 8192
-    assert is_over_budget(budget) is False
-    print(f"  remaining={r}, over_budget={is_over_budget(budget)}")
-
-    budget_over = TokenBudget(used=200000, total=128000, reserved=8192)
-    assert is_over_budget(budget_over) is True
-    assert remaining(budget_over) == 0
-    print(f"  over: remaining={remaining(budget_over)}, over_budget={is_over_budget(budget_over)}")
-
-    tokens = estimate_tokens([{"role": "user", "content": "Hello world"}])
-    assert tokens > 0
-    print(f"  estimate_tokens('Hello world') ≈ {tokens}")
-    print("  [PASS] TokenBudget 计算")
-
-    # ---- 测试 5: query_loop 使用 mock deps 的基本流程 ----
-    print("\n--- 测试 5: query_loop 使用 mock deps 的基本流程 ---")
+    # ---- 测试 4: query_loop 使用 mock deps 的基本流程 ----
+    print("\n--- 测试 4: query_loop 使用 mock deps 的基本流程 ---")
 
     async def _test_query_loop():
         # 构造 mock deps
@@ -570,8 +535,8 @@ if __name__ == "__main__":
     asyncio.run(_test_query_loop())
     print("  [PASS] query_loop 使用 mock deps 的基本流程")
 
-    # ---- 测试 6: query_loop 工具调用流程 ----
-    print("\n--- 测试 6: query_loop 工具调用流程 ---")
+    # ---- 测试 5: query_loop 工具调用流程 ----
+    print("\n--- 测试 5: query_loop 工具调用流程 ---")
 
     async def _test_tool_call_loop():
         call_count = 0
@@ -634,16 +599,16 @@ if __name__ == "__main__":
     asyncio.run(_test_tool_call_loop())
     print("  [PASS] query_loop 工具调用流程")
 
-    # ---- 测试 7: _is_context_length_error ----
-    print("\n--- 测试 7: _is_context_length_error ---")
+    # ---- 测试 6: _is_context_length_error ----
+    print("\n--- 测试 6: _is_context_length_error ---")
     assert _is_context_length_error(RuntimeError("context_length_exceeded")) is True
     assert _is_context_length_error(RuntimeError("maximum context length exceeded")) is True
     assert _is_context_length_error(RuntimeError("prompt too long")) is True
     assert _is_context_length_error(RuntimeError("rate limit")) is False
     print("  [PASS] _is_context_length_error")
 
-    # ---- 测试 8: _build_assistant_message ----
-    print("\n--- 测试 8: _build_assistant_message ---")
+    # ---- 测试 7: _build_assistant_message ----
+    print("\n--- 测试 7: _build_assistant_message ---")
     msg = _build_assistant_message(["Hello", " world"], [])
     assert msg["role"] == "assistant"
     assert msg["content"] == "Hello world"
@@ -660,8 +625,8 @@ if __name__ == "__main__":
     assert msg_empty["role"] == "assistant"
     print("  [PASS] _build_assistant_message")
 
-    # ---- 测试 9: _build_tool_result_messages ----
-    print("\n--- 测试 9: _build_tool_result_messages ---")
+    # ---- 测试 8: _build_tool_result_messages ----
+    print("\n--- 测试 8: _build_tool_result_messages ---")
     results = [
         ToolExecutionResult(tool_call_id="c1", tool_name="read", content="file content"),
         ToolExecutionResult(tool_call_id="c2", tool_name="write", content="ok", is_error=True),
@@ -674,8 +639,8 @@ if __name__ == "__main__":
     assert msgs[1]["tool_call_id"] == "c2"
     print("  [PASS] _build_tool_result_messages")
 
-    # ---- 测试 10: query 入口函数 ----
-    print("\n--- 测试 10: query 入口函数 ---")
+    # ---- 测试 9: query 入口函数 ----
+    print("\n--- 测试 9: query 入口函数 ---")
 
     async def _test_query_entry():
         async def mock_call_model(**kwargs):
