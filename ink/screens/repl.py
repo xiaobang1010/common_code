@@ -142,115 +142,86 @@ class REPLScreen:
     # -----------------------------------------------------------------------
 
     async def _call_llm(self) -> None:
-        """调用 LLM 并流式输出响应，支持工具调用循环。"""
-        from query.services.api.client import get_default_model
-        from query.services.api.llm import query_model_with_streaming
-        from tools import get_tools
-        from tools.executor import execute_tool_call, ToolExecutionResult, tool_result_to_openai_message
-        from tools.protocol import ToolUseContext
+        """调用 LLM 并流式输出响应，支持工具调用循环。
 
-        model = self._app_state.get_state().model or get_default_model()
-        tools = get_tools()
-        tool_context = ToolUseContext()
+        消费 query() 生成器，REPL 维护完整消息历史。
+        REPL 负责构建 user_context / system_context 并传入 query，
+        query loop 内部负责压缩、注入上下文、调模型、执行工具，
+        通过 yield 把 assistant 消息、tool 结果、压缩产物传回 REPL。
+        （对齐 TS 版：上下文由调用方构建后传入 query）
+        """
+        from query import query
+        from query.services.api.llm import StreamEvent
+        from query.utils.messages import is_compact_boundary_message
+        from startup.utils.context import get_user_context, get_system_context
 
-        # Agentic 循环：LLM → tool_calls → 执行 → 反馈 → LLM → ...
-        max_iterations = 20
-        for iteration in range(max_iterations):
-            openai_messages = self._messages_to_openai_format()
-            if not openai_messages:
-                return
+        # 传入完整历史（含 boundary marker），query loop 内部会切片
+        openai_messages = self._messages_to_openai_format()
+        if not openai_messages:
+            return
 
-            # 流式调用 LLM
-            full_text = ""
-            tool_calls_list: list[dict] = []
-            tool_calls_map: dict[str, dict] = {}  # 按 id 聚合增量 tool_calls
-            tool_calls_order: list[str] = []  # 保持插入顺序
-            finish_reason = None
+        # 构建上下文（对齐 TS 版：由调用方构建后传入 query）
+        user_context = get_user_context()
+        system_context = get_system_context()
 
-            try:
-                async for event in query_model_with_streaming(
-                    messages=openai_messages, tools=tools, model=model
-                ):
-                    if event.type == "content":
-                        full_text += (event.content or "")
-                        print(event.content or "", end="", flush=True)
-                    elif event.type == "tool_call_delta":
-                        tc_id = event.tool_call_id
-                        if tc_id:
-                            if tc_id not in tool_calls_map:
-                                tool_calls_map[tc_id] = {
-                                    "id": tc_id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": "",
-                                        "arguments": "",
-                                    },
-                                }
-                                tool_calls_order.append(tc_id)
-                            entry = tool_calls_map[tc_id]
-                            if event.tool_call_name:
-                                entry["function"]["name"] += event.tool_call_name
-                            if event.tool_call_arguments:
-                                entry["function"]["arguments"] += event.tool_call_arguments
-                    elif event.type == "done":
-                        finish_reason = event.finish_reason
-                    elif event.type == "usage" and event.usage:
-                        state = self._app_state.get_state()
-                        if event.usage.get("prompt_tokens"):
-                            state.token_usage.input_tokens = event.usage["prompt_tokens"]
-                        if event.usage.get("completion_tokens"):
-                            state.token_usage.output_tokens = event.usage["completion_tokens"]
-                    elif event.type == "error":
-                        print(f"\nError: {event.content}")
+        async for event in query({"messages": openai_messages, "user_context": user_context, "system_context": system_context}):
+            if isinstance(event, StreamEvent):
+                self._handle_stream_event(event)
+            elif isinstance(event, dict):
+                self._handle_yielded_message(event, is_compact_boundary_message)
 
-            except Exception as e:
-                print(f"\nError: {e}")
-                break
+    def _handle_stream_event(self, event: "StreamEvent") -> None:
+        """处理 query loop yield 的 StreamEvent。
 
-            # 按插入顺序构建最终 tool_calls 列表
-            tool_calls_list = [tool_calls_map[tc_id] for tc_id in tool_calls_order]
-
-            # 将助手响应添加到消息列表
-            if full_text or tool_calls_list:
-                self._messages.append(MessageData(
-                    role="assistant",
-                    content=full_text or "",
-                    tool_calls=tool_calls_list if tool_calls_list else None,
-                ))
-
-            # 如果没有工具调用，循环结束
-            if not tool_calls_list or finish_reason != "tool_calls":
-                if full_text:
-                    print()  # 换行
-                break
-
+        content → 流式打印
+        tool_call_delta → 忽略（query loop 内部已聚合执行）
+        usage → 更新 token 计数
+        error → 打印错误
+        done → 换行
+        """
+        if event.type == "content":
+            # query loop 首个 content="" 是 turn-start 信号，跳过空内容
+            if event.content:
+                print(event.content, end="", flush=True)
+        elif event.type == "usage" and event.usage:
+            state = self._app_state.get_state()
+            if event.usage.get("prompt_tokens"):
+                state.token_usage.input_tokens = event.usage["prompt_tokens"]
+            if event.usage.get("completion_tokens"):
+                state.token_usage.output_tokens = event.usage["completion_tokens"]
+        elif event.type == "error":
+            print(f"\nError: {event.content}")
+        elif event.type == "done":
             print()  # 换行
 
-            # 执行工具调用
-            for tc in tool_calls_list:
-                tool_name = tc.get("function", {}).get("name", "unknown")
-                print(f"  \x1b[33m▸ {tool_name}\x1b[0m", flush=True)
+    def _handle_yielded_message(
+        self,
+        msg: dict,
+        is_boundary_fn,
+    ) -> None:
+        """处理 query loop yield 的 dict 消息。
 
-                result: ToolExecutionResult = await execute_tool_call(
-                    tc, tools, tool_context,
-                )
-
-                # 显示工具结果摘要
-                result_preview = result.content[:200] + "..." if len(result.content) > 200 else result.content
-                if result.is_error:
-                    print(f"  \x1b[31m✗ {tool_name}: {result_preview}\x1b[0m")
-                else:
-                    print(f"  \x1b[32m✓ {tool_name}\x1b[0m", flush=True)
-
-                # 将工具结果添加到消息列表
-                tool_msg = tool_result_to_openai_message(result)
-                self._messages.append(MessageData(
-                    role="tool",
-                    content=tool_msg.get("content", ""),
-                    tool_call_id=tool_msg.get("tool_call_id", ""),
-                ))
-
-            # 继续循环，让 LLM 处理工具结果
+        compact boundary → 替换完整历史（对齐 TS setMessages(() => [newMessage])）
+        assistant / tool → append 到历史
+        压缩产物中的 summary 等普通消息 → append
+        """
+        if is_boundary_fn(msg):
+            # 收到 boundary marker → 压缩发生了，替换完整历史
+            # query loop 会继续 yield summary 等后续消息，它们会正常 append
+            self._messages.clear()
+            self._messages.append(MessageData(
+                role=msg.get("role", "system"),
+                content=msg.get("content", ""),
+                is_compact_boundary=True,
+            ))
+        else:
+            # assistant 消息（含 tool_calls）或 tool 结果消息 → append
+            self._messages.append(MessageData(
+                role=msg.get("role", "user"),
+                content=msg.get("content", ""),
+                tool_calls=msg.get("tool_calls"),
+                tool_call_id=msg.get("tool_call_id"),
+            ))
 
     # -----------------------------------------------------------------------
     # 输入处理

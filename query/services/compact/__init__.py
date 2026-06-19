@@ -103,9 +103,14 @@ async def run_compression_pipeline(
         压缩后的消息列表
     """
     from startup.utils.model.config import get_effective_context_window
+    from query.utils.messages import get_messages_after_compact_boundary
 
     context_window = get_effective_context_window(model)
-    current_tokens = _estimate_tokens_for_messages(messages)
+    # token 估算基于切片后的活跃窗口（最后一个 boundary 之后的消息），
+    # 而非完整历史。REPL 传入的 messages 可能含已被压缩的旧消息，
+    # 那些不会发给 LLM，不应计入 token 估算。
+    active_messages = get_messages_after_compact_boundary(messages)
+    current_tokens = _estimate_tokens_for_messages(active_messages)
 
     # 安全阈值：context_window 的 85%
     safe_threshold = context_window * 0.85
