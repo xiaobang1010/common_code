@@ -107,6 +107,8 @@ class QueryEngine:
         self._mutable_messages: list[dict] = initial_messages or []
         self._total_usage: int = 0
         self._turn_count: int = 0
+        # 整个会话一个 sessionId，对齐 TS 版 getSessionId()
+        self._session_id: str = config.deps.get_uuid()
 
     @property
     def mutable_messages(self) -> list[dict]:
@@ -127,6 +129,11 @@ class QueryEngine:
     @property
     def turn_count(self) -> int:
         return self._turn_count
+
+    @property
+    def session_id(self) -> str:
+        """会话 ID，整个会话不变。"""
+        return self._session_id
 
     @property
     def config(self) -> QueryEngineConfig:
@@ -166,8 +173,8 @@ class QueryEngine:
         # 把 user 消息加到 mutable_messages
         self._mutable_messages.append({"role": "user", "content": prompt})
 
-        # 构建循环级快照
-        query_config = build_query_config(session_id=self._deps.get_uuid())
+        # 构建循环级快照（session_id 整个会话不变，对齐 TS 版）
+        query_config = build_query_config(session_id=self._session_id)
 
         # 调 query_loop
         async for event in query_loop(self, query_config, user_context, system_context):
