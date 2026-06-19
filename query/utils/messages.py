@@ -1,4 +1,4 @@
-"""消息切片辅助函数 — 参考原始 src/utils/messages.ts。
+"""消息切片辅助函数。
 
 提供 compact boundary 查找和切片功能，让 query loop 和 REPL 共用同一套
 "从最后一个压缩边界开始取活跃窗口"的语义。
@@ -54,7 +54,7 @@ def find_last_compact_boundary_index(messages: list[dict]) -> int:
 def get_messages_after_compact_boundary(messages: list[dict]) -> list[dict]:
     """从最后一个 compact boundary 开始切片（含 boundary）。
 
-    无 boundary 时返回全部消息。对齐 TS 的 getMessagesAfterCompactBoundary。
+    无 boundary 时返回全部消息。
 
     Args:
         messages: 完整消息列表（可能含历史 boundary marker）

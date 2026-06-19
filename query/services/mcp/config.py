@@ -1,4 +1,4 @@
-"""MCP 配置解析 — 参考原始 config.ts。
+"""MCP 配置解析。
 
 从 settings.json 的 mcpServers 字段读取 MCP 服务器配置，
 解析为 MCPServerConfig 字典。

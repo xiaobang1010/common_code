@@ -1,6 +1,6 @@
 """依赖注入 — 核心 I/O 依赖。
 
-参考原始 TypeScript 实现 src/query/deps.ts。
+依赖注入 — 核心 I/O 依赖。
 
 将 query() 的 I/O 依赖抽为可替换的接口，
 测试可直接注入 fake 而无需 spyOn-per-module。

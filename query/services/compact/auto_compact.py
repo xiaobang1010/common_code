@@ -2,8 +2,6 @@
 
 当 token 使用超过阈值时触发全量摘要压缩。
 包含 circuit breaker 机制防止连续失败。
-
-参考原始 TypeScript 实现 src/services/compact/autoCompact.ts。
 """
 
 from __future__ import annotations

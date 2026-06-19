@@ -2,9 +2,6 @@
 
 当 token 使用超过 context_window 的 90% 时触发，
 按消息组折叠远期消息，调用 LLM 生成折叠摘要。
-
-参考原始 TypeScript 实现 src/services/contextCollapse/ 和
-src/services/compact/grouping.ts。
 """
 
 from __future__ import annotations

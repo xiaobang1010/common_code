@@ -1,6 +1,6 @@
 """Agentic 循环引擎核心。
 
-参考原始 TypeScript 实现 src/query.ts。
+Agentic 循环引擎核心。
 
 核心查询入口和 while(true) 无限循环，
 每轮迭代执行：压缩 → 构建请求 → 调用模型 → 流式输出 →
@@ -22,7 +22,6 @@ from query.deps import QueryDeps
 from query.stop_hooks import run_stop_hooks
 from query.services.api.errors import APIError, classify_error, is_recoverable_error
 from query.services.api.llm import StreamEvent, collect_tool_calls
-from query.services.compact import run_compression_pipeline
 from query.services.compact.auto_compact import CompactTracking
 from tools.executor import (
     ToolExecutionResult,
@@ -135,6 +134,92 @@ def _build_assistant_message(
 
 
 # ---------------------------------------------------------------------------
+# _run_inline_compression — 内联四级压缩管线
+# ---------------------------------------------------------------------------
+
+
+async def _run_inline_compression(
+    messages: list[dict],
+    model: str,
+    tracking: CompactTracking,
+    context_collapse_enabled: bool,
+    deps: Any,
+) -> list[dict]:
+    """内联四级压缩管线。
+
+    顺序：snip → microcompact → context_collapse → autocompact。
+    snip 和 microcompact 无条件执行（不互斥），
+    autocompact 内部自判阈值，管线层面不做提前返回
+    （原来 run_compression_pipeline 每级之间的 safe_threshold 提前返回已移除）。
+
+    token 估算：粗略方式（字符数 ÷ 4），后续可替换为 tiktoken 等精确估算。
+
+    Args:
+        messages: 消息列表
+        model: 模型名称
+        tracking: 压缩追踪状态
+        context_collapse_enabled: 是否启用 context collapse
+        deps: I/O 依赖（取 microcompact、autocompact）
+
+    Returns:
+        压缩后的消息列表
+    """
+    import os
+
+    from query.services.compact.snip import (
+        _estimate_tokens_for_messages as _est_tokens,
+        should_snip,
+        snip_messages,
+    )
+    from query.services.compact.micro_compact import should_micro_compact
+    from query.services.compact.context_collapse import (
+        context_collapse_messages,
+        should_context_collapse,
+    )
+    from startup.utils.model.config import get_effective_context_window
+    from query.utils.messages import get_messages_after_compact_boundary
+
+    # token 估算基于切片后的活跃窗口（最后一个 boundary 之后的消息），
+    # 而非完整历史。REPL 传入的 messages 可能含已被压缩的旧消息，
+    # 那些不会发给 LLM，不应计入 token 估算。
+    context_window = get_effective_context_window(model)
+    active_messages = get_messages_after_compact_boundary(messages)
+    current_tokens = _est_tokens(active_messages)
+
+    # 1a. Snip（受 COMMON_CODE_ENABLE_SNIP 环境变量门控）
+    snip_enabled = os.environ.get("COMMON_CODE_ENABLE_SNIP", "").lower() in (
+        "1", "true", "yes", "on",
+    )
+    if snip_enabled and should_snip(messages, context_window, current_tokens):
+        messages, _snip_tokens_freed = snip_messages(
+            messages, context_window, current_tokens,
+        )
+        current_tokens = _est_tokens(messages)
+
+    # 1b. Microcompact（无条件执行，snip 和 microcompact 不互斥）
+    if should_micro_compact(messages):
+        messages = deps.microcompact(messages=messages)
+
+    # 1c. Context Collapse（受 context_collapse_enabled 门控）
+    if context_collapse_enabled and should_context_collapse(
+        messages, context_window, current_tokens,
+    ):
+        messages = await context_collapse_messages(
+            messages, model, context_window,
+        )
+
+    # 1d. Autocompact（内部自判阈值，不在管线层面做提前返回）
+    messages, _was_compacted = await deps.autocompact(
+        messages=messages,
+        model=model,
+        tracking=tracking,
+        context_collapse_enabled=context_collapse_enabled,
+    )
+
+    return messages
+
+
+# ---------------------------------------------------------------------------
 # query — 便捷入口
 # ---------------------------------------------------------------------------
 
@@ -142,7 +227,7 @@ def _build_assistant_message(
 async def query(
     params: dict[str, Any] | None = None,
 ) -> AsyncGenerator[StreamEvent | dict, None]:
-    """便捷入口，内部创建一次性 QueryEngine（对齐 TS 版 ask()）。
+    """便捷入口，内部创建一次性 QueryEngine。
 
     query() 是一次性调用，不传 prompt（messages 已包含历史），
     直接调 query_loop。如需跨轮持久化，请使用 QueryEngine.submitMessage。
@@ -231,20 +316,19 @@ async def query_loop(
         messages = engine.mutable_messages
         transition = state.transition
 
-        # ---- 1. 压缩管线 ----
+        # ---- 1. 压缩管线（内联四级）----
         if config.auto_compact_enabled and messages:
             try:
-                compacted = await run_compression_pipeline(
+                compacted = await _run_inline_compression(
                     messages=messages,
                     model=engine_config.model,
                     tracking=tracking,
                     context_collapse_enabled=config.context_collapse_enabled,
-                    microcompact=deps.microcompact,
-                    autocompact=deps.autocompact,
+                    deps=deps,
                 )
                 if compacted is not None and compacted != messages:
                     # 先 yield 压缩产物（boundary marker + summary + kept messages），
-                    # 让 REPL 据此更新自己的完整历史。对齐 TS query.ts:530-532。
+                    # 让 REPL 据此更新自己的完整历史。
                     for msg in compacted:
                         yield msg
                     # 压缩后替换引擎消息
@@ -339,13 +423,12 @@ async def query_loop(
                 # 尝试压缩恢复
                 if not state.has_attempted_reactive_compact and config.auto_compact_enabled:
                     try:
-                        compacted = await run_compression_pipeline(
+                        compacted = await _run_inline_compression(
                             messages=messages,
                             model=engine_config.model,
                             tracking=tracking,
                             context_collapse_enabled=config.context_collapse_enabled,
-                            microcompact=deps.microcompact,
-                            autocompact=deps.autocompact,
+                            deps=deps,
                         )
                         if compacted is not None and compacted != messages:
                             engine.mutable_messages = compacted
@@ -785,6 +868,48 @@ if __name__ == "__main__":
         f"期望 3 个字段, 得到 {field_names}"
     print(f"  QueryConfig 字段: {field_names}")
     print("  [PASS] QueryConfig 只有 3 个字段")
+
+    # ---- 测试 10: _run_inline_compression 无压缩时返回原消息 ----
+    print("\n--- 测试 10: _run_inline_compression 无压缩时返回原消息 ---")
+
+    async def _test_inline_compression_noop():
+        async def _unused_call_model(**kwargs):
+            if False:  # pragma: no cover
+                yield  # 占位，让函数成为 async generator
+
+        def mock_microcompact(messages=None, **kwargs):
+            return messages
+
+        async def mock_autocompact(**kwargs):
+            return kwargs.get("messages", []), False
+
+        async def mock_execute_tools(**kwargs):
+            return []
+
+        mock_deps = QueryDeps(
+            call_model=_unused_call_model,
+            microcompact=mock_microcompact,
+            autocompact=mock_autocompact,
+            execute_tools=mock_execute_tools,
+            get_uuid=lambda: "test-uuid",
+        )
+
+        # 小消息：snip 未门控、无 assistant 时间戳、context_collapse 关闭、
+        # autocompact 阈值未达 → 各级都不触发，返回原消息
+        messages = [{"role": "user", "content": "Hi"}]
+        tracking = CompactTracking()
+        result = await _run_inline_compression(
+            messages=messages,
+            model="test-model",
+            tracking=tracking,
+            context_collapse_enabled=False,
+            deps=mock_deps,
+        )
+        assert result == messages, f"期望原消息, 得到 {result}"
+        print(f"  输入 {len(messages)} 条, 输出 {len(result)} 条, 无压缩触发")
+        print("  [PASS] _run_inline_compression 无压缩时返回原消息")
+
+    asyncio.run(_test_inline_compression_noop())
 
     print("\n" + "=" * 60)
     print("所有测试完成")

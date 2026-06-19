@@ -1,6 +1,6 @@
 """查询引擎 — 会话级状态持有者。
 
-参考原始 TypeScript 实现 src/query/engine.ts。
+查询引擎 — 会话级状态持有者。
 
 QueryEngine 持有会话状态（消息历史、token 用量、轮次），
 跨多次 submitMessage 持久化。QueryEngineConfig 是会话级不可变配置。
@@ -107,7 +107,7 @@ class QueryEngine:
         self._mutable_messages: list[dict] = initial_messages or []
         self._total_usage: int = 0
         self._turn_count: int = 0
-        # 整个会话一个 sessionId，对齐 TS 版 getSessionId()
+        # 整个会话一个 sessionId
         self._session_id: str = config.deps.get_uuid()
 
     @property
@@ -173,7 +173,7 @@ class QueryEngine:
         # 把 user 消息加到 mutable_messages
         self._mutable_messages.append({"role": "user", "content": prompt})
 
-        # 构建循环级快照（session_id 整个会话不变，对齐 TS 版）
+        # 构建循环级快照（session_id 整个会话不变）
         query_config = build_query_config(session_id=self._session_id)
 
         # 调 query_loop

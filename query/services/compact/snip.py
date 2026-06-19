@@ -65,7 +65,7 @@ def snip_messages(
     messages: list[dict],
     context_window: int,
     current_tokens: int,
-) -> list[dict]:
+) -> tuple[list[dict], int]:
     """裁剪历史尾部消息。
 
     从最旧的消息开始删除，保留 system 消息和最近的消息，
@@ -77,10 +77,10 @@ def snip_messages(
         current_tokens: 当前 token 使用量
 
     Returns:
-        裁剪后的消息列表
+        (裁剪后的消息列表, snip 释放的估算 token 数)
     """
     if not messages:
-        return messages
+        return [], 0
 
     target_tokens = context_window * 0.85
 
@@ -96,7 +96,7 @@ def snip_messages(
 
     # 如果非 system 消息为空，直接返回
     if not non_system_messages:
-        return messages
+        return messages, 0
 
     # 计算当前非 system 消息的 token 数
     non_system_tokens = _estimate_tokens_for_messages(non_system_messages)
@@ -104,7 +104,7 @@ def snip_messages(
 
     # 如果已经在目标以下，不需要裁剪
     if current_tokens <= target_tokens:
-        return messages
+        return messages, 0
 
     # 从最旧的非 system 消息开始删除
     # 保留最近的消息（从尾部保留）
@@ -115,7 +115,7 @@ def snip_messages(
         removed = kept.pop(0)
         tokens_freed += _estimate_tokens_for_messages([removed])
 
-    return system_messages + kept
+    return system_messages + kept, tokens_freed
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +180,7 @@ if __name__ == "__main__":
         context_window = 1000  # 小窗口，容易触发
         current_tokens = _estimate_tokens_for_messages(messages)
 
-        result = snip_messages(messages, context_window, current_tokens)
+        result, tokens_freed = snip_messages(messages, context_window, current_tokens)
 
         # 验证 system 消息被保留
         system_msgs = [m for m in result if m.get("role") == "system"]
@@ -195,6 +195,9 @@ if __name__ == "__main__":
         if len(result) > 1:
             last_msg = result[-1]
             assert "99" in last_msg.get("content", ""), "应保留最近的消息"
+
+        # 验证释放了 token
+        assert tokens_freed > 0, f"期望 tokens_freed > 0, 得到 {tokens_freed}"
 
         print(f"  原始消息数: {len(messages)}, 裁剪后: {len(result)}")
         print(f"  原始 token: {current_tokens}, 裁剪后: {result_tokens}")
@@ -213,8 +216,9 @@ if __name__ == "__main__":
         context_window = 10000
         current_tokens = _estimate_tokens_for_messages(messages)
 
-        result = snip_messages(messages, context_window, current_tokens)
+        result, tokens_freed = snip_messages(messages, context_window, current_tokens)
         assert len(result) == len(messages), f"期望 {len(messages)} 条消息, 得到 {len(result)}"
+        assert tokens_freed == 0, f"期望 tokens_freed == 0, 得到 {tokens_freed}"
         print("  [PASS] token 使用低时不裁剪")
     except Exception as e:
         print(f"  [FAIL] {e}")
@@ -222,8 +226,9 @@ if __name__ == "__main__":
     # ---- 测试 7: snip_messages — 空消息列表 ----
     print("\n--- 测试 7: snip_messages — 空消息列表 ---")
     try:
-        result = snip_messages([], context_window=10000, current_tokens=0)
+        result, tokens_freed = snip_messages([], context_window=10000, current_tokens=0)
         assert result == [], f"期望空列表, 得到 {result}"
+        assert tokens_freed == 0, f"期望 tokens_freed == 0, 得到 {tokens_freed}"
         print("  [PASS] 空消息列表原样返回")
     except Exception as e:
         print(f"  [FAIL] {e}")
@@ -234,9 +239,10 @@ if __name__ == "__main__":
         messages = [
             {"role": "system", "content": "You are helpful."},
         ]
-        result = snip_messages(messages, context_window=10, current_tokens=100)
+        result, tokens_freed = snip_messages(messages, context_window=10, current_tokens=100)
         assert len(result) == 1, f"期望 1 条消息, 得到 {len(result)}"
         assert result[0]["role"] == "system"
+        assert tokens_freed == 0, f"期望 tokens_freed == 0, 得到 {tokens_freed}"
         print("  [PASS] 只有 system 消息时保留")
     except Exception as e:
         print(f"  [FAIL] {e}")

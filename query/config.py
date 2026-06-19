@@ -1,6 +1,6 @@
 """查询配置 — 循环级快照。
 
-参考原始 TypeScript 实现 src/query/config.ts。
+查询配置 — 循环级快照。
 
 QueryConfig 只保留每次 query 循环级别的快照字段，
 会话级别的配置（model、max_tokens、temperature、permission_mode、tools、

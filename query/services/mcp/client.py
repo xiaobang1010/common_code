@@ -1,4 +1,4 @@
-"""MCP 客户端 — 参考原始 client.ts。
+"""MCP 客户端。
 
 管理单个 MCP 服务器连接，支持 stdio 和 sse 两种 transport。
 实现 JSON-RPC 2.0 协议进行通信。

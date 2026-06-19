@@ -1,6 +1,5 @@
 """压缩提示词模块。
 
-参考原始 TypeScript 实现 src/services/compact/prompt.ts。
 提供压缩系统提示词和用户提示词模板。
 """
 

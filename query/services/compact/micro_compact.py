@@ -2,8 +2,6 @@
 
 当最后 assistant 消息时间与当前时间差超过阈值时触发，
 清空旧 tool_result 内容，保留最近 N 条 tool_result 不压缩。
-
-参考原始 TypeScript 实现 src/services/compact/microCompact.ts。
 """
 
 from __future__ import annotations

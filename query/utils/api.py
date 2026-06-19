@@ -1,4 +1,4 @@
-"""API 工具函数 — 参考原始 src/utils/api.ts。"""
+"""API 工具函数。"""
 
 from __future__ import annotations
 
