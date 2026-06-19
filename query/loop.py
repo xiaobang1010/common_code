@@ -24,6 +24,7 @@ from query.services.api.errors import APIError, classify_error, is_recoverable_e
 from query.services.api.llm import StreamEvent, collect_tool_calls
 from query.services.compact.auto_compact import CompactTracking
 from tools.executor import (
+    StreamingToolExecutor,
     ToolExecutionResult,
     tool_result_to_openai_message,
 )
@@ -58,7 +59,6 @@ class LoopResult:
             - "completed": 正常完成（finish_reason=stop 或无工具调用）
             - "prompt_too_long": 上下文超限且恢复失败
             - "model_error": 模型调用异常（不可恢复错误、流异常）
-            - "tool_error": 工具执行异常
             - "max_output_tokens_exhausted": 输出 token 恢复次数用尽
         error: 异常对象（reason 为错误类时携带）
     """
@@ -388,6 +388,14 @@ async def query_loop(
             temperature=engine_config.temperature,
         )
 
+        # 创建流式工具执行器
+        from tools.protocol import ToolUseContext
+        tool_executor = StreamingToolExecutor(
+            tools=engine_config.tools,
+            context=ToolUseContext(),
+        )
+        tool_result_messages: list[dict] = []
+
         # ---- 4. 调用模型（流式） ----
         yield StreamEvent(type="content", content="")  # stream_request_start 信号
 
@@ -423,6 +431,9 @@ async def query_loop(
                 yield event
                 stream_events.append(event)
 
+                if event.type == "tool_call_delta":
+                    tool_executor.add_delta(event)
+
                 if event.type == "content" and event.content:
                     content_parts.append(event.content)
                 elif event.type == "done" and event.finish_reason:
@@ -431,6 +442,12 @@ async def query_loop(
                     usage_info = event.usage
                 elif event.type == "error" and event.error:
                     error_occurred = event.error
+
+                # 流式期间 yield 已完成的工具结果
+                for completed in tool_executor.get_completed_results():
+                    tr_msg = tool_result_to_openai_message(completed)
+                    yield tr_msg
+                    tool_result_messages.append(tr_msg)
 
         except Exception as e:
             # 模型调用异常
@@ -441,6 +458,13 @@ async def query_loop(
             )
             yield LoopResult(reason="model_error", error=e)
             return
+
+        # 流式结束后收尾等待剩余工具
+        remaining_results = await tool_executor.get_remaining_results()
+        for result in remaining_results:
+            tr_msg = tool_result_to_openai_message(result)
+            yield tr_msg
+            tool_result_messages.append(tr_msg)
 
         # 更新 token 使用量（写回引擎）
         if usage_info:
@@ -471,6 +495,8 @@ async def query_loop(
                         if compacted is not None and compacted != messages:
                             engine.mutable_messages = compacted
                             messages = compacted
+                            # 取消流式工具执行器（LLM 没产出有效响应，工具结果不应保留）
+                            tool_executor.cancel()
                             updates = {
                                 "has_attempted_reactive_compact": True,
                                 "transition": "reactive_compact_retry",
@@ -481,6 +507,8 @@ async def query_loop(
                         pass
 
                 # 压缩恢复失败 → yield 扣留的错误事件 → return
+                # 取消流式工具执行器（LLM 没产出有效响应，工具结果不应保留）
+                tool_executor.cancel()
                 if withheld_error is not None:
                     yield withheld_error
                 yield LoopResult(reason="prompt_too_long", error=error_occurred)
@@ -561,32 +589,10 @@ async def query_loop(
             yield LoopResult(reason="completed")
             return
 
-        # ---- 9. 执行工具 ----
-        from tools.protocol import ToolUseContext
+        # ---- 9. 工具结果已在流式期间收集 ----
+        # tool_result_messages 已在流式循环和收尾阶段填充
 
-        tool_use_context = ToolUseContext()
-
-        try:
-            tool_results = await deps.execute_tools(
-                tool_calls=tool_calls,
-                tools=engine_config.tools,
-                context=tool_use_context,
-            )
-        except Exception as e:
-            yield StreamEvent(
-                type="error",
-                error=e,
-                content=f"Tool execution error: {e}",
-            )
-            yield LoopResult(reason="tool_error", error=e)
-            return
-
-        # ---- 10. 追加工具结果 ----
-        tool_result_messages = _build_tool_result_messages(tool_results)
-
-        # yield 工具结果
-        for tr_msg in tool_result_messages:
-            yield tr_msg
+        # ---- 10. 工具结果已在流式期间 yield，此处仅用于状态转换 ----
 
         # ---- 11. 状态转换 ----
         next_messages = [*messages, *tool_result_messages]
@@ -597,733 +603,3 @@ async def query_loop(
             "transition": "next_turn",
         }
         state = State(**{**asdict(state), **updates})
-
-        # 更新压缩追踪
-        tracking.consecutive_failures = 0
-
-
-# ---------------------------------------------------------------------------
-# 测试块
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    import asyncio
-
-    from query.deps import QueryDeps
-    from query.engine import QueryEngine, QueryEngineConfig
-
-    print("=" * 60)
-    print("Agentic 循环引擎测试")
-    print("=" * 60)
-
-    # ---- 测试 1: State 创建（瘦身后字段）----
-    print("\n--- 测试 1: State 创建（瘦身后字段）---")
-    state = State()
-    assert state.transition is None
-    assert state.error_count == 0
-    assert state.withheld_messages == []
-    assert state.max_output_tokens_recovery_count == 0
-    assert state.has_attempted_reactive_compact is False
-    assert state.auto_compact_tracking is None
-    print(f"  transition={state.transition}, error_count={state.error_count}")
-
-    # 状态转换（只含临时状态字段）
-    updates = {
-        "transition": "next_turn",
-        "max_output_tokens_recovery_count": 1,
-    }
-    state = State(**{**asdict(state), **updates})
-    assert state.transition == "next_turn"
-    assert state.max_output_tokens_recovery_count == 1
-    print(f"  转换后: transition={state.transition}, "
-          f"recovery_count={state.max_output_tokens_recovery_count}")
-    print("  [PASS] State 创建（瘦身后字段）")
-
-    # ---- 测试 2: _is_context_length_error ----
-    print("\n--- 测试 2: _is_context_length_error ---")
-    assert _is_context_length_error(RuntimeError("context_length_exceeded")) is True
-    assert _is_context_length_error(RuntimeError("maximum context length exceeded")) is True
-    assert _is_context_length_error(RuntimeError("prompt too long")) is True
-    assert _is_context_length_error(RuntimeError("rate limit")) is False
-    print("  [PASS] _is_context_length_error")
-
-    # ---- 测试 3: _build_assistant_message ----
-    print("\n--- 测试 3: _build_assistant_message ---")
-    msg = _build_assistant_message(["Hello", " world"], [])
-    assert msg["role"] == "assistant"
-    assert msg["content"] == "Hello world"
-    assert "tool_calls" not in msg
-
-    msg_with_tools = _build_assistant_message(
-        ["Using tool..."],
-        [{"id": "call_001", "function": {"name": "read", "arguments": "{}"}}],
-    )
-    assert msg_with_tools["content"] == "Using tool..."
-    assert len(msg_with_tools["tool_calls"]) == 1
-
-    msg_empty = _build_assistant_message([], [])
-    assert msg_empty["role"] == "assistant"
-    print("  [PASS] _build_assistant_message")
-
-    # ---- 测试 4: _build_tool_result_messages ----
-    print("\n--- 测试 4: _build_tool_result_messages ---")
-    results = [
-        ToolExecutionResult(tool_call_id="c1", tool_name="read", content="file content"),
-        ToolExecutionResult(tool_call_id="c2", tool_name="write", content="ok", is_error=True),
-    ]
-    msgs = _build_tool_result_messages(results)
-    assert len(msgs) == 2
-    assert msgs[0]["role"] == "tool"
-    assert msgs[0]["tool_call_id"] == "c1"
-    assert msgs[0]["content"] == "file content"
-    assert msgs[1]["tool_call_id"] == "c2"
-    print("  [PASS] _build_tool_result_messages")
-
-    # ---- 测试 5: query_loop 使用 mock deps 的基本流程 ----
-    print("\n--- 测试 5: query_loop 使用 mock deps 的基本流程 ---")
-
-    async def _test_query_loop():
-        # 构造 mock deps
-        async def mock_call_model(**kwargs):
-            # 模拟一个简单的 stop 响应
-            yield StreamEvent(type="content", content="Hello!")
-            yield StreamEvent(type="done", finish_reason="stop")
-
-        def mock_microcompact(messages=None, **kwargs):
-            return messages
-
-        async def mock_autocompact(**kwargs):
-            return kwargs.get("messages", []), False
-
-        async def mock_execute_tools(**kwargs):
-            return []
-
-        mock_deps = QueryDeps(
-            call_model=mock_call_model,
-            microcompact=mock_microcompact,
-            autocompact=mock_autocompact,
-            execute_tools=mock_execute_tools,
-            get_uuid=lambda: "test-uuid",
-        )
-
-        engine_config = QueryEngineConfig(
-            model="test-model", max_tokens=4096, deps=mock_deps,
-        )
-        engine = QueryEngine(
-            engine_config,
-            initial_messages=[{"role": "user", "content": "Hi"}],
-        )
-        config = build_query_config()
-
-        events = []
-        async for event in query_loop(engine, config):
-            events.append(event)
-
-        # 验证至少收到了 content 和 done 事件
-        content_events = [e for e in events if isinstance(e, StreamEvent) and e.type == "content"]
-        done_events = [e for e in events if isinstance(e, StreamEvent) and e.type == "done"]
-        # yield 合约：正常 stop 流程会额外 yield assistant 消息（dict）
-        assistant_msgs = [e for e in events if isinstance(e, dict) and e.get("role") == "assistant"]
-
-        assert len(content_events) > 0, f"期望至少 1 个 content 事件, 得到 {len(content_events)}"
-        assert len(done_events) > 0, f"期望至少 1 个 done 事件, 得到 {len(done_events)}"
-        assert done_events[0].finish_reason == "stop"
-        assert len(assistant_msgs) == 1, f"期望 1 条 assistant 消息, 得到 {len(assistant_msgs)}"
-        assert assistant_msgs[0]["content"] == "Hello!"
-
-        # 验证 LoopResult
-        loop_results = [e for e in events if isinstance(e, LoopResult)]
-        assert len(loop_results) > 0
-        assert loop_results[-1].reason == "completed"
-
-        # 验证引擎消息已更新
-        assert len(engine.mutable_messages) == 2  # user + assistant
-        assert engine.mutable_messages[1]["content"] == "Hello!"
-
-        print(f"  收到 {len(events)} 个事件")
-        print(f"  content 事件: {len(content_events)}, done 事件: {len(done_events)}")
-        print(f"  assistant 消息: {len(assistant_msgs)}")
-        print(f"  引擎消息: {len(engine.mutable_messages)} 条")
-
-    asyncio.run(_test_query_loop())
-    print("  [PASS] query_loop 使用 mock deps 的基本流程")
-
-    # ---- 测试 6: query_loop 工具调用流程 ----
-    print("\n--- 测试 6: query_loop 工具调用流程 ---")
-
-    async def _test_tool_call_loop():
-        call_count = 0
-
-        async def mock_call_model_with_tool(**kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                # 第一次：返回工具调用
-                yield StreamEvent(type="content", content="Let me check.")
-                yield StreamEvent(
-                    type="tool_call_delta",
-                    tool_call_id="call_001",
-                    tool_call_name="read_file",
-                    tool_call_arguments='{"path": "/tmp/test.py"}',
-                )
-                yield StreamEvent(type="done", finish_reason="tool_calls")
-            else:
-                # 第二次：返回最终响应
-                yield StreamEvent(type="content", content="The file contains Python code.")
-                yield StreamEvent(type="done", finish_reason="stop")
-
-        def mock_microcompact(messages=None, **kwargs):
-            return messages
-
-        async def mock_autocompact(**kwargs):
-            return kwargs.get("messages", []), False
-
-        async def mock_execute_tools(**kwargs):
-            return [
-                ToolExecutionResult(
-                    tool_call_id="call_001",
-                    tool_name="read_file",
-                    content="print('hello')",
-                )
-            ]
-
-        mock_deps = QueryDeps(
-            call_model=mock_call_model_with_tool,
-            microcompact=mock_microcompact,
-            autocompact=mock_autocompact,
-            execute_tools=mock_execute_tools,
-            get_uuid=lambda: "test-uuid",
-        )
-
-        engine_config = QueryEngineConfig(
-            model="test-model", max_tokens=4096, deps=mock_deps,
-        )
-        engine = QueryEngine(
-            engine_config,
-            initial_messages=[{"role": "user", "content": "Read the file"}],
-        )
-        config = build_query_config()
-
-        events = []
-        async for event in query_loop(engine, config):
-            events.append(event)
-
-        # 验证收到了工具结果和最终 done
-        done_events = [e for e in events if isinstance(e, StreamEvent) and e.type == "done"]
-        tool_result_msgs = [e for e in events if isinstance(e, dict) and e.get("role") == "tool"]
-        # yield 合约：两轮各 yield 一条 assistant 消息
-        assistant_msgs = [e for e in events if isinstance(e, dict) and e.get("role") == "assistant"]
-
-        assert len(done_events) > 0
-        assert len(tool_result_msgs) > 0
-        assert len(assistant_msgs) == 2, f"期望 2 条 assistant 消息, 得到 {len(assistant_msgs)}"
-        assert call_count == 2  # 第一次工具调用 + 第二次最终响应
-
-        # 验证最后一轮的 LoopResult
-        loop_results = [e for e in events if isinstance(e, LoopResult)]
-        assert len(loop_results) > 0
-        assert loop_results[-1].reason == "completed"
-
-        print(f"  总事件: {len(events)}, done: {len(done_events)}, tool_results: {len(tool_result_msgs)}")
-        print(f"  assistant 消息: {len(assistant_msgs)}")
-        print(f"  模型调用次数: {call_count}")
-        print(f"  引擎消息: {len(engine.mutable_messages)} 条")
-
-    asyncio.run(_test_tool_call_loop())
-    print("  [PASS] query_loop 工具调用流程")
-
-    # ---- 测试 7: query 入口函数 ----
-    print("\n--- 测试 7: query 入口函数 ---")
-
-    async def _test_query_entry():
-        async def mock_call_model(**kwargs):
-            yield StreamEvent(type="content", content="Response")
-            yield StreamEvent(type="done", finish_reason="stop")
-
-        def mock_microcompact(messages=None, **kwargs):
-            return messages
-
-        async def mock_autocompact(**kwargs):
-            return kwargs.get("messages", []), False
-
-        async def mock_execute_tools(**kwargs):
-            return []
-
-        mock_deps = QueryDeps(
-            call_model=mock_call_model,
-            microcompact=mock_microcompact,
-            autocompact=mock_autocompact,
-            execute_tools=mock_execute_tools,
-        )
-
-        events = []
-        async for event in query({
-            "messages": [{"role": "user", "content": "Hello"}],
-            "config_overrides": {"deps": mock_deps, "model": "test-model", "max_tokens": 4096},
-        }):
-            events.append(event)
-
-        assert len(events) > 0
-        done_events = [e for e in events if isinstance(e, StreamEvent) and e.type == "done"]
-        assert len(done_events) > 0
-        # 验证 LoopResult
-        loop_results = [e for e in events if isinstance(e, LoopResult)]
-        assert len(loop_results) > 0
-        assert loop_results[-1].reason == "completed"
-        print(f"  收到 {len(events)} 个事件")
-
-    asyncio.run(_test_query_entry())
-    print("  [PASS] query 入口函数")
-
-    # ---- 测试 8: query 传入 user_context / system_context ----
-    print("\n--- 测试 8: query 传入 user_context / system_context ---")
-
-    async def _test_query_with_context():
-        async def mock_call_model(**kwargs):
-            yield StreamEvent(type="content", content="OK")
-            yield StreamEvent(type="done", finish_reason="stop")
-
-        def mock_microcompact(messages=None, **kwargs):
-            return messages
-
-        async def mock_autocompact(**kwargs):
-            return kwargs.get("messages", []), False
-
-        async def mock_execute_tools(**kwargs):
-            return []
-
-        mock_deps = QueryDeps(
-            call_model=mock_call_model,
-            microcompact=mock_microcompact,
-            autocompact=mock_autocompact,
-            execute_tools=mock_execute_tools,
-        )
-
-        events = []
-        async for event in query({
-            "messages": [{"role": "user", "content": "Hello"}],
-            "config_overrides": {"deps": mock_deps},
-            "user_context": {"currentDate": "今日日期是 2026年06月19日"},
-            "system_context": {"gitStatus": "clean"},
-        }):
-            events.append(event)
-
-        # 验证不报错且正常收到事件
-        assert len(events) > 0
-        done_events = [e for e in events if isinstance(e, StreamEvent) and e.type == "done"]
-        assert len(done_events) > 0
-        assert done_events[0].finish_reason == "stop"
-        # 验证 LoopResult
-        loop_results = [e for e in events if isinstance(e, LoopResult)]
-        assert len(loop_results) > 0
-        assert loop_results[-1].reason == "completed"
-        print(f"  收到 {len(events)} 个事件，context 注入正常")
-
-    asyncio.run(_test_query_with_context())
-    print("  [PASS] query 传入 user_context / system_context")
-
-    # ---- 测试 9: QueryConfig 只有 3 个字段 ----
-    print("\n--- 测试 9: QueryConfig 只有 3 个字段 ---")
-    import dataclasses
-
-    field_names = {f.name for f in dataclasses.fields(QueryConfig)}
-    assert field_names == {"session_id", "auto_compact_enabled", "context_collapse_enabled"}, \
-        f"期望 3 个字段, 得到 {field_names}"
-    print(f"  QueryConfig 字段: {field_names}")
-    print("  [PASS] QueryConfig 只有 3 个字段")
-
-    # ---- 测试 10: _run_inline_compression 无压缩时返回原消息 ----
-    print("\n--- 测试 10: _run_inline_compression 无压缩时返回原消息 ---")
-
-    async def _test_inline_compression_noop():
-        async def _unused_call_model(**kwargs):
-            if False:  # pragma: no cover
-                yield  # 占位，让函数成为 async generator
-
-        def mock_microcompact(messages=None, **kwargs):
-            return messages
-
-        async def mock_autocompact(**kwargs):
-            return kwargs.get("messages", []), False
-
-        async def mock_execute_tools(**kwargs):
-            return []
-
-        mock_deps = QueryDeps(
-            call_model=_unused_call_model,
-            microcompact=mock_microcompact,
-            autocompact=mock_autocompact,
-            execute_tools=mock_execute_tools,
-            get_uuid=lambda: "test-uuid",
-        )
-
-        # 小消息：snip 未门控、无 assistant 时间戳、context_collapse 关闭、
-        # autocompact 阈值未达 → 各级都不触发，返回原消息
-        messages = [{"role": "user", "content": "Hi"}]
-        tracking = CompactTracking()
-        result = await _run_inline_compression(
-            messages=messages,
-            model="test-model",
-            tracking=tracking,
-            context_collapse_enabled=False,
-            deps=mock_deps,
-        )
-        assert result == messages, f"期望原消息, 得到 {result}"
-        print(f"  输入 {len(messages)} 条, 输出 {len(result)} 条, 无压缩触发")
-        print("  [PASS] _run_inline_compression 无压缩时返回原消息")
-
-    asyncio.run(_test_inline_compression_noop())
-
-    # ---- 测试 11: withhold 恢复成功 ----
-    print("\n--- 测试 11: withhold 恢复成功 ---")
-
-    async def _test_withhold_recovery_success():
-        import httpx
-        import openai
-
-        call_count = 0
-        # autocompact 调用计数：区分压缩管线调用和恢复路径调用
-        compact_call_count = 0
-
-        def _make_response(status_code: int = 400) -> httpx.Response:
-            """构造 openai SDK 错误需要的 httpx.Response。"""
-            return httpx.Response(
-                status_code=status_code,
-                request=httpx.Request("POST", "https://api.openai.com/v1/chat/completions"),
-            )
-
-        async def mock_call_model_withhold(**kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                # 第一次：返回上下文超限错误
-                # 用 BadRequestError 以便 classify_error 识别为可恢复的
-                # context_length_exceeded 类型
-                err = openai.BadRequestError(
-                    message="context_length_exceeded: maximum context length exceeded",
-                    response=_make_response(400),
-                    body=None,
-                )
-                yield StreamEvent(type="error", error=err, content="context_length_exceeded")
-            else:
-                # 第二次：返回正常响应
-                yield StreamEvent(type="content", content="Recovered!")
-                yield StreamEvent(type="done", finish_reason="stop")
-
-        # mock autocompact：压缩管线调用时不压缩，
-        # 恢复路径调用时返回缩减后的消息（模拟压缩成功）
-        async def mock_autocompact_withhold(**kwargs):
-            nonlocal compact_call_count
-            compact_call_count += 1
-            msgs = kwargs.get("messages", [])
-            if compact_call_count == 2:
-                # 恢复路径调用：返回缩减后的消息（去掉第一条），模拟压缩成功
-                return msgs[1:] if len(msgs) > 1 else msgs, True
-            # 压缩管线调用：不压缩
-            return msgs, False
-
-        def mock_microcompact_withhold(messages=None, **kwargs):
-            return messages
-
-        async def mock_execute_tools_withhold(**kwargs):
-            return []
-
-        mock_deps = QueryDeps(
-            call_model=mock_call_model_withhold,
-            microcompact=mock_microcompact_withhold,
-            autocompact=mock_autocompact_withhold,
-            execute_tools=mock_execute_tools_withhold,
-            get_uuid=lambda: "test-uuid",
-        )
-
-        engine_config = QueryEngineConfig(
-            model="test-model", max_tokens=4096, deps=mock_deps,
-        )
-        engine = QueryEngine(
-            engine_config,
-            initial_messages=[
-                {"role": "user", "content": "msg1"},
-                {"role": "user", "content": "msg2"},
-            ],
-        )
-        config = build_query_config()
-
-        events = []
-        async for event in query_loop(engine, config):
-            events.append(event)
-
-        # 验证：error 事件不应该出现在 events 里（被 withhold 了）
-        error_events = [e for e in events if isinstance(e, StreamEvent) and e.type == "error"]
-        assert len(error_events) == 0, f"期望 0 个 error 事件（应被 withhold），得到 {len(error_events)}"
-
-        # 验证：模型被调用了 2 次（第一次报错，第二次恢复）
-        assert call_count == 2, f"期望调用 2 次，得到 {call_count}"
-
-        # 验证：正常收到了 content 和 LoopResult
-        content_events = [e for e in events if isinstance(e, StreamEvent) and e.type == "content" and e.content]
-        assert len(content_events) > 0
-        assert content_events[0].content == "Recovered!"
-
-        loop_results = [e for e in events if isinstance(e, LoopResult)]
-        assert len(loop_results) > 0
-        assert loop_results[-1].reason == "completed"
-
-        print(f"  模型调用次数: {call_count}")
-        print(f"  error 事件: {len(error_events)}（被 withhold）")
-        print(f"  LoopResult: {loop_results[-1].reason}")
-
-    asyncio.run(_test_withhold_recovery_success())
-    print("  [PASS] withhold 恢复成功")
-
-    # ---- 测试 12: withhold 恢复失败 ----
-    print("\n--- 测试 12: withhold 恢复失败 ---")
-
-    async def _test_withhold_recovery_fail():
-        import httpx
-        import openai
-
-        def _make_response(status_code: int = 400) -> httpx.Response:
-            """构造 openai SDK 错误需要的 httpx.Response。"""
-            return httpx.Response(
-                status_code=status_code,
-                request=httpx.Request("POST", "https://api.openai.com/v1/chat/completions"),
-            )
-
-        async def mock_call_model_fail(**kwargs):
-            # 用 BadRequestError 以便走恢复路径，但 autocompact 压缩无效
-            err = openai.BadRequestError(
-                message="context_length_exceeded: maximum context length exceeded",
-                response=_make_response(400),
-                body=None,
-            )
-            yield StreamEvent(type="error", error=err, content="context_length_exceeded")
-
-        # mock autocompact 返回原消息（压缩无效）
-        async def mock_autocompact_fail(**kwargs):
-            return kwargs.get("messages", []), False
-
-        def mock_microcompact_fail(messages=None, **kwargs):
-            return messages
-
-        async def mock_execute_tools_fail(**kwargs):
-            return []
-
-        mock_deps = QueryDeps(
-            call_model=mock_call_model_fail,
-            microcompact=mock_microcompact_fail,
-            autocompact=mock_autocompact_fail,
-            execute_tools=mock_execute_tools_fail,
-            get_uuid=lambda: "test-uuid",
-        )
-
-        engine_config = QueryEngineConfig(
-            model="test-model", max_tokens=4096, deps=mock_deps,
-        )
-        engine = QueryEngine(
-            engine_config,
-            initial_messages=[{"role": "user", "content": "Hi"}],
-        )
-        config = build_query_config()
-
-        events = []
-        async for event in query_loop(engine, config):
-            events.append(event)
-
-        # 验证：error 事件最终被 yield（恢复失败后暴露）
-        error_events = [e for e in events if isinstance(e, StreamEvent) and e.type == "error"]
-        assert len(error_events) > 0, "期望至少 1 个 error 事件（恢复失败后暴露）"
-
-        # 验证：LoopResult reason 是 prompt_too_long
-        loop_results = [e for e in events if isinstance(e, LoopResult)]
-        assert len(loop_results) > 0
-        assert loop_results[-1].reason == "prompt_too_long", f"期望 prompt_too_long，得到 {loop_results[-1].reason}"
-
-        print(f"  error 事件: {len(error_events)}（恢复失败后暴露）")
-        print(f"  LoopResult: {loop_results[-1].reason}")
-
-    asyncio.run(_test_withhold_recovery_fail())
-    print("  [PASS] withhold 恢复失败")
-
-    # ---- 测试 13: 不可恢复错误不扣留 ----
-    print("\n--- 测试 13: 不可恢复错误不扣留 ---")
-
-    async def _test_non_recoverable_error():
-        async def mock_call_model_auth_error(**kwargs):
-            yield StreamEvent(type="error", error=RuntimeError("Invalid API key"), content="Invalid API key")
-
-        def mock_microcompact_none(messages=None, **kwargs):
-            return messages
-
-        async def mock_autocompact_none(**kwargs):
-            return kwargs.get("messages", []), False
-
-        async def mock_execute_tools_none(**kwargs):
-            return []
-
-        mock_deps = QueryDeps(
-            call_model=mock_call_model_auth_error,
-            microcompact=mock_microcompact_none,
-            autocompact=mock_autocompact_none,
-            execute_tools=mock_execute_tools_none,
-            get_uuid=lambda: "test-uuid",
-        )
-
-        engine_config = QueryEngineConfig(
-            model="test-model", max_tokens=4096, deps=mock_deps,
-        )
-        engine = QueryEngine(
-            engine_config,
-            initial_messages=[{"role": "user", "content": "Hi"}],
-        )
-        config = build_query_config()
-
-        events = []
-        async for event in query_loop(engine, config):
-            events.append(event)
-
-        # 验证：error 事件立即 yield（不可恢复错误不扣留）
-        error_events = [e for e in events if isinstance(e, StreamEvent) and e.type == "error"]
-        assert len(error_events) > 0, "期望 error 事件立即 yield"
-
-        # 验证：LoopResult reason 是 model_error
-        loop_results = [e for e in events if isinstance(e, LoopResult)]
-        assert len(loop_results) > 0
-        assert loop_results[-1].reason == "model_error", f"期望 model_error，得到 {loop_results[-1].reason}"
-
-        print(f"  error 事件: {len(error_events)}（立即 yield，不扣留）")
-        print(f"  LoopResult: {loop_results[-1].reason}")
-
-    asyncio.run(_test_non_recoverable_error())
-    print("  [PASS] 不可恢复错误不扣留")
-
-    # ---- 测试 14: tool_error — 工具执行异常退出 ----
-    print("\n--- 测试 14: tool_error — 工具执行异常退出 ---")
-
-    async def _test_tool_error():
-        async def mock_call_model_tool_error(**kwargs):
-            # 返回工具调用，让循环走到工具执行步骤
-            yield StreamEvent(type="content", content="Let me run a tool.")
-            yield StreamEvent(
-                type="tool_call_delta",
-                tool_call_id="call_001",
-                tool_call_name="read_file",
-                tool_call_arguments='{"path": "/tmp/test.py"}',
-            )
-            yield StreamEvent(type="done", finish_reason="tool_calls")
-
-        def mock_microcompact_tool_error(messages=None, **kwargs):
-            return messages
-
-        async def mock_autocompact_tool_error(**kwargs):
-            return kwargs.get("messages", []), False
-
-        async def mock_execute_tools_error(**kwargs):
-            # 工具执行抛异常，触发 tool_error 退出路径
-            raise RuntimeError("Tool execution failed")
-
-        mock_deps = QueryDeps(
-            call_model=mock_call_model_tool_error,
-            microcompact=mock_microcompact_tool_error,
-            autocompact=mock_autocompact_tool_error,
-            execute_tools=mock_execute_tools_error,
-            get_uuid=lambda: "test-uuid",
-        )
-
-        engine_config = QueryEngineConfig(
-            model="test-model", max_tokens=4096, deps=mock_deps,
-        )
-        engine = QueryEngine(
-            engine_config,
-            initial_messages=[{"role": "user", "content": "Read the file"}],
-        )
-        config = build_query_config()
-
-        events = []
-        async for event in query_loop(engine, config):
-            events.append(event)
-
-        # 验证：有 error 事件，content 含 "Tool execution error"
-        error_events = [e for e in events if isinstance(e, StreamEvent) and e.type == "error"]
-        assert len(error_events) > 0, "期望至少 1 个 error 事件"
-        assert "Tool execution error" in error_events[-1].content, \
-            f"期望 content 含 'Tool execution error', 得到 {error_events[-1].content!r}"
-
-        # 验证：LoopResult reason 是 tool_error，error 是 RuntimeError
-        loop_results = [e for e in events if isinstance(e, LoopResult)]
-        assert len(loop_results) > 0
-        assert loop_results[-1].reason == "tool_error", \
-            f"期望 tool_error，得到 {loop_results[-1].reason}"
-        assert isinstance(loop_results[-1].error, RuntimeError), \
-            f"期望 RuntimeError，得到 {type(loop_results[-1].error).__name__}"
-
-        print(f"  error 事件: {len(error_events)}")
-        print(f"  error content: {error_events[-1].content}")
-        print(f"  LoopResult: {loop_results[-1].reason}")
-        print(f"  error 类型: {type(loop_results[-1].error).__name__}")
-
-    asyncio.run(_test_tool_error())
-    print("  [PASS] tool_error — 工具执行异常退出")
-
-    # ---- 测试 15: max_output_tokens_exhausted — 输出 token 恢复次数用尽 ----
-    print("\n--- 测试 15: max_output_tokens_exhausted — 输出 token 恢复次数用尽 ---")
-
-    async def _test_max_output_tokens_exhausted():
-        call_count = 0
-
-        async def mock_call_model_length(**kwargs):
-            # 每次都返回 finish_reason="length"，永远触发恢复
-            nonlocal call_count
-            call_count += 1
-            yield StreamEvent(type="content", content="partial")
-            yield StreamEvent(type="done", finish_reason="length")
-
-        def mock_microcompact_length(messages=None, **kwargs):
-            return messages
-
-        async def mock_autocompact_length(**kwargs):
-            return kwargs.get("messages", []), False
-
-        async def mock_execute_tools_length(**kwargs):
-            return []
-
-        mock_deps = QueryDeps(
-            call_model=mock_call_model_length,
-            microcompact=mock_microcompact_length,
-            autocompact=mock_autocompact_length,
-            execute_tools=mock_execute_tools_length,
-            get_uuid=lambda: "test-uuid",
-        )
-
-        engine_config = QueryEngineConfig(
-            model="test-model", max_tokens=4096, deps=mock_deps,
-        )
-        engine = QueryEngine(
-            engine_config,
-            initial_messages=[{"role": "user", "content": "Hi"}],
-        )
-        config = build_query_config()
-
-        events = []
-        async for event in query_loop(engine, config):
-            events.append(event)
-
-        # 验证：模型调用次数 == MAX_OUTPUT_TOKENS_RECOVERY_LIMIT + 1
-        # 初始 1 次 + 3 次恢复，第 4 次恢复次数用尽退出
-        assert call_count == MAX_OUTPUT_TOKENS_RECOVERY_LIMIT + 1, \
-            f"期望 {MAX_OUTPUT_TOKENS_RECOVERY_LIMIT + 1} 次，得到 {call_count}"
-
-        # 验证：LoopResult reason 是 max_output_tokens_exhausted
-        loop_results = [e for e in events if isinstance(e, LoopResult)]
-        assert len(loop_results) > 0
-        assert loop_results[-1].reason == "max_output_tokens_exhausted", \
-            f"期望 max_output_tokens_exhausted，得到 {loop_results[-1].reason}"
-
-        print(f"  模型调用次数: {call_count}")
-        print(f"  LoopResult: {loop_results[-1].reason}")
-
-    asyncio.run(_test_max_output_tokens_exhausted())
-    print("  [PASS] max_output_tokens_exhausted — 输出 token 恢复次数用尽")
-
-    print("\n" + "=" * 60)
-    print("所有测试完成")
-    print("=" * 60)

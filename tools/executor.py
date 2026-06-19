@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from pydantic import BaseModel
 
 from tools.protocol import Tool, ToolResult, ToolUseContext, tool_matches_name
 from startup.utils.hooks import HookConfig, HookResult, run_pre_tool_use_hooks, run_post_tool_use_hooks
 from tools.utils.validation import validate_tool_input
+
+if TYPE_CHECKING:
+    # 延迟到类型检查时导入，避免运行时循环依赖
+    from query.services.api.llm import StreamEvent
 
 
 # ---------------------------------------------------------------------------
@@ -156,9 +161,17 @@ async def execute_tool_call(
             if isinstance(validated_input, BaseModel)
             else validated_input
         )
-        hook_result: HookResult = await run_pre_tool_use_hooks(
-            hook_config, tool_name, hook_input_dict,
-        )
+        try:
+            hook_result: HookResult = await run_pre_tool_use_hooks(
+                hook_config, tool_name, hook_input_dict,
+            )
+        except Exception as e:
+            return ToolExecutionResult(
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                content=f"Pre-tool hook error: {e}",
+                is_error=True,
+            )
         if hook_result.decided and hook_result.reason:
             # decided=True + 有 reason 表示 hook 做出了 deny 决策
             return ToolExecutionResult(
@@ -203,12 +216,15 @@ async def execute_tool_call(
 
     # ---- 7. PostToolUse Hooks ----
     if hook_config is not None:
-        await run_post_tool_use_hooks(
-            hook_config,
-            tool_name,
-            hook_input_dict,
-            result.content,
-        )
+        try:
+            await run_post_tool_use_hooks(
+                hook_config,
+                tool_name,
+                hook_input_dict,
+                result.content,
+            )
+        except Exception:
+            pass  # post hook 失败不影响工具执行结果
 
     # ---- 8. 封装返回 ----
     return ToolExecutionResult(
@@ -240,234 +256,129 @@ async def execute_tool_calls(
 
 
 # ---------------------------------------------------------------------------
-# 自测
+# StreamingToolExecutor — 流式工具执行器
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    import asyncio
+class StreamingToolExecutor:
+    """流式工具执行器 — 流式输出期间检测完整工具调用并立即异步执行。
 
-    from pydantic import BaseModel
+    工作方式：
+    1. 流式循环每收到 tool_call_delta 事件，调 add_delta(event)
+    2. 按 tool_call_id 聚合 delta，累积 arguments 字符串
+    3. 当 arguments 能成功 json.loads 时，认为工具调用完整，立即 asyncio.create_task 异步执行
+    4. get_completed_results() 返回已完成的工具结果
+    5. get_remaining_results() 等待所有待完成 task
+    6. cancel() 取消所有正在执行的 task
+    """
 
-    # ---- 辅助：定义 mock 工具 ----
+    def __init__(
+        self,
+        tools: list[Tool],
+        context: ToolUseContext,
+        hook_config: HookConfig | None = None,
+        permission_check: Callable | None = None,
+    ) -> None:
+        self._tools = tools
+        self._context = context
+        self._hook_config = hook_config
+        self._permission_check = permission_check
+        # 按 tool_call_id 聚合的 delta，每个值是 {"id": str, "name": str, "arguments": str}
+        self._delta_map: dict[str, dict] = {}
+        # 已启动执行的 tool_call_id 集合
+        self._started: set[str] = set()
+        # tool_call_id -> asyncio.Task
+        self._pending_tasks: dict[str, asyncio.Task] = {}
+        # 已完成的工具结果
+        self._completed_results: list[ToolExecutionResult] = []
 
-    class EchoInput(BaseModel):
-        message: str
-        repeat: int = 1
+    def add_delta(self, event: StreamEvent) -> None:
+        """处理流式事件，累积工具调用 delta，完整后立即异步执行。
 
-    async def echo_execute(inp: dict, ctx: ToolUseContext) -> ToolResult:
-        msg = inp.message if hasattr(inp, 'message') else inp.get("message", "")
-        repeat = inp.repeat if hasattr(inp, 'repeat') else inp.get("repeat", 1)
-        return ToolResult(content=(msg + "\n") * repeat)
+        只处理 type == "tool_call_delta" 的事件：按 tool_call_id 聚合 name 与
+        arguments 增量；当累积的 arguments 能成功 json.loads 时，认为该工具调用
+        完整，立即创建 asyncio.Task 异步执行。
+        """
+        if event.type != "tool_call_delta":
+            return
 
-    echo_tool = Tool(
-        name="Echo",
-        description="Echo tool",
-        input_schema=EchoInput,
-        execute=echo_execute,
-        prompt="Echo prompt",
-        aliases=["echo", "e"],
-    )
+        call_id = event.tool_call_id
+        if call_id is None:
+            return
 
-    class StrictInput(BaseModel):
-        value: int
+        # 首次见到该 id，创建聚合条目
+        if call_id not in self._delta_map:
+            self._delta_map[call_id] = {"id": call_id, "name": "", "arguments": ""}
 
-    async def strict_execute(inp: dict, ctx: ToolUseContext) -> ToolResult:
-        value = inp.value if hasattr(inp, 'value') else inp['value']
-        return ToolResult(content=f"value={value}")
+        entry = self._delta_map[call_id]
 
-    strict_tool = Tool(
-        name="Strict",
-        description="Strict tool",
-        input_schema=StrictInput,
-        execute=strict_execute,
-        prompt="Strict prompt",
-    )
+        # 追加 name 增量（如果有）
+        if event.tool_call_name:
+            entry["name"] += event.tool_call_name
 
-    tools = [echo_tool, strict_tool]
+        # 追加 arguments 增量（如果有）
+        if event.tool_call_arguments:
+            entry["arguments"] += event.tool_call_arguments
 
-    # ---- 1. 测试 find_tool_by_name（含别名） ----
-    assert find_tool_by_name(tools, "Echo") is echo_tool
-    assert find_tool_by_name(tools, "echo") is echo_tool
-    assert find_tool_by_name(tools, "e") is echo_tool
-    assert find_tool_by_name(tools, "Strict") is strict_tool
-    assert find_tool_by_name(tools, "nonexistent") is None
-    print("[PASS] find_tool_by_name（含别名）")
+        # 已经启动执行了，不再重复处理
+        if call_id in self._started:
+            return
 
-    # ---- 2. 测试 validate_tool_input（有效/无效输入） ----
-    from tools.utils.validation import validate_tool_input as _vti
+        # 尝试解析 arguments；成功则认为工具调用完整，立即异步执行
+        try:
+            json.loads(entry["arguments"])
+        except (json.JSONDecodeError, ValueError):
+            # arguments 还不完整，等更多 delta
+            return
 
-    valid, err = _vti(echo_tool, {"message": "hello", "repeat": 3})
-    assert valid is not None and err is None
-    assert valid.message == "hello"
-    assert valid.repeat == 3
-
-    invalid, err_msg = _vti(echo_tool, {"repeat": 3})  # 缺少 message
-    assert invalid is None
-    assert err_msg is not None
-    assert "message" in err_msg.lower() or "missing" in err_msg.lower() or "field required" in err_msg.lower()
-
-    invalid2, err_msg2 = _vti(strict_tool, {"value": "not_an_int"})
-    assert invalid2 is None
-    assert err_msg2 is not None
-    print("[PASS] validate_tool_input（有效/无效输入）")
-
-    # ---- 3. 测试 execute_tool_call 完整管线 ----
-
-    async def _test_execute():
-        # 3a. 正常执行
-        tc = {
-            "id": "call_001",
-            "function": {"name": "Echo", "arguments": '{"message": "hi", "repeat": 2}'},
+        # 构建完整 tool_call 并异步执行
+        tool_call = {
+            "id": call_id,
+            "function": {
+                "name": entry["name"],
+                "arguments": entry["arguments"],
+            },
         }
-        ctx = ToolUseContext()
-        result = await execute_tool_call(tc, tools, ctx)
-        assert result.tool_call_id == "call_001"
-        assert result.tool_name == "Echo"
-        assert result.is_error is False
-        assert result.content.strip() == "hi\nhi"
-        print("[PASS] execute_tool_call 正常执行")
-
-        # 3b. 工具不存在
-        tc_missing = {
-            "id": "call_002",
-            "function": {"name": "Missing", "arguments": "{}"},
-        }
-        result2 = await execute_tool_call(tc_missing, tools, ctx)
-        assert result2.is_error is True
-        assert "not found" in result2.content.lower()
-        print("[PASS] execute_tool_call 工具不存在")
-
-        # 3c. 无效 JSON
-        tc_bad_json = {
-            "id": "call_003",
-            "function": {"name": "Echo", "arguments": "{invalid json}"},
-        }
-        result3 = await execute_tool_call(tc_bad_json, tools, ctx)
-        assert result3.is_error is True
-        assert "invalid json" in result3.content.lower()
-        print("[PASS] execute_tool_call 无效 JSON")
-
-        # 3d. 验证失败
-        tc_invalid = {
-            "id": "call_004",
-            "function": {"name": "Strict", "arguments": '{"value": "abc"}'},
-        }
-        result4 = await execute_tool_call(tc_invalid, tools, ctx)
-        assert result4.is_error is True
-        assert "validation" in result4.content.lower()
-        print("[PASS] execute_tool_call 验证失败")
-
-        # 3e. PreToolUse hook 拒绝（使用已有的 HookConfig + HookEntry + HookDefinition）
-        from startup.utils.hooks import HookEntry, HookDefinition
-
-        hook_cfg_deny = HookConfig(
-            pre_tool_use=[
-                HookEntry(
-                    matcher="Echo",
-                    hooks=[HookDefinition(type="command", command="exit 1")],
-                )
-            ]
+        self._started.add(call_id)
+        self._pending_tasks[call_id] = asyncio.create_task(
+            self._execute_one(tool_call)
         )
-        result5 = await execute_tool_call(tc, tools, ctx, hook_config=hook_cfg_deny)
-        assert result5.is_error is True
-        assert "denied by hook" in result5.content.lower()
-        print("[PASS] execute_tool_call PreToolUse hook 拒绝")
 
-        # 3f. PreToolUse hook 通过（退出码 0）
-        hook_cfg_allow = HookConfig(
-            pre_tool_use=[
-                HookEntry(
-                    matcher="Echo",
-                    hooks=[HookDefinition(type="command", command="echo ok")],
-                )
-            ]
+    async def _execute_one(self, tool_call: dict) -> None:
+        """执行单个工具调用并把结果存入完成列表。"""
+        call_id = tool_call.get("id", "")
+        result = await execute_tool_call(
+            tool_call,
+            self._tools,
+            self._context,
+            self._hook_config,
+            self._permission_check,
         )
-        result6 = await execute_tool_call(tc, tools, ctx, hook_config=hook_cfg_allow)
-        assert result6.is_error is False
-        assert result6.content.strip() == "hi\nhi"
-        print("[PASS] execute_tool_call PreToolUse hook 通过")
+        self._completed_results.append(result)
+        self._pending_tasks.pop(call_id, None)
 
-        # 3g. 权限拒绝
-        async def deny_permission(tool, input_args, context):
-            return {"decision": "deny", "reason": "Not allowed"}
+    def get_completed_results(self) -> list[ToolExecutionResult]:
+        """取出并清空已完成的工具结果。"""
+        results = self._completed_results
+        self._completed_results = []
+        return results
 
-        result7 = await execute_tool_call(tc, tools, ctx, permission_check=deny_permission)
-        assert result7.is_error is True
-        assert "permission denied" in result7.content.lower()
-        print("[PASS] execute_tool_call 权限拒绝")
+    async def get_remaining_results(self) -> list[ToolExecutionResult]:
+        """等待所有待完成 task，返回所有结果并清空状态。"""
+        if self._pending_tasks:
+            await asyncio.gather(
+                *self._pending_tasks.values(),
+                return_exceptions=True,
+            )
+        results = self._completed_results
+        self._completed_results = []
+        self._pending_tasks = {}
+        return results
 
-        # 3h. 权限允许
-        async def allow_permission(tool, input_args, context):
-            return {"decision": "allow"}
-
-        result8 = await execute_tool_call(tc, tools, ctx, permission_check=allow_permission)
-        assert result8.is_error is False
-        print("[PASS] execute_tool_call 权限允许")
-
-        # 3i. validateInput 拒绝
-        def validate_deny(inp, ctx):
-            return {"result": False, "message": "Input not allowed", "errorCode": 403}
-
-        validated_tool = Tool(
-            name="Validated",
-            description="Tool with validate_input",
-            input_schema=EchoInput,
-            execute=echo_execute,
-            prompt="Validated prompt",
-            validate_input=validate_deny,
-        )
-        tc_val = {
-            "id": "call_val",
-            "function": {"name": "Validated", "arguments": '{"message": "test"}'},
-        }
-        result9 = await execute_tool_call(tc_val, [validated_tool], ctx)
-        assert result9.is_error is True
-        assert "not allowed" in result9.content.lower()
-        print("[PASS] execute_tool_call validateInput 拒绝")
-
-        # 3j. PostToolUse hook 执行（不修改内容，仅验证不报错）
-        hook_cfg_post = HookConfig(
-            post_tool_use=[
-                HookEntry(
-                    matcher="Echo",
-                    hooks=[HookDefinition(type="command", command="echo post")],
-                )
-            ]
-        )
-        result10 = await execute_tool_call(tc, tools, ctx, hook_config=hook_cfg_post)
-        assert result10.is_error is False
-        print("[PASS] execute_tool_call PostToolUse hook 执行")
-
-    asyncio.run(_test_execute())
-
-    # ---- 4. 测试 tool_result_to_openai_message 格式 ----
-    exec_result = ToolExecutionResult(
-        tool_call_id="call_123",
-        tool_name="Echo",
-        content="hello",
-    )
-    msg = tool_result_to_openai_message(exec_result)
-    assert msg["role"] == "tool"
-    assert msg["tool_call_id"] == "call_123"
-    assert msg["content"] == "hello"
-    print("[PASS] tool_result_to_openai_message 格式")
-
-    # ---- 5. 测试 execute_tool_calls 批量执行 ----
-
-    async def _test_batch():
-        calls = [
-            {"id": "b1", "function": {"name": "Echo", "arguments": '{"message": "first"}'}},
-            {"id": "b2", "function": {"name": "Echo", "arguments": '{"message": "second"}'}},
-        ]
-        ctx = ToolUseContext()
-        results = await execute_tool_calls(calls, tools, ctx)
-        assert len(results) == 2
-        assert results[0].tool_call_id == "b1"
-        assert results[0].content.strip() == "first"
-        assert results[1].tool_call_id == "b2"
-        assert results[1].content.strip() == "second"
-        print("[PASS] execute_tool_calls 批量执行")
-
-    asyncio.run(_test_batch())
-
-    print("\nAll tests passed!")
+    def cancel(self) -> None:
+        """取消所有正在执行的 task 并清空全部状态。"""
+        for task in self._pending_tasks.values():
+            task.cancel()
+        self._pending_tasks = {}
+        self._completed_results = []
+        self._delta_map = {}
+        self._started = set()

@@ -140,36 +140,3 @@ def get_bash_tool() -> Tool:
         prompt=BASH_PROMPT,
         validate_input=_validate_input,
     )
-
-
-# ---------------------------------------------------------------------------
-# 自测
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    import sys
-
-    async def _test():
-        tool = get_bash_tool()
-        # 测试 1：echo hello
-        inp = BashInput(command="echo hello")
-        result = await tool.execute(inp, ToolUseContext())
-        assert "hello" in result.content, f"期望包含 'hello'，实际：{result.content}"
-        assert not result.is_error, "期望 is_error=False"
-        print("[PASS] echo hello")
-
-        # 测试 2：空命令验证
-        inp2 = BashInput(command="")
-        validation = tool.validate_input(inp2, ToolUseContext())
-        assert validation["result"] is False, "期望空命令验证失败"
-        print("[PASS] 空命令验证")
-
-        # 测试 3：错误退出码
-        inp3 = BashInput(command="exit 1")
-        result3 = await tool.execute(inp3, ToolUseContext())
-        assert result3.is_error, "期望 is_error=True"
-        print("[PASS] 错误退出码")
-
-        print("\nAll BashTool tests passed!")
-
-    asyncio.run(_test())

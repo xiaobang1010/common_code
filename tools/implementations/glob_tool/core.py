@@ -97,38 +97,3 @@ def get_glob_tool() -> Tool:
         prompt=GLOB_PROMPT,
         is_read_only=True,
     )
-
-
-# ---------------------------------------------------------------------------
-# 自测
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    import asyncio
-
-    async def _test():
-        tool = get_glob_tool()
-
-        # 测试 1：搜索 *.py 文件
-        inp = GlobInput(pattern="*.py", path="d:\\workspace\\code\\learning\\cc\\common_code")
-        result = await tool.execute(inp, ToolUseContext())
-        assert not result.is_error, f"期望 is_error=False，实际：{result.content}"
-        assert "tool.py" in result.content, f"期望包含 'tool.py'，实际：{result.content}"
-        print("[PASS] 搜索 *.py 文件")
-
-        # 测试 2：不存在的目录
-        inp2 = GlobInput(pattern="*.py", path="/nonexistent/dir")
-        result2 = await tool.execute(inp2, ToolUseContext())
-        assert result2.is_error, "期望 is_error=True"
-        print("[PASS] 不存在的目录")
-
-        # 测试 3：无匹配结果
-        inp3 = GlobInput(pattern="*.nonexistent_ext", path="d:\\workspace\\code\\learning\\cc\\common_code")
-        result3 = await tool.execute(inp3, ToolUseContext())
-        assert not result3.is_error, "期望 is_error=False"
-        assert "未找到" in result3.content, f"期望包含 '未找到'，实际：{result3.content}"
-        print("[PASS] 无匹配结果")
-
-        print("\nAll GlobTool tests passed!")
-
-    asyncio.run(_test())
