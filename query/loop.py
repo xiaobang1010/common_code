@@ -14,7 +14,7 @@ Agentic 循环引擎核心。
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import TYPE_CHECKING, Any, AsyncGenerator
 
 from query.config import QueryConfig, build_query_config
@@ -28,6 +28,7 @@ from tools.executor import (
     ToolExecutionResult,
     tool_result_to_openai_message,
 )
+from tools import get_tools
 from query.utils.api import build_api_request, prepend_user_context, append_system_context
 
 if TYPE_CHECKING:
@@ -393,6 +394,7 @@ async def query_loop(
         tool_executor = StreamingToolExecutor(
             tools=engine_config.tools,
             context=ToolUseContext(),
+            permission_check=engine_config.permission_check,
         )
         tool_result_messages: list[dict] = []
 
@@ -597,6 +599,9 @@ async def query_loop(
         # ---- 11. 状态转换 ----
         next_messages = [*messages, *tool_result_messages]
         engine.mutable_messages = next_messages
+
+        # 刷新工具列表（为未来 MCP 接入预留，当前刷新结果和初始一样）
+        engine_config = replace(engine_config, tools=get_tools())
 
         updates = {
             "max_output_tokens_recovery_count": 0,

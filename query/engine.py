@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, Callable
 
 from query.config import build_query_config
 from query.deps import QueryDeps, production_deps
+from tools import get_tools
 
 
 # ---------------------------------------------------------------------------
@@ -34,6 +35,7 @@ class QueryEngineConfig:
         tools: 可用工具列表
         system_prompt_sections: 系统提示词段落
         max_turns: 最大轮次（None 表示不限）
+        permission_check: 工具调用前的权限检查回调，None 表示跳过权限检查
         deps: I/O 依赖
     """
 
@@ -42,10 +44,31 @@ class QueryEngineConfig:
     max_tokens: int = 8192
     temperature: float = 1.0
     permission_mode: str = "default"
-    tools: list[Any] = field(default_factory=list)
+    tools: list[Any] = field(default_factory=get_tools)
     system_prompt_sections: list[Any] = field(default_factory=list)
     max_turns: int | None = None
+    permission_check: Callable | None = None
     deps: QueryDeps = field(default_factory=production_deps)
+
+
+# ---------------------------------------------------------------------------
+# _default_permission_check — 默认权限检查
+# ---------------------------------------------------------------------------
+
+
+async def _default_permission_check(tool, input_args, context):
+    """默认权限检查 — 调用 has_permissions_to_use_tool。"""
+    from tools.utils.permissions.permissions import has_permissions_to_use_tool
+
+    result = has_permissions_to_use_tool(
+        tool_name=tool.name,
+        tool_input=input_args.model_dump() if hasattr(input_args, "model_dump") else input_args,
+        context=None,
+    )
+    if result.decision.value == "deny":
+        return {"decision": "deny", "reason": result.reason}
+    # allow 和 ask 都先放行（ask 的交互式弹窗是上层的事）
+    return {"decision": "allow"}
 
 
 # ---------------------------------------------------------------------------
@@ -62,8 +85,12 @@ def build_engine_config(**overrides: Any) -> QueryEngineConfig:
       - COMMON_CODE_TEMPERATURE → temperature（默认 1.0）
       - COMMON_CODE_PERMISSION_MODE → permission_mode（默认 "default"）
 
-    其余字段（cwd、tools、system_prompt_sections、max_turns、deps）
-    使用 dataclass 默认值。
+    permission_check 字段单独处理：
+      - 调用方显式传了 permission_check（包括 None）→ 用传入值
+      - 调用方未传 → 用 _default_permission_check
+
+    其余字段（cwd、system_prompt_sections、max_turns、deps）
+    使用 dataclass 默认值。tools 默认调 get_tools() 装好内置 6 个工具。
 
     Args:
         **overrides: 覆盖字段值
@@ -77,7 +104,12 @@ def build_engine_config(**overrides: Any) -> QueryEngineConfig:
         "temperature": float(os.environ.get("COMMON_CODE_TEMPERATURE", "1.0")),
         "permission_mode": os.environ.get("COMMON_CODE_PERMISSION_MODE", "default"),
     }
-    defaults.update(overrides)
+    # permission_check 不放 defaults，单独处理：尊重显式传入的 None，未传则用默认函数
+    if "permission_check" in overrides:
+        defaults["permission_check"] = overrides["permission_check"]
+    else:
+        defaults["permission_check"] = _default_permission_check
+    defaults.update({k: v for k, v in overrides.items() if k != "permission_check"})
     return QueryEngineConfig(**defaults)
 
 

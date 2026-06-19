@@ -19,7 +19,6 @@ from uuid import uuid4
 from query.services.api.llm import StreamEvent, query_model_with_streaming
 from query.services.compact.micro_compact import micro_compact_messages
 from query.services.compact.auto_compact import auto_compact_if_needed
-from tools.executor import ToolExecutionResult, execute_tool_calls
 
 
 # ---------------------------------------------------------------------------
@@ -37,9 +36,6 @@ MicrocompactFn = CompactFn
 
 # autocompact: 自动压缩（全量摘要，调 LLM）
 AutocompactFn = CompactFn
-
-# execute_tools: 执行工具调用
-ExecuteToolsFn = Callable[..., Any]
 
 # get_uuid: UUID 生成
 GetUuidFn = Callable[[], str]
@@ -61,14 +57,12 @@ class QueryDeps:
         call_model: 模型调用函数（流式）
         microcompact: 微压缩函数（清空旧 tool_result，不调 LLM）
         autocompact: 自动压缩函数（全量摘要，调 LLM）
-        execute_tools: 工具执行函数
         get_uuid: UUID 生成函数
     """
 
     call_model: CallModelFn
     microcompact: CompactFn
     autocompact: CompactFn
-    execute_tools: ExecuteToolsFn
     get_uuid: GetUuidFn = field(default_factory=lambda: lambda: str(uuid4()))
 
 
@@ -85,13 +79,11 @@ def production_deps() -> QueryDeps:
         - call_model → query_model_with_streaming
         - microcompact → micro_compact_messages
         - autocompact → auto_compact_if_needed
-        - execute_tools → execute_tool_calls
         - get_uuid → uuid4
     """
     return QueryDeps(
         call_model=query_model_with_streaming,
         microcompact=micro_compact_messages,
         autocompact=auto_compact_if_needed,
-        execute_tools=execute_tool_calls,
         get_uuid=lambda: str(uuid4()),
     )
