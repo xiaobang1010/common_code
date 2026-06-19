@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import random
 from dataclasses import dataclass, field
-from typing import Any, Callable, Coroutine, TypeVar
+from typing import Any, AsyncGenerator, Callable, Coroutine, TypeVar
 
 from query.services.api.errors import APIError, classify_error
 
@@ -32,9 +32,9 @@ class RetryConfig:
         retryable_errors: 可重试的错误类型集合
     """
 
-    max_retries: int = 3
-    base_delay: float = 1.0
-    max_delay: float = 60.0
+    max_retries: int = 10
+    base_delay: float = 0.5
+    max_delay: float = 32.0
     retryable_errors: set[str] = field(
         default_factory=lambda: {"rate_limit", "server_error"}
     )
@@ -96,6 +96,81 @@ async def with_retry(
 
     # 理论上不会到达这里，但类型检查需要
     raise last_error  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# with_retry_stream — 带重试的 async generator 包装器
+# ---------------------------------------------------------------------------
+
+
+async def with_retry_stream(
+    fn: Callable[[], AsyncGenerator[T, None]],
+    retry_config: RetryConfig | None = None,
+) -> AsyncGenerator[T, None]:
+    """带重试的 async generator 包装器。
+
+    仅在首次 yield 前重试（建立阶段）。一旦开始 yield，
+    不再重试（避免重复输出）。
+
+    重试逻辑：
+      - 调用 fn() 获取 async generator
+      - 尝试获取首个事件（await gen.__anext__()）
+      - 首个事件获取失败（抛异常）→ 判断是否可重试 → 重试
+      - 首个事件获取成功 → 重试窗口关闭，正常迭代剩余事件
+      - 迭代中失败 → 不重试，异常冒泡
+      - StopAsyncIteration（空 generator）→ 正常结束，不重试
+
+    Args:
+        fn: 返回 async generator 的工厂函数（无参数）
+        retry_config: 重试配置，为 None 时使用默认配置
+
+    Yields:
+        fn 产出的所有事件
+    """
+    config = retry_config or RetryConfig()
+    last_error: Exception | None = None
+
+    for attempt in range(config.max_retries + 1):
+        gen = fn()
+        try:
+            # 尝试获取首个事件——这是重试窗口
+            first_event = await gen.__anext__()
+        except StopAsyncIteration:
+            # 空 generator，正常结束
+            return
+        except Exception as error:
+            last_error = error
+            api_error = classify_error(error)
+
+            # 不在可重试集合中，直接抛出
+            if api_error.type not in config.retryable_errors:
+                raise
+
+            # 已达最大重试次数，抛出
+            if attempt >= config.max_retries:
+                raise
+
+            # 计算延迟并等待
+            delay = _calculate_delay(
+                attempt=attempt,
+                base_delay=config.base_delay,
+                max_delay=config.max_delay,
+                api_error=api_error,
+            )
+            await asyncio.sleep(delay)
+            continue
+
+        # 首个事件获取成功，重试窗口关闭
+        yield first_event
+
+        # 继续迭代剩余事件——这里不再重试
+        async for event in gen:
+            yield event
+        return
+
+    # 理论上不会到达这里
+    if last_error:
+        raise last_error
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +425,118 @@ if __name__ == "__main__":
 
         asyncio.run(test_default_no_retry())
         print("  [PASS] 默认配置不重试 context_length_exceeded")
+    except Exception as e:
+        print(f"  [FAIL] {e}")
+
+    # ---- 测试 9: with_retry_stream — 建立阶段重试成功 ----
+    print("\n--- 测试 9: with_retry_stream — 建立阶段重试成功 ---")
+    try:
+        call_count = [0]
+
+        async def flaky_stream():
+            call_count[0] += 1
+            if call_count[0] < 2:
+                raise openai.InternalServerError(
+                    message="Server error",
+                    response=_make_response(500),
+                    body=None,
+                )
+            yield "event1"
+            yield "event2"
+
+        async def test_stream_retry_success():
+            config = RetryConfig(max_retries=3, base_delay=0.01, max_delay=0.1)
+            events = []
+            async for event in with_retry_stream(flaky_stream, config):
+                events.append(event)
+            assert events == ["event1", "event2"], f"期望 ['event1', 'event2'], 得到 {events}"
+            assert call_count[0] == 2, f"期望调用 2 次, 实际 {call_count[0]} 次"
+
+        asyncio.run(test_stream_retry_success())
+        print("  [PASS] 建立阶段重试成功")
+    except Exception as e:
+        print(f"  [FAIL] {e}")
+
+    # ---- 测试 10: with_retry_stream — 流中失败不重试 ----
+    print("\n--- 测试 10: with_retry_stream — 流中失败不重试 ---")
+    try:
+        call_count = [0]
+
+        async def fail_mid_stream():
+            call_count[0] += 1
+            yield "event1"
+            raise openai.InternalServerError(
+                message="Server error mid-stream",
+                response=_make_response(500),
+                body=None,
+            )
+
+        async def test_stream_mid_fail():
+            config = RetryConfig(max_retries=3, base_delay=0.01, max_delay=0.1)
+            events = []
+            try:
+                async for event in with_retry_stream(fail_mid_stream, config):
+                    events.append(event)
+                assert False, "应该抛出异常"
+            except openai.InternalServerError:
+                pass
+            assert events == ["event1"], f"期望 ['event1'], 得到 {events}"
+            assert call_count[0] == 1, f"期望调用 1 次（不重试）, 实际 {call_count[0]} 次"
+
+        asyncio.run(test_stream_mid_fail())
+        print("  [PASS] 流中失败不重试")
+    except Exception as e:
+        print(f"  [FAIL] {e}")
+
+    # ---- 测试 11: with_retry_stream — 不可重试错误不重试 ----
+    print("\n--- 测试 11: with_retry_stream — 不可重试错误不重试 ---")
+    try:
+        call_count = [0]
+
+        async def auth_fail_stream():
+            call_count[0] += 1
+            raise openai.AuthenticationError(
+                message="Invalid API key",
+                response=_make_response(401),
+                body=None,
+            )
+            yield  # 让函数成为 async generator
+
+        async def test_stream_no_retry():
+            config = RetryConfig(max_retries=3, base_delay=0.01)
+            try:
+                async for event in with_retry_stream(auth_fail_stream, config):
+                    pass
+                assert False, "应该抛出异常"
+            except openai.AuthenticationError:
+                pass
+            assert call_count[0] == 1, f"期望调用 1 次, 实际 {call_count[0]} 次"
+
+        asyncio.run(test_stream_no_retry())
+        print("  [PASS] 不可重试错误不重试")
+    except Exception as e:
+        print(f"  [FAIL] {e}")
+
+    # ---- 测试 12: with_retry_stream — 空 generator 正常结束 ----
+    print("\n--- 测试 12: with_retry_stream — 空 generator 正常结束 ---")
+    try:
+        call_count = [0]
+
+        async def empty_stream():
+            call_count[0] += 1
+            if False:
+                yield  # 让函数成为 async generator
+
+        async def test_empty_stream():
+            config = RetryConfig(max_retries=3, base_delay=0.01)
+            events = []
+            async for event in with_retry_stream(empty_stream, config):
+                events.append(event)
+            assert events == [], f"期望空列表, 得到 {events}"
+            assert call_count[0] == 1, f"期望调用 1 次, 实际 {call_count[0]} 次"
+
+        asyncio.run(test_empty_stream())
+        print("  [PASS] 空 generator 正常结束")
     except Exception as e:
         print(f"  [FAIL] {e}")
 

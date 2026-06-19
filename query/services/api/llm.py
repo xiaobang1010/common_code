@@ -15,6 +15,7 @@ import openai
 from query.services.api.client import get_llm_client
 from query.services.api.errors import classify_error
 from query.services.api.message_format import to_openai_messages, to_openai_tools
+from query.services.api.with_retry import RetryConfig, with_retry_stream
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +103,8 @@ async def query_model_with_streaming(
         if openai_tools:
             params["tools"] = openai_tools
 
-    try:
+    async def _stream_events() -> AsyncGenerator[StreamEvent, None]:
+        """内部生成器：创建流并解析 chunk 为 StreamEvent。"""
         # 同步客户端：create() 直接返回 Stream 对象
         stream = client.chat.completions.create(**params)
 
@@ -113,12 +115,25 @@ async def query_model_with_streaming(
             # 让出控制权，避免阻塞事件循环
             await asyncio.sleep(0)
 
+    # 用 with_retry_stream 包装，对建立阶段的可重试错误（rate_limit、server_error）做指数退避重试
+    retry_config = RetryConfig()  # 使用默认配置
+    try:
+        async for event in with_retry_stream(_stream_events, retry_config):
+            yield event
     except openai.APIError as e:
+        # 不可重试错误或重试耗尽后到这里
         api_error = classify_error(e)
         yield StreamEvent(
             type="error",
             error=e,
             content=api_error.message,
+        )
+    except Exception as e:
+        # 非 openai 异常（如网络层错误），也转为 error 事件
+        yield StreamEvent(
+            type="error",
+            error=e,
+            content=str(e),
         )
 
 

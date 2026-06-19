@@ -1,7 +1,8 @@
-"""系统提示词构建 — 参考原始 src/constants/prompts.ts。"""
+"""系统提示词构建。"""
 
 from __future__ import annotations
 
+import platform as _platform
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
@@ -24,8 +25,11 @@ class SystemPromptSection:
 # 核心提示词内容（简化版，保留关键规则）
 # ---------------------------------------------------------------------------
 
+import platform as _platform
+
+# 归因头：标识客户端类型和运行平台
 _ATTRIBUTION_HEADER = (
-    "x-anthropic-billing-header: common-code-python"
+    f"x-{_platform.system().lower()}-header: common-code-python"
 )
 
 _CLI_PREFIX = """You are Common Code, an AI programming assistant — the official CLI for Common. \
