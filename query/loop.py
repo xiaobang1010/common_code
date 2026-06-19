@@ -5,25 +5,33 @@
 核心查询入口和 while(true) 无限循环，
 每轮迭代执行：压缩 → 构建请求 → 调用模型 → 流式输出 →
 工具调用 → 追加结果 → 错误恢复 → 完成检查 → 状态转换。
+
+三层结构：
+  - QueryEngine：会话级状态（消息历史、token 用量、轮次）
+  - QueryConfig：循环级快照（session_id、auto_compact_enabled 等）
+  - QueryDeps：I/O 依赖（call_model、microcompact、autocompact 等）
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, dataclass, field
-from typing import Any, AsyncGenerator
+from typing import TYPE_CHECKING, Any, AsyncGenerator
 
 from query.config import QueryConfig, build_query_config
-from query.deps import QueryDeps, production_deps
-from query.stop_hooks import StopHookResult, run_stop_hooks
+from query.deps import QueryDeps
+from query.stop_hooks import run_stop_hooks
 from query.services.api.errors import APIError, classify_error, is_recoverable_error
 from query.services.api.llm import StreamEvent, collect_tool_calls
+from query.services.compact import run_compression_pipeline
 from query.services.compact.auto_compact import CompactTracking
 from tools.executor import (
     ToolExecutionResult,
     tool_result_to_openai_message,
 )
 from query.utils.api import build_api_request, prepend_user_context, append_system_context
+
+if TYPE_CHECKING:
+    from query.engine import QueryEngine
 
 
 # ---------------------------------------------------------------------------
@@ -38,22 +46,22 @@ _CONTEXT_LENGTH_KEYWORDS = ("context_length", "maximum context length", "prompt 
 
 
 # ---------------------------------------------------------------------------
-# State — 跨迭代状态
+# State — 循环内临时状态
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class State:
-    """跨迭代可变状态。
+    """循环内临时状态，每轮迭代可能重建。
+
+    会话级状态（messages、total_usage、turn_count）已迁移到 QueryEngine，
+    这里只保留循环内临时状态。
 
     每次循环迭代开始时解构，continue 时整体赋值：
       state = State(**{**asdict(state), **updates})
 
     Attributes:
-        messages: 消息列表
-        turn_count: 当前轮次
         transition: 转换原因（防止死循环）
-        total_tokens_used: 累计 token 使用
         error_count: 错误计数
         withheld_messages: 被暂扣的消息（可恢复错误恢复前暂不输出）
         max_output_tokens_recovery_count: max_output_tokens 恢复计数
@@ -61,10 +69,7 @@ class State:
         auto_compact_tracking: 自动压缩追踪状态
     """
 
-    messages: list[dict] = field(default_factory=list)
-    turn_count: int = 1
     transition: str | None = None
-    total_tokens_used: int = 0
     error_count: int = 0
     withheld_messages: list[dict] = field(default_factory=list)
     max_output_tokens_recovery_count: int = 0
@@ -130,46 +135,46 @@ def _build_assistant_message(
 
 
 # ---------------------------------------------------------------------------
-# query — 核心查询入口
+# query — 便捷入口
 # ---------------------------------------------------------------------------
 
 
 async def query(
     params: dict[str, Any] | None = None,
 ) -> AsyncGenerator[StreamEvent | dict, None]:
-    """核心查询入口。
+    """便捷入口，内部创建一次性 QueryEngine（对齐 TS 版 ask()）。
 
-    构建 QueryConfig 和 QueryDeps，调用 query_loop。
+    query() 是一次性调用，不传 prompt（messages 已包含历史），
+    直接调 query_loop。如需跨轮持久化，请使用 QueryEngine.submitMessage。
 
     Args:
         params: 查询参数，支持以下字段：
             - messages: 初始消息列表
-            - config_overrides: QueryConfig 覆盖字段
-            - deps: 自定义依赖（None 时使用 production_deps）
+            - config_overrides: QueryEngineConfig 覆盖字段（含 deps）
             - user_context: 用户上下文字典，由调用方构建（dict[str, str] | None）
             - system_context: 系统上下文字典，由调用方构建（dict[str, str] | None）
 
     Yields:
         StreamEvent | dict: 流式事件或结果消息
     """
+    # 延迟 import 避免循环依赖
+    from query.engine import build_engine_config, QueryEngine
+
     if params is None:
         params = {}
 
     messages = params.get("messages", [])
     config_overrides = params.get("config_overrides", {})
-    deps = params.get("deps") or production_deps()
     user_context = params.get("user_context")
     system_context = params.get("system_context")
 
-    config = build_query_config(**config_overrides)
+    engine_config = build_engine_config(**config_overrides)
+    engine = QueryEngine(engine_config, initial_messages=messages)
 
-    state = State(messages=messages)
-
-    async for event in query_loop(
-        state, config, deps,
-        user_context=user_context,
-        system_context=system_context,
-    ):
+    # query() 是一次性调用，不需要 prompt（messages 已包含历史）
+    # 直接调 query_loop
+    query_config = build_query_config(session_id=engine.deps.get_uuid())
+    async for event in query_loop(engine, query_config, user_context, system_context):
         yield event
 
 
@@ -179,9 +184,8 @@ async def query(
 
 
 async def query_loop(
-    state: State,
+    engine: QueryEngine,
     config: QueryConfig,
-    deps: QueryDeps,
     user_context: dict[str, str] | None = None,
     system_context: dict[str, str] | None = None,
 ) -> AsyncGenerator[StreamEvent | dict, None]:
@@ -200,41 +204,51 @@ async def query_loop(
     10. 追加结果到消息列表
     11. 状态转换
 
+    会话级状态（messages、total_usage）从 engine 读写，
+    循环级临时状态从 state 读写，I/O 依赖从 engine.deps 获取。
+
     Args:
-        state: 初始状态
-        config: 不可变配置
-        deps: I/O 依赖
+        engine: 查询引擎，持有会话状态和会话级配置
+        config: 循环级配置快照（auto_compact_enabled 等）
         user_context: 用户上下文字典，由调用方构建
         system_context: 系统上下文字典，由调用方构建
 
     Yields:
         StreamEvent | dict: 流式事件或结果消息
     """
+    deps = engine.deps
+    engine_config = engine.config
+
     # 初始化压缩追踪
     tracking: CompactTracking = CompactTracking()
 
+    # 循环内临时状态
+    state = State()
+
     # eslint-disable-next-line no-constant-condition
     while True:
-        # 解构状态
-        messages = state.messages
-        turn_count = state.turn_count
+        # 从引擎读取当前消息
+        messages = engine.mutable_messages
         transition = state.transition
 
         # ---- 1. 压缩管线 ----
         if config.auto_compact_enabled and messages:
             try:
-                compacted = await deps.compact(
+                compacted = await run_compression_pipeline(
                     messages=messages,
-                    model=config.model,
+                    model=engine_config.model,
                     tracking=tracking,
                     context_collapse_enabled=config.context_collapse_enabled,
+                    microcompact=deps.microcompact,
+                    autocompact=deps.autocompact,
                 )
                 if compacted is not None and compacted != messages:
                     # 先 yield 压缩产物（boundary marker + summary + kept messages），
                     # 让 REPL 据此更新自己的完整历史。对齐 TS query.ts:530-532。
                     for msg in compacted:
                         yield msg
-                    # 压缩后替换消息
+                    # 压缩后替换引擎消息
+                    engine.mutable_messages = compacted
                     messages = compacted
                     # 重置追踪
                     tracking = CompactTracking()
@@ -247,13 +261,13 @@ async def query_loop(
         # ---- 3. 构建 API 请求 ----
         from startup.constants.prompts import build_system_messages, get_system_prompt_sections
 
-        sections = config.system_prompt_sections or get_system_prompt_sections()
+        sections = engine_config.system_prompt_sections or get_system_prompt_sections()
         system_messages = build_system_messages(sections)
 
         if system_context:
             system_messages = append_system_context(system_messages, system_context)
 
-        # 用户上下文仅临时拼入 api_messages，不污染 messages（messages 会被写回 state）
+        # 用户上下文仅临时拼入 api_messages，不污染 messages（messages 会被写回引擎）
         api_messages = messages
         if user_context:
             api_messages = prepend_user_context(api_messages, user_context)
@@ -261,10 +275,10 @@ async def query_loop(
         request = build_api_request(
             messages=api_messages,
             system_prompt=system_messages,
-            tools=config.tools,
-            model=config.model,
-            max_tokens=config.max_tokens,
-            temperature=config.temperature,
+            tools=engine_config.tools,
+            model=engine_config.model,
+            max_tokens=engine_config.max_tokens,
+            temperature=engine_config.temperature,
         )
 
         # ---- 4. 调用模型（流式） ----
@@ -279,10 +293,10 @@ async def query_loop(
         try:
             async for event in deps.call_model(
                 messages=request["messages"],
-                tools=config.tools,
-                model=config.model,
-                max_tokens=config.max_tokens,
-                temperature=config.temperature,
+                tools=engine_config.tools,
+                model=engine_config.model,
+                max_tokens=engine_config.max_tokens,
+                temperature=engine_config.temperature,
             ):
                 # ---- 5. 流式输出 ----
                 yield event
@@ -306,9 +320,9 @@ async def query_loop(
             )
             return
 
-        # 更新 token 使用量
+        # 更新 token 使用量（写回引擎）
         if usage_info:
-            state.total_tokens_used += usage_info.get("total_tokens", 0)
+            engine.total_usage += usage_info.get("total_tokens", 0)
 
         # ---- 6. 检测工具调用 ----
         tool_calls = collect_tool_calls(stream_events)
@@ -325,15 +339,18 @@ async def query_loop(
                 # 尝试压缩恢复
                 if not state.has_attempted_reactive_compact and config.auto_compact_enabled:
                     try:
-                        compacted = await deps.compact(
+                        compacted = await run_compression_pipeline(
                             messages=messages,
-                            model=config.model,
+                            model=engine_config.model,
                             tracking=tracking,
                             context_collapse_enabled=config.context_collapse_enabled,
+                            microcompact=deps.microcompact,
+                            autocompact=deps.autocompact,
                         )
                         if compacted is not None and compacted != messages:
+                            engine.mutable_messages = compacted
+                            messages = compacted
                             updates = {
-                                "messages": compacted,
                                 "has_attempted_reactive_compact": True,
                                 "transition": "reactive_compact_retry",
                             }
@@ -362,8 +379,10 @@ async def query_loop(
                         "work into smaller pieces."
                     ),
                 }
+                next_messages = [*messages, assistant_msg, recovery_msg]
+                engine.mutable_messages = next_messages
+                messages = next_messages
                 updates = {
-                    "messages": [*messages, assistant_msg, recovery_msg],
                     "max_output_tokens_recovery_count": state.max_output_tokens_recovery_count + 1,
                     "transition": "max_output_tokens_recovery",
                 }
@@ -387,6 +406,10 @@ async def query_loop(
             )
             return
 
+        # 把 assistant 消息持久化到引擎，并更新局部 messages
+        engine.mutable_messages = [*messages, assistant_msg]
+        messages = [*messages, assistant_msg]
+
         # yield assistant 消息，让 REPL append 到自己的历史。
         # 放在错误恢复之后、完成检查之前——错误恢复走 continue/return 时
         # 不 yield（消息可能不完整或要重试），只有正常流程才 yield。
@@ -402,8 +425,7 @@ async def query_loop(
         # 8b. 无工具调用 → yield done → return
         if not tool_calls:
             # 运行停止钩子
-            all_messages = [*messages, assistant_msg]
-            stop_result = await run_stop_hooks(all_messages)
+            stop_result = await run_stop_hooks(messages)
             if stop_result.should_stop:
                 yield StreamEvent(type="done", finish_reason="stop")
                 return
@@ -419,7 +441,7 @@ async def query_loop(
         try:
             tool_results = await deps.execute_tools(
                 tool_calls=tool_calls,
-                tools=config.tools,
+                tools=engine_config.tools,
                 context=tool_use_context,
             )
         except Exception as e:
@@ -438,12 +460,10 @@ async def query_loop(
             yield tr_msg
 
         # ---- 11. 状态转换 ----
-        next_messages = [*messages, assistant_msg, *tool_result_messages]
-        next_turn_count = turn_count + 1
+        next_messages = [*messages, *tool_result_messages]
+        engine.mutable_messages = next_messages
 
         updates = {
-            "messages": next_messages,
-            "turn_count": next_turn_count,
             "max_output_tokens_recovery_count": 0,
             "has_attempted_reactive_compact": False,
             "transition": "next_turn",
@@ -461,69 +481,78 @@ async def query_loop(
 if __name__ == "__main__":
     import asyncio
 
+    from query.deps import QueryDeps
+    from query.engine import QueryEngine, QueryEngineConfig
+
     print("=" * 60)
     print("Agentic 循环引擎测试")
     print("=" * 60)
 
-    # ---- 测试 1: State 创建和转换 ----
-    print("\n--- 测试 1: State 创建和转换 ---")
-    state = State(messages=[{"role": "user", "content": "hello"}], turn_count=1)
-    assert state.messages == [{"role": "user", "content": "hello"}]
-    assert state.turn_count == 1
+    # ---- 测试 1: State 创建（瘦身后字段）----
+    print("\n--- 测试 1: State 创建（瘦身后字段）---")
+    state = State()
     assert state.transition is None
-    assert state.total_tokens_used == 0
     assert state.error_count == 0
     assert state.withheld_messages == []
-    print(f"  初始: messages={len(state.messages)}, turn_count={state.turn_count}")
+    assert state.max_output_tokens_recovery_count == 0
+    assert state.has_attempted_reactive_compact is False
+    assert state.auto_compact_tracking is None
+    print(f"  transition={state.transition}, error_count={state.error_count}")
 
-    # 状态转换
+    # 状态转换（只含临时状态字段）
     updates = {
-        "messages": [*state.messages, {"role": "assistant", "content": "hi"}],
-        "turn_count": 2,
         "transition": "next_turn",
+        "max_output_tokens_recovery_count": 1,
     }
     state = State(**{**asdict(state), **updates})
-    assert len(state.messages) == 2
-    assert state.turn_count == 2
     assert state.transition == "next_turn"
-    print(f"  转换后: messages={len(state.messages)}, turn_count={state.turn_count}, "
-          f"transition={state.transition}")
-    print("  [PASS] State 创建和转换")
+    assert state.max_output_tokens_recovery_count == 1
+    print(f"  转换后: transition={state.transition}, "
+          f"recovery_count={state.max_output_tokens_recovery_count}")
+    print("  [PASS] State 创建（瘦身后字段）")
 
-    # ---- 测试 2: QueryConfig 构建 ----
-    print("\n--- 测试 2: QueryConfig 构建 ---")
-    config = build_query_config()
-    assert config.model == "gpt-4o" or config.model  # 可能被环境变量覆盖
-    assert config.max_tokens > 0
-    assert config.temperature > 0
-    assert config.permission_mode in ("default", "plan", "auto", "bypass")
-    print(f"  model={config.model}, max_tokens={config.max_tokens}, "
-          f"temperature={config.temperature}, permission_mode={config.permission_mode}")
+    # ---- 测试 2: _is_context_length_error ----
+    print("\n--- 测试 2: _is_context_length_error ---")
+    assert _is_context_length_error(RuntimeError("context_length_exceeded")) is True
+    assert _is_context_length_error(RuntimeError("maximum context length exceeded")) is True
+    assert _is_context_length_error(RuntimeError("prompt too long")) is True
+    assert _is_context_length_error(RuntimeError("rate limit")) is False
+    print("  [PASS] _is_context_length_error")
 
-    config_custom = build_query_config(model="claude-3-5-sonnet", max_tokens=4096)
-    assert config_custom.model == "claude-3-5-sonnet"
-    assert config_custom.max_tokens == 4096
-    print(f"  自定义: model={config_custom.model}, max_tokens={config_custom.max_tokens}")
-    print("  [PASS] QueryConfig 构建")
+    # ---- 测试 3: _build_assistant_message ----
+    print("\n--- 测试 3: _build_assistant_message ---")
+    msg = _build_assistant_message(["Hello", " world"], [])
+    assert msg["role"] == "assistant"
+    assert msg["content"] == "Hello world"
+    assert "tool_calls" not in msg
 
-    # ---- 测试 3: QueryDeps 工厂 ----
-    print("\n--- 测试 3: QueryDeps 工厂 ---")
-    deps = production_deps()
-    assert deps.call_model is not None
-    assert deps.compact is not None
-    assert deps.execute_tools is not None
-    assert deps.get_uuid is not None
-    uuid1 = deps.get_uuid()
-    uuid2 = deps.get_uuid()
-    assert uuid1 != uuid2
-    print(f"  call_model: {deps.call_model.__name__}")
-    print(f"  compact: {deps.compact.__name__}")
-    print(f"  execute_tools: {deps.execute_tools.__name__}")
-    print(f"  uuid1={uuid1}, uuid2={uuid2}")
-    print("  [PASS] QueryDeps 工厂")
+    msg_with_tools = _build_assistant_message(
+        ["Using tool..."],
+        [{"id": "call_001", "function": {"name": "read", "arguments": "{}"}}],
+    )
+    assert msg_with_tools["content"] == "Using tool..."
+    assert len(msg_with_tools["tool_calls"]) == 1
 
-    # ---- 测试 4: query_loop 使用 mock deps 的基本流程 ----
-    print("\n--- 测试 4: query_loop 使用 mock deps 的基本流程 ---")
+    msg_empty = _build_assistant_message([], [])
+    assert msg_empty["role"] == "assistant"
+    print("  [PASS] _build_assistant_message")
+
+    # ---- 测试 4: _build_tool_result_messages ----
+    print("\n--- 测试 4: _build_tool_result_messages ---")
+    results = [
+        ToolExecutionResult(tool_call_id="c1", tool_name="read", content="file content"),
+        ToolExecutionResult(tool_call_id="c2", tool_name="write", content="ok", is_error=True),
+    ]
+    msgs = _build_tool_result_messages(results)
+    assert len(msgs) == 2
+    assert msgs[0]["role"] == "tool"
+    assert msgs[0]["tool_call_id"] == "c1"
+    assert msgs[0]["content"] == "file content"
+    assert msgs[1]["tool_call_id"] == "c2"
+    print("  [PASS] _build_tool_result_messages")
+
+    # ---- 测试 5: query_loop 使用 mock deps 的基本流程 ----
+    print("\n--- 测试 5: query_loop 使用 mock deps 的基本流程 ---")
 
     async def _test_query_loop():
         # 构造 mock deps
@@ -532,24 +561,34 @@ if __name__ == "__main__":
             yield StreamEvent(type="content", content="Hello!")
             yield StreamEvent(type="done", finish_reason="stop")
 
-        async def mock_compact(**kwargs):
-            return kwargs.get("messages", [])
+        def mock_microcompact(messages=None, **kwargs):
+            return messages
+
+        async def mock_autocompact(**kwargs):
+            return kwargs.get("messages", []), False
 
         async def mock_execute_tools(**kwargs):
             return []
 
         mock_deps = QueryDeps(
             call_model=mock_call_model,
-            compact=mock_compact,
+            microcompact=mock_microcompact,
+            autocompact=mock_autocompact,
             execute_tools=mock_execute_tools,
             get_uuid=lambda: "test-uuid",
         )
 
-        config = build_query_config(model="test-model", max_tokens=4096)
-        state = State(messages=[{"role": "user", "content": "Hi"}])
+        engine_config = QueryEngineConfig(
+            model="test-model", max_tokens=4096, deps=mock_deps,
+        )
+        engine = QueryEngine(
+            engine_config,
+            initial_messages=[{"role": "user", "content": "Hi"}],
+        )
+        config = build_query_config()
 
         events = []
-        async for event in query_loop(state, config, mock_deps):
+        async for event in query_loop(engine, config):
             events.append(event)
 
         # 验证至少收到了 content 和 done 事件
@@ -564,16 +603,20 @@ if __name__ == "__main__":
         assert len(assistant_msgs) == 1, f"期望 1 条 assistant 消息, 得到 {len(assistant_msgs)}"
         assert assistant_msgs[0]["content"] == "Hello!"
 
+        # 验证引擎消息已更新
+        assert len(engine.mutable_messages) == 2  # user + assistant
+        assert engine.mutable_messages[1]["content"] == "Hello!"
+
         print(f"  收到 {len(events)} 个事件")
         print(f"  content 事件: {len(content_events)}, done 事件: {len(done_events)}")
         print(f"  assistant 消息: {len(assistant_msgs)}")
-        print(f"  finish_reason: {done_events[0].finish_reason}")
+        print(f"  引擎消息: {len(engine.mutable_messages)} 条")
 
     asyncio.run(_test_query_loop())
     print("  [PASS] query_loop 使用 mock deps 的基本流程")
 
-    # ---- 测试 5: query_loop 工具调用流程 ----
-    print("\n--- 测试 5: query_loop 工具调用流程 ---")
+    # ---- 测试 6: query_loop 工具调用流程 ----
+    print("\n--- 测试 6: query_loop 工具调用流程 ---")
 
     async def _test_tool_call_loop():
         call_count = 0
@@ -596,8 +639,11 @@ if __name__ == "__main__":
                 yield StreamEvent(type="content", content="The file contains Python code.")
                 yield StreamEvent(type="done", finish_reason="stop")
 
-        async def mock_compact(**kwargs):
-            return kwargs.get("messages", [])
+        def mock_microcompact(messages=None, **kwargs):
+            return messages
+
+        async def mock_autocompact(**kwargs):
+            return kwargs.get("messages", []), False
 
         async def mock_execute_tools(**kwargs):
             return [
@@ -610,16 +656,23 @@ if __name__ == "__main__":
 
         mock_deps = QueryDeps(
             call_model=mock_call_model_with_tool,
-            compact=mock_compact,
+            microcompact=mock_microcompact,
+            autocompact=mock_autocompact,
             execute_tools=mock_execute_tools,
             get_uuid=lambda: "test-uuid",
         )
 
-        config = build_query_config(model="test-model", max_tokens=4096)
-        state = State(messages=[{"role": "user", "content": "Read the file"}])
+        engine_config = QueryEngineConfig(
+            model="test-model", max_tokens=4096, deps=mock_deps,
+        )
+        engine = QueryEngine(
+            engine_config,
+            initial_messages=[{"role": "user", "content": "Read the file"}],
+        )
+        config = build_query_config()
 
         events = []
-        async for event in query_loop(state, config, mock_deps):
+        async for event in query_loop(engine, config):
             events.append(event)
 
         # 验证收到了工具结果和最终 done
@@ -636,107 +689,78 @@ if __name__ == "__main__":
         print(f"  总事件: {len(events)}, done: {len(done_events)}, tool_results: {len(tool_result_msgs)}")
         print(f"  assistant 消息: {len(assistant_msgs)}")
         print(f"  模型调用次数: {call_count}")
+        print(f"  引擎消息: {len(engine.mutable_messages)} 条")
 
     asyncio.run(_test_tool_call_loop())
     print("  [PASS] query_loop 工具调用流程")
 
-    # ---- 测试 6: _is_context_length_error ----
-    print("\n--- 测试 6: _is_context_length_error ---")
-    assert _is_context_length_error(RuntimeError("context_length_exceeded")) is True
-    assert _is_context_length_error(RuntimeError("maximum context length exceeded")) is True
-    assert _is_context_length_error(RuntimeError("prompt too long")) is True
-    assert _is_context_length_error(RuntimeError("rate limit")) is False
-    print("  [PASS] _is_context_length_error")
-
-    # ---- 测试 7: _build_assistant_message ----
-    print("\n--- 测试 7: _build_assistant_message ---")
-    msg = _build_assistant_message(["Hello", " world"], [])
-    assert msg["role"] == "assistant"
-    assert msg["content"] == "Hello world"
-    assert "tool_calls" not in msg
-
-    msg_with_tools = _build_assistant_message(
-        ["Using tool..."],
-        [{"id": "call_001", "function": {"name": "read", "arguments": "{}"}}],
-    )
-    assert msg_with_tools["content"] == "Using tool..."
-    assert len(msg_with_tools["tool_calls"]) == 1
-
-    msg_empty = _build_assistant_message([], [])
-    assert msg_empty["role"] == "assistant"
-    print("  [PASS] _build_assistant_message")
-
-    # ---- 测试 8: _build_tool_result_messages ----
-    print("\n--- 测试 8: _build_tool_result_messages ---")
-    results = [
-        ToolExecutionResult(tool_call_id="c1", tool_name="read", content="file content"),
-        ToolExecutionResult(tool_call_id="c2", tool_name="write", content="ok", is_error=True),
-    ]
-    msgs = _build_tool_result_messages(results)
-    assert len(msgs) == 2
-    assert msgs[0]["role"] == "tool"
-    assert msgs[0]["tool_call_id"] == "c1"
-    assert msgs[0]["content"] == "file content"
-    assert msgs[1]["tool_call_id"] == "c2"
-    print("  [PASS] _build_tool_result_messages")
-
-    # ---- 测试 9: query 入口函数 ----
-    print("\n--- 测试 9: query 入口函数 ---")
+    # ---- 测试 7: query 入口函数 ----
+    print("\n--- 测试 7: query 入口函数 ---")
 
     async def _test_query_entry():
         async def mock_call_model(**kwargs):
             yield StreamEvent(type="content", content="Response")
             yield StreamEvent(type="done", finish_reason="stop")
 
-        async def mock_compact(**kwargs):
-            return kwargs.get("messages", [])
+        def mock_microcompact(messages=None, **kwargs):
+            return messages
+
+        async def mock_autocompact(**kwargs):
+            return kwargs.get("messages", []), False
 
         async def mock_execute_tools(**kwargs):
             return []
 
         mock_deps = QueryDeps(
             call_model=mock_call_model,
-            compact=mock_compact,
+            microcompact=mock_microcompact,
+            autocompact=mock_autocompact,
             execute_tools=mock_execute_tools,
         )
 
         events = []
         async for event in query({
             "messages": [{"role": "user", "content": "Hello"}],
-            "deps": mock_deps,
+            "config_overrides": {"deps": mock_deps, "model": "test-model", "max_tokens": 4096},
         }):
             events.append(event)
 
         assert len(events) > 0
+        done_events = [e for e in events if isinstance(e, StreamEvent) and e.type == "done"]
+        assert len(done_events) > 0
         print(f"  收到 {len(events)} 个事件")
 
     asyncio.run(_test_query_entry())
     print("  [PASS] query 入口函数")
 
-    # ---- 测试 10: query 传入 user_context / system_context ----
-    print("\n--- 测试 10: query 传入 user_context / system_context ---")
+    # ---- 测试 8: query 传入 user_context / system_context ----
+    print("\n--- 测试 8: query 传入 user_context / system_context ---")
 
     async def _test_query_with_context():
         async def mock_call_model(**kwargs):
             yield StreamEvent(type="content", content="OK")
             yield StreamEvent(type="done", finish_reason="stop")
 
-        async def mock_compact(**kwargs):
-            return kwargs.get("messages", [])
+        def mock_microcompact(messages=None, **kwargs):
+            return messages
+
+        async def mock_autocompact(**kwargs):
+            return kwargs.get("messages", []), False
 
         async def mock_execute_tools(**kwargs):
             return []
 
         mock_deps = QueryDeps(
             call_model=mock_call_model,
-            compact=mock_compact,
+            microcompact=mock_microcompact,
+            autocompact=mock_autocompact,
             execute_tools=mock_execute_tools,
         )
 
         events = []
         async for event in query({
             "messages": [{"role": "user", "content": "Hello"}],
-            "deps": mock_deps,
+            "config_overrides": {"deps": mock_deps},
             "user_context": {"currentDate": "今日日期是 2026年06月19日"},
             "system_context": {"gitStatus": "clean"},
         }):
@@ -751,6 +775,16 @@ if __name__ == "__main__":
 
     asyncio.run(_test_query_with_context())
     print("  [PASS] query 传入 user_context / system_context")
+
+    # ---- 测试 9: QueryConfig 只有 3 个字段 ----
+    print("\n--- 测试 9: QueryConfig 只有 3 个字段 ---")
+    import dataclasses
+
+    field_names = {f.name for f in dataclasses.fields(QueryConfig)}
+    assert field_names == {"session_id", "auto_compact_enabled", "context_collapse_enabled"}, \
+        f"期望 3 个字段, 得到 {field_names}"
+    print(f"  QueryConfig 字段: {field_names}")
+    print("  [PASS] QueryConfig 只有 3 个字段")
 
     print("\n" + "=" * 60)
     print("所有测试完成")

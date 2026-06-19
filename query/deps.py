@@ -4,6 +4,10 @@
 
 将 query() 的 I/O 依赖抽为可替换的接口，
 测试可直接注入 fake 而无需 spyOn-per-module。
+
+压缩依赖拆分为两段：
+- microcompact: 微压缩（不调 LLM），清空旧 tool_result 内容
+- autocompact: 自动压缩（调 LLM），全量摘要
 """
 
 from __future__ import annotations
@@ -13,7 +17,8 @@ from typing import Any, AsyncGenerator, Callable
 from uuid import uuid4
 
 from query.services.api.llm import StreamEvent, query_model_with_streaming
-from query.services.compact import run_compression_pipeline
+from query.services.compact.micro_compact import micro_compact_messages
+from query.services.compact.auto_compact import auto_compact_if_needed
 from tools.executor import ToolExecutionResult, execute_tool_calls
 
 
@@ -24,8 +29,14 @@ from tools.executor import ToolExecutionResult, execute_tool_calls
 # call_model: 调用 LLM，流式返回 StreamEvent
 CallModelFn = Callable[..., AsyncGenerator[StreamEvent, None]]
 
-# compact: 压缩管线
+# compact: 压缩函数（microcompact / autocompact 复用同一签名）
 CompactFn = Callable[..., Any]
+
+# microcompact: 微压缩（清空旧 tool_result，不调 LLM）
+MicrocompactFn = CompactFn
+
+# autocompact: 自动压缩（全量摘要，调 LLM）
+AutocompactFn = CompactFn
 
 # execute_tools: 执行工具调用
 ExecuteToolsFn = Callable[..., Any]
@@ -44,16 +55,19 @@ class QueryDeps:
     """查询核心 I/O 依赖。
 
     通过 deps 参数注入到 query()，让测试可以替换为 fake。
+    压缩拆分为 microcompact（微压缩）和 autocompact（自动压缩）两段。
 
     Attributes:
         call_model: 模型调用函数（流式）
-        compact: 压缩管线函数
+        microcompact: 微压缩函数（清空旧 tool_result，不调 LLM）
+        autocompact: 自动压缩函数（全量摘要，调 LLM）
         execute_tools: 工具执行函数
         get_uuid: UUID 生成函数
     """
 
     call_model: CallModelFn
-    compact: CompactFn
+    microcompact: CompactFn
+    autocompact: CompactFn
     execute_tools: ExecuteToolsFn
     get_uuid: GetUuidFn = field(default_factory=lambda: lambda: str(uuid4()))
 
@@ -69,13 +83,15 @@ def production_deps() -> QueryDeps:
     Returns:
         QueryDeps，其中：
         - call_model → query_model_with_streaming
-        - compact → run_compression_pipeline
+        - microcompact → micro_compact_messages
+        - autocompact → auto_compact_if_needed
         - execute_tools → execute_tool_calls
         - get_uuid → uuid4
     """
     return QueryDeps(
         call_model=query_model_with_streaming,
-        compact=run_compression_pipeline,
+        microcompact=micro_compact_messages,
+        autocompact=auto_compact_if_needed,
         execute_tools=execute_tool_calls,
         get_uuid=lambda: str(uuid4()),
     )
@@ -94,10 +110,12 @@ if __name__ == "__main__":
     print("\n--- 测试 1: production_deps 工厂 ---")
     deps = production_deps()
     assert deps.call_model is query_model_with_streaming
-    assert deps.compact is run_compression_pipeline
+    assert deps.microcompact is micro_compact_messages
+    assert deps.autocompact is auto_compact_if_needed
     assert deps.execute_tools is execute_tool_calls
     print(f"  call_model: {deps.call_model.__name__}")
-    print(f"  compact: {deps.compact.__name__}")
+    print(f"  microcompact: {deps.microcompact.__name__}")
+    print(f"  autocompact: {deps.autocompact.__name__}")
     print(f"  execute_tools: {deps.execute_tools.__name__}")
     print("  [PASS] production_deps 工厂")
 
@@ -119,24 +137,30 @@ if __name__ == "__main__":
     async def mock_call_model(**kwargs):
         yield StreamEvent(type="content", content="mock response")
 
-    async def mock_compact(**kwargs):
+    async def mock_microcompact(**kwargs):
         return kwargs.get("messages", [])
+
+    async def mock_autocompact(**kwargs):
+        return kwargs.get("messages", []), False
 
     async def mock_execute_tools(**kwargs):
         return []
 
     custom_deps = QueryDeps(
         call_model=mock_call_model,
-        compact=mock_compact,
+        microcompact=mock_microcompact,
+        autocompact=mock_autocompact,
         execute_tools=mock_execute_tools,
         get_uuid=lambda: "fixed-uuid",
     )
     assert custom_deps.call_model is mock_call_model
-    assert custom_deps.compact is mock_compact
+    assert custom_deps.microcompact is mock_microcompact
+    assert custom_deps.autocompact is mock_autocompact
     assert custom_deps.execute_tools is mock_execute_tools
     assert custom_deps.get_uuid() == "fixed-uuid"
     print(f"  call_model: {custom_deps.call_model.__name__}")
-    print(f"  compact: {custom_deps.compact.__name__}")
+    print(f"  microcompact: {custom_deps.microcompact.__name__}")
+    print(f"  autocompact: {custom_deps.autocompact.__name__}")
     print(f"  execute_tools: {custom_deps.execute_tools.__name__}")
     print(f"  get_uuid: {custom_deps.get_uuid()}")
     print("  [PASS] 自定义 deps")
@@ -146,7 +170,7 @@ if __name__ == "__main__":
     import dataclasses
 
     field_names = {f.name for f in dataclasses.fields(QueryDeps)}
-    assert field_names == {"call_model", "compact", "execute_tools", "get_uuid"}
+    assert field_names == {"call_model", "microcompact", "autocompact", "execute_tools", "get_uuid"}
     print(f"  字段: {field_names}")
     print("  [PASS] QueryDeps dataclass 字段")
 

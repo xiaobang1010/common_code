@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any, Callable
 
 from query.services.compact.auto_compact import (
     AUTOCOMPACT_BUFFER_TOKENS,
@@ -81,6 +82,8 @@ async def run_compression_pipeline(
     model: str,
     tracking: CompactTracking,
     context_collapse_enabled: bool = False,
+    microcompact: Callable[..., list[dict]] = micro_compact_messages,
+    autocompact: Callable[..., Any] = auto_compact_if_needed,
 ) -> list[dict]:
     """按顺序执行四级压缩管线。
 
@@ -93,11 +96,16 @@ async def run_compression_pipeline(
     每一级压缩后检查 token 使用量是否降到安全水平
     （context_window 的 85% 以下），如果是则提前返回。
 
+    snip 和 context_collapse 直接使用模块内实现（纯计算 / 不可注入），
+    microcompact 和 autocompact 作为参数传入，方便测试注入 mock。
+
     Args:
         messages: 消息列表
         model: 模型名称
         tracking: 压缩追踪状态
         context_collapse_enabled: 是否启用 context collapse
+        microcompact: 微压缩函数（同步，清空旧 tool_result）
+        autocompact: 自动压缩函数（异步，全量摘要）
 
     Returns:
         压缩后的消息列表
@@ -126,7 +134,7 @@ async def run_compression_pipeline(
 
     # ---- 第 2 级: Microcompact ----
     if should_micro_compact(result):
-        result = micro_compact_messages(result)
+        result = microcompact(messages=result)
         current_tokens = _estimate_tokens_for_messages(result)
         if current_tokens <= safe_threshold:
             return result
@@ -141,8 +149,9 @@ async def run_compression_pipeline(
             return result
 
     # ---- 第 4 级: Autocompact ----
-    result, _was_compacted = await auto_compact_if_needed(
-        result, model, tracking, context_collapse_enabled
+    result, _was_compacted = await autocompact(
+        messages=result, model=model, tracking=tracking,
+        context_collapse_enabled=context_collapse_enabled,
     )
 
     return result

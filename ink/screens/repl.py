@@ -24,6 +24,8 @@ from ink.ui.prompt_input import PromptInput, InputMode
 from tools.commands.commands import find_command, get_commands
 from tools.commands.commands_context import CommandContext
 
+from query.engine import QueryEngine, build_engine_config
+
 
 # ---------------------------------------------------------------------------
 # Screen 类型
@@ -70,6 +72,8 @@ class REPLScreen:
         self._prompt_input = PromptInput(multiline=False)
         self._is_running = False
         self._on_submit: Optional[Callable[[str], Any]] = None
+        # 会话级引擎，持有消息历史与 token 用量，跨多次 submitMessage 持久化
+        self._engine = QueryEngine(build_engine_config())
 
     @property
     def screen(self) -> ScreenMode:
@@ -124,9 +128,9 @@ class REPLScreen:
                     print(result.output)
                     continue
 
-                # 普通消息 → 调用 LLM
+                # 普通消息 → 调用 LLM，把用户输入文本传给引擎
                 if not result.handled:
-                    await self._call_llm()
+                    await self._call_llm(user_input)
 
             except (EOFError, KeyboardInterrupt):
                 print("\nGoodbye!")
@@ -141,30 +145,26 @@ class REPLScreen:
     # LLM 调用
     # -----------------------------------------------------------------------
 
-    async def _call_llm(self) -> None:
+    async def _call_llm(self, prompt: str) -> None:
         """调用 LLM 并流式输出响应，支持工具调用循环。
 
-        消费 query() 生成器，REPL 维护完整消息历史。
-        REPL 负责构建 user_context / system_context 并传入 query，
-        query loop 内部负责压缩、注入上下文、调模型、执行工具，
-        通过 yield 把 assistant 消息、tool 结果、压缩产物传回 REPL。
-        （对齐 TS 版：上下文由调用方构建后传入 query）
+        通过 self._engine.submitMessage 提交用户输入，引擎内部持有
+        完整消息历史并跨轮持久化。REPL 仅负责构建 user_context /
+        system_context 并传入引擎，同时消费 yield 的事件把 assistant
+        消息、tool 结果、压缩产物同步回 self._messages 供 UI 渲染。
         """
-        from query import query
         from query.services.api.llm import StreamEvent
         from query.utils.messages import is_compact_boundary_message
         from startup.utils.context import get_user_context, get_system_context
 
-        # 传入完整历史（含 boundary marker），query loop 内部会切片
-        openai_messages = self._messages_to_openai_format()
-        if not openai_messages:
-            return
-
-        # 构建上下文（对齐 TS 版：由调用方构建后传入 query）
+        # 构建上下文（对齐 TS 版：由调用方构建后传入引擎）
         user_context = get_user_context()
         system_context = get_system_context()
 
-        async for event in query({"messages": openai_messages, "user_context": user_context, "system_context": system_context}):
+        # 引擎内部维护历史，这里只传 prompt；通过 yield 事件同步到 UI 消息列表
+        async for event in self._engine.submitMessage(
+            prompt, user_context=user_context, system_context=system_context
+        ):
             if isinstance(event, StreamEvent):
                 self._handle_stream_event(event)
             elif isinstance(event, dict):
@@ -477,6 +477,10 @@ if __name__ == "__main__":
 
     # 创建 REPLScreen
     repl = REPLScreen(provider)
+
+    # 验证 engine 实例存在
+    print(f"  engine 类型: {type(repl._engine).__name__}")
+    assert repl._engine is not None
 
     # 1. 测试斜杠命令路由（通过命令注册表）
     print("--- 斜杠命令路由 ---")
