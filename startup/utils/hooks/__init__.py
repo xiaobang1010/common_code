@@ -106,6 +106,8 @@ class HookConfig:
 
     pre_tool_use: list[HookEntry] = field(default_factory=list)
     post_tool_use: list[HookEntry] = field(default_factory=list)
+    permission_denied: list[HookEntry] = field(default_factory=list)
+    post_tool_use_failure: list[HookEntry] = field(default_factory=list)
     notification: list[HookEntry] = field(default_factory=list)
     stop: list[HookEntry] = field(default_factory=list)
     session_start: list[HookEntry] = field(default_factory=list)
@@ -117,6 +119,8 @@ class HookConfig:
         return {
             "PreToolUse": [e.to_dict() for e in self.pre_tool_use],
             "PostToolUse": [e.to_dict() for e in self.post_tool_use],
+            "PermissionDenied": [e.to_dict() for e in self.permission_denied],
+            "PostToolUseFailure": [e.to_dict() for e in self.post_tool_use_failure],
             "Notification": [e.to_dict() for e in self.notification],
             "Stop": [e.to_dict() for e in self.stop],
             "SessionStart": [e.to_dict() for e in self.session_start],
@@ -136,6 +140,8 @@ class HookConfig:
         return cls(
             pre_tool_use=parse_entries("PreToolUse"),
             post_tool_use=parse_entries("PostToolUse"),
+            permission_denied=parse_entries("PermissionDenied"),
+            post_tool_use_failure=parse_entries("PostToolUseFailure"),
             notification=parse_entries("Notification"),
             stop=parse_entries("Stop"),
             session_start=parse_entries("SessionStart"),
@@ -324,6 +330,149 @@ async def run_pre_tool_use_hooks(
                     return result
 
     return result
+
+
+async def run_permission_denied_hooks(
+    hook_config: HookConfig,
+    tool_name: str,
+    tool_input: dict,
+    reason: str,
+    timeout_s: float = DEFAULT_HOOK_TIMEOUT_S,
+) -> HookResult:
+    """执行 PermissionDenied hooks。
+
+    当权限决策为 deny 时调用。
+    - 如果 hook 输出中包含 retry 字段且为 true，返回 decided=True 表示允许重试
+    - 异常内部捕获，不传播
+    """
+    result = HookResult()
+
+    for entry in hook_config.permission_denied:
+        if not entry.matches(tool_name):
+            continue
+
+        for hook_def in entry.hooks:
+            if hook_def.type != "command":
+                continue
+
+            hook_input = {
+                "hookEventName": "PermissionDenied",
+                "tool_name": tool_name,
+                "tool_input": tool_input,
+                "reason": reason,
+            }
+
+            try:
+                exit_code, stdout, stderr = await _execute_command_hook(
+                    hook_def.command, hook_input, timeout_s
+                )
+            except Exception as e:
+                logger.error("PermissionDenied hook 执行异常: %s", e)
+                continue
+
+            # 解析 JSON 输出，查找 retry 字段
+            parsed = _parse_hook_output(stdout)
+            if parsed is not None:
+                specific = parsed.get("hookSpecificOutput", {})
+                if specific.get("retry") is True:
+                    result.decided = True
+                    result.reason = "PermissionDenied hook indicated retry is allowed"
+                    return result
+
+    return result
+
+
+async def run_post_tool_use_failure_hooks(
+    hook_config: HookConfig,
+    tool_name: str,
+    tool_input: dict,
+    error: str,
+    timeout_s: float = DEFAULT_HOOK_TIMEOUT_S,
+) -> None:
+    """执行 PostToolUseFailure hooks。
+
+    当工具执行失败时调用。
+    执行失败不会中断流程，仅记录日志。
+    """
+    for entry in hook_config.post_tool_use_failure:
+        if not entry.matches(tool_name):
+            continue
+
+        for hook_def in entry.hooks:
+            if hook_def.type != "command":
+                continue
+
+            hook_input = {
+                "hookEventName": "PostToolUseFailure",
+                "tool_name": tool_name,
+                "tool_input": tool_input,
+                "error": error,
+            }
+
+            try:
+                exit_code, stdout, stderr = await _execute_command_hook(
+                    hook_def.command, hook_input, timeout_s
+                )
+                if exit_code != 0:
+                    logger.warning(
+                        "PostToolUseFailure hook 返回非零退出码 %d: %s",
+                        exit_code,
+                        stderr.strip() or stdout.strip(),
+                    )
+            except Exception as e:
+                logger.error("PostToolUseFailure hook 执行异常: %s", e)
+
+
+async def resolve_permission_decision(
+    hook_result: HookResult,
+    tool,
+    validated_input,
+    context,
+    permission_check,
+) -> dict | None:
+    """权限策略协调器 — 协调 hook 决策与规则层决策。
+
+    策略（与 TS 版 resolveHookPermissionDecision 对齐）：
+    - hook 做出 allow 决策 → 仍需调用 permission_check 检查 deny/ask 规则
+    - hook 做出 deny 决策 → 直接返回 deny，不调 permission_check
+    - hook 无决策（decided=False）→ 调用 permission_check
+
+    返回：
+        None 表示通过（允许执行）
+        {"decision": "deny", "reason": str} 表示拒绝
+    """
+    if hook_result.decided and hook_result.reason:
+        # hook 做出了决策
+        if "Allowed" in hook_result.reason or "allow" in hook_result.reason.lower():
+            # hook allow — 仍要检查规则层
+            if permission_check is not None:
+                try:
+                    perm_result = await permission_check(tool, validated_input, context)
+                    if isinstance(perm_result, dict) and perm_result.get("decision") == "deny":
+                        return {
+                            "decision": "deny",
+                            "reason": perm_result.get("reason", "Blocked by rules"),
+                        }
+                except Exception as e:
+                    logger.error("权限检查异常（hook allow 后规则检查）: %s", e)
+            return None  # 通过
+        else:
+            # hook deny — 直接生效
+            return {"decision": "deny", "reason": hook_result.reason}
+    else:
+        # 无 hook 决策 — 正常权限检查
+        if permission_check is not None:
+            try:
+                perm_result = await permission_check(tool, validated_input, context)
+                if isinstance(perm_result, dict) and perm_result.get("decision") == "deny":
+                    return {
+                        "decision": "deny",
+                        "reason": perm_result.get("reason", "No reason provided"),
+                    }
+            except Exception as e:
+                logger.error("权限检查异常: %s", e)
+                return {"decision": "deny", "reason": f"Permission check error: {e}"}
+        return None
 
 
 async def run_post_tool_use_hooks(

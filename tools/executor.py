@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING, Any, Callable
 from pydantic import BaseModel
 
 from tools.protocol import Tool, ToolResult, ToolUseContext, tool_matches_name
-from startup.utils.hooks import HookConfig, HookResult, run_pre_tool_use_hooks, run_post_tool_use_hooks
+from startup.utils.hooks import (
+    HookConfig, HookResult,
+    run_pre_tool_use_hooks, run_post_tool_use_hooks,
+    run_permission_denied_hooks, run_post_tool_use_failure_hooks,
+    resolve_permission_decision,
+)
 from tools.utils.validation import validate_tool_input
 
 if TYPE_CHECKING:
@@ -154,6 +159,7 @@ async def execute_tool_call(
             )
 
     # ---- 4. PreToolUse Hooks ----
+    hook_result = HookResult()
     if hook_config is not None:
         # Hook 需要 JSON 可序列化的 dict，将 Pydantic 实例转为 dict
         hook_input_dict = (
@@ -161,56 +167,59 @@ async def execute_tool_call(
             if isinstance(validated_input, BaseModel)
             else validated_input
         )
-        try:
-            hook_result: HookResult = await run_pre_tool_use_hooks(
-                hook_config, tool_name, hook_input_dict,
-            )
-        except Exception as e:
-            return ToolExecutionResult(
-                tool_call_id=tool_call_id,
-                tool_name=tool_name,
-                content=f"Pre-tool hook error: {e}",
-                is_error=True,
-            )
-        if hook_result.decided and hook_result.reason:
-            # decided=True + 有 reason 表示 hook 做出了 deny 决策
-            return ToolExecutionResult(
-                tool_call_id=tool_call_id,
-                tool_name=tool_name,
-                content=f"Tool use denied by hook: {hook_result.reason}",
-                is_error=True,
-            )
+        # run_pre_tool_use_hooks 内部保证不抛出异常
+        hook_result = await run_pre_tool_use_hooks(
+            hook_config, tool_name, hook_input_dict,
+        )
         if hook_result.updated_input is not None:
             validated_input = hook_result.updated_input
 
     # ---- 5. 权限决策 ----
-    if permission_check is not None:
-        try:
-            perm_result = await permission_check(tool, validated_input, context)
-            # perm_result: {"decision": "allow"|"deny", "reason": str}
-            if isinstance(perm_result, dict) and perm_result.get("decision") == "deny":
+    perm_decision = await resolve_permission_decision(
+        hook_result, tool, validated_input, context, permission_check,
+    )
+    if perm_decision is not None:
+        # 权限被拒绝，先跑 PermissionDenied hooks
+        if hook_config is not None:
+            deny_result = await run_permission_denied_hooks(
+                hook_config,
+                tool_name,
+                hook_input_dict if hook_config is not None else {},
+                perm_decision.get("reason", "Permission denied"),
+            )
+            if deny_result.decided:
+                # PermissionDenied hook 表示可以重试
                 return ToolExecutionResult(
                     tool_call_id=tool_call_id,
                     tool_name=tool_name,
-                    content=f"Permission denied: {perm_result.get('reason', 'No reason provided')}",
+                    content=f"Permission denied: {perm_decision.get('reason', 'No reason provided')}. The PermissionDenied hook indicated this command is now approved. You may retry it if you would like.",
                     is_error=True,
+                    metadata={"retry_allowed": True},
                 )
-        except Exception as e:
-            return ToolExecutionResult(
-                tool_call_id=tool_call_id,
-                tool_name=tool_name,
-                content=f"Permission check error: {e}",
-                is_error=True,
-            )
+        return ToolExecutionResult(
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            content=f"Permission denied: {perm_decision.get('reason', 'No reason provided')}",
+            is_error=True,
+        )
 
     # ---- 6. tool.execute() ----
     try:
         result: ToolResult = await tool.execute(validated_input, context)
     except Exception as e:
+        error_msg = str(e)
+        # 执行失败后跑 PostToolUseFailure hooks
+        if hook_config is not None:
+            await run_post_tool_use_failure_hooks(
+                hook_config,
+                tool_name,
+                hook_input_dict if hook_config is not None else {},
+                error_msg,
+            )
         return ToolExecutionResult(
             tool_call_id=tool_call_id,
             tool_name=tool_name,
-            content=f"Tool execution error: {e}",
+            content=f"Tool execution error: {error_msg}",
             is_error=True,
         )
 
