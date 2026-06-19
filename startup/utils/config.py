@@ -525,12 +525,15 @@ def get_initial_settings(
 ) -> Settings:
     """多源设置合并。
 
-    合并优先级（从低到高）：
+    合并优先级（从低到高，对齐 TS 版）：
     1. 用户设置 (~/.agent/settings.json)
     2. 项目设置 (.agent/settings.json)
     3. 本地项目设置 (.agent/settings.local.json)
-    4. 策略设置 (~/.agent/managed-settings.json)
-    5. CLI 标志
+    4. CLI 标志
+    5. 策略设置 (~/.agent/managed-settings.json)  ← 最高，管理员强制
+
+    环境变量 (LLM_API_KEY, LLM_BASE_URL, LLM_MODEL) 不参与覆盖合并，
+    而是在合并完成后对仍为 None 的 LLM 字段做兜底补充。
 
     线程安全。
     """
@@ -543,19 +546,21 @@ def get_initial_settings(
     # 3. 本地项目设置
     local_settings = get_local_settings(project_root)
 
-    # 4. 策略设置（最高文件优先级）
+    # 4. 策略设置（最高优先级，管理员强制）
     managed_settings = get_managed_settings()
 
-    # 按优先级合并
+    # 按优先级合并（从低到高：用户 < 项目 < 本地 < CLI 标志 < 策略）
     merged = _merge_settings(user_settings, project_settings)
     merged = _merge_settings(merged, local_settings)
-    merged = _merge_settings(merged, managed_settings)
 
     # 5. CLI 标志覆盖
     if cli_flags:
         merged = _apply_cli_flags(merged, cli_flags)
 
-    # 最后从环境变量补充 LLM 配置
+    # 6. 策略设置最高优先级（管理员强制，不可被 CLI 标志绕过）
+    merged = _merge_settings(merged, managed_settings)
+
+    # 最后从环境变量补充 LLM 配置（仅当字段为 None 时兜底）
     _apply_llm_env_vars_to_settings(merged)
 
     return merged
@@ -606,14 +611,25 @@ def _apply_llm_env_vars(config: GlobalConfig) -> None:
 
 
 def _apply_llm_env_vars_to_settings(settings: Settings) -> None:
-    """从环境变量补充 LLM 配置到 Settings。"""
-    if settings.llm_api_key is None:
-        settings.llm_api_key = os.environ.get(ENV_LLM_API_KEY)
-    if settings.llm_base_url is None:
-        env_val = os.environ.get(ENV_LLM_BASE_URL)
-        settings.llm_base_url = env_val if env_val else DEFAULT_LLM_BASE_URL
-    if settings.model is None:
-        settings.model = os.environ.get(ENV_LLM_MODEL, DEFAULT_LLM_MODEL)
+    """环境变量优先级最高，覆盖 LLM 配置；未设置时用默认值兜底。
+
+    仅对 LLM 三字段 (llm_api_key / llm_base_url / model) 生效。
+    """
+    env_api_key = os.environ.get(ENV_LLM_API_KEY)
+    if env_api_key:
+        settings.llm_api_key = env_api_key
+
+    env_base_url = os.environ.get(ENV_LLM_BASE_URL)
+    if env_base_url:
+        settings.llm_base_url = env_base_url
+    elif settings.llm_base_url is None:
+        settings.llm_base_url = DEFAULT_LLM_BASE_URL
+
+    env_model = os.environ.get(ENV_LLM_MODEL)
+    if env_model:
+        settings.model = env_model
+    elif settings.model is None:
+        settings.model = DEFAULT_LLM_MODEL
 
 
 def _merge_settings(base: Settings, override: Settings) -> Settings:
