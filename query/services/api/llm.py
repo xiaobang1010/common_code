@@ -216,8 +216,15 @@ def parse_stream_chunk(chunk: Any) -> list[StreamEvent]:
     usage = getattr(chunk, "usage", None)
     if usage is not None:
         usage_dict: dict[str, Any] = {}
-        for attr in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        # 提取所有可能的 usage 字段（兼容对象属性和字典键两种格式）
+        all_attrs = (
+            "prompt_tokens", "completion_tokens", "total_tokens",
+            "cache_read_input_tokens", "cache_creation_input_tokens",
+        )
+        for attr in all_attrs:
             val = getattr(usage, attr, None)
+            if val is None and isinstance(usage, dict):
+                val = usage.get(attr)
             if val is not None:
                 usage_dict[attr] = val
         # 只在有真实数据时生成 usage 事件（过滤掉全 0 的占位 usage）

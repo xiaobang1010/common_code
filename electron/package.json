@@ -6,6 +6,9 @@
     "start": "electron .",
     "dev": "set ELECTRON_DEV=1&& electron ."
   },
+  "dependencies": {
+    "node-pty": "^1.0.0"
+  },
   "devDependencies": {
     "electron": "^28.3.3"
   }

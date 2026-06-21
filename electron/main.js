@@ -1,11 +1,18 @@
-const { app, BrowserWindow, dialog } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain } = require('electron')
 const { spawn } = require('child_process')
 const path = require('path')
+const pty = require('node-pty')
 
 // 保存 Python 子进程的引用，方便退出时清理
 let pythonProcess = null
 // 主窗口引用
 let win = null
+// 项目根目录，作为终端默认工作目录
+let projectRoot = path.join(__dirname, '..')
+// 终端实例表，id -> pty 进程
+const terminals = new Map()
+// 终端 id 自增计数器
+let terminalIdCounter = 0
 
 // 拉起 Python 后端服务
 function spawnPython() {
@@ -82,9 +89,50 @@ function createWindow(port) {
   })
 }
 
+// 创建一个伪终端，返回终端 id
+function createTerminal(cwd) {
+  const id = `term-${++terminalIdCounter}`
+  // Windows 用 pwsh，其他平台用 bash
+  const shell = process.platform === 'win32' ? 'pwsh.exe' : 'bash'
+  const ptyProcess = pty.spawn(shell, [], {
+    name: 'xterm-color',
+    cols: 80,
+    rows: 24,
+    cwd: cwd || projectRoot,
+    env: process.env
+  })
+  // pty 输出转发给渲染进程
+  ptyProcess.onData((data) => {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('terminal:output', { id, data })
+    }
+  })
+  // pty 退出时从表里移除
+  ptyProcess.onExit(() => {
+    terminals.delete(id)
+  })
+  terminals.set(id, ptyProcess)
+  return id
+}
+
 // 应用就绪后拉起后端
 app.whenReady().then(() => {
   pythonProcess = spawnPython()
+
+  // 终端 IPC
+  ipcMain.handle('terminal:create', (_event, cwd) => createTerminal(cwd))
+  ipcMain.on('terminal:input', (_event, { id, data }) => {
+    const t = terminals.get(id)
+    if (t) t.write(data)
+  })
+  ipcMain.handle('terminal:resize', (_event, { id, cols, rows }) => {
+    const t = terminals.get(id)
+    if (t) t.resize(cols, rows)
+  })
+  ipcMain.handle('terminal:dispose', (_event, id) => {
+    const t = terminals.get(id)
+    if (t) { t.kill(); terminals.delete(id) }
+  })
 })
 
 // 所有窗口关闭时的处理
@@ -100,6 +148,10 @@ app.on('window-all-closed', () => {
 
 // 应用退出前确保杀掉 Python 子进程
 app.on('before-quit', () => {
+  // 清理所有终端进程，避免残留 pwsh
+  for (const [, t] of terminals) { t.kill() }
+  terminals.clear()
+
   if (pythonProcess) {
     pythonProcess.kill()
     pythonProcess = null

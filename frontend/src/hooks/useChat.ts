@@ -120,12 +120,8 @@ export function useChat() {
           )
         }
       } else if (evt.event_type === 'usage' && evt.usage) {
-        // 累加 token 用量
-        setTokenUsage(prev => ({
-          ...prev,
-          input_tokens: prev.input_tokens + (evt.usage?.prompt_tokens || 0),
-          output_tokens: prev.output_tokens + (evt.usage?.completion_tokens || 0),
-        }))
+        // 不在前端累加——后端 AppState 已正确累加，对话结束后 fetchState 会拉准确值
+        // 前端累加会导致和后端值不一致（cache 字段没加、重复计算等）
       } else if (evt.event_type === 'error') {
         setMessages(prev => [
           ...prev,
