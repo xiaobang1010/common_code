@@ -7,6 +7,9 @@
 - **自主编码**：AI 能读你的代码、改文件、执行命令，完成完整的开发任务，不是补全片段
 - **权限守护**：AI 每次动文件或跑命令前都要你点头，危险操作绝不静默执行
 - **全屏工作区**：左侧文件树、中间代码编辑器、右侧 AI 对话——一个窗口搞定一切
+- **集成终端**：编辑器底部内嵌 PowerShell，不用切窗口
+- **全局搜索**：跨文件内容搜索，ripgrep 驱动，结果高亮跳转
+- **源代码管理**：Git 暂存、提交、分支状态一览，不用离开应用
 - **流式交互**：AI 回复逐字呈现，工具调用过程实时可见，不用等整段吐完
 - **成本透明**：状态栏实时显示 token 用量和费用花了多少，心里有数
 
@@ -30,7 +33,7 @@
 }
 ```
 
-支持任何 OpenAI 兼容的 API。
+支持任何 OpenAI 兼容的 API。也可以启动后在设置面板里改。
 
 ### 2. 安装依赖
 
@@ -55,6 +58,8 @@ cd frontend && npm run build
 cd ../electron && npx electron .
 ```
 
+或者双击桌面快捷方式（`launch.bat`）一键启动。
+
 ### 开发模式（热更新）
 
 三个终端分别跑：
@@ -74,9 +79,9 @@ cd electron && npm run dev
 
 ```
 common_code/
-├── frontend/        React 前端（三栏布局：文件树 + 编辑器 + AI 面板）
-├── electron/        Electron 主进程壳
-├── server/          FastAPI 后端（HTTP + SSE 接口）
+├── frontend/        React 前端（三栏布局：文件树 + 编辑器 + AI 面板 + 终端）
+├── electron/        Electron 主进程壳（子进程管理 + node-pty 终端）
+├── server/          FastAPI 后端（HTTP + SSE 接口 + 权限桥接）
 ├── query/           AI 引擎核心（agentic 循环、流式调用、压缩管线）
 ├── tools/           工具系统（Bash/文件读写/Glob/Grep + 权限 + 命令）
 ├── startup/         启动初始化（配置加载、工作目录、hooks）

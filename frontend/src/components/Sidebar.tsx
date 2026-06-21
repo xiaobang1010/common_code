@@ -1,6 +1,8 @@
 import type { ViewType } from '../App'
 import FileTree from './sidebar/FileTree'
 import GitStatus from './sidebar/GitStatus'
+import SearchPanel from './sidebar/SearchPanel'
+import SettingsPanel from './sidebar/SettingsPanel'
 
 // 各视图对应的标题
 const viewTitles: Record<ViewType, string> = {
@@ -29,19 +31,11 @@ function Sidebar({ activeView, collapsed, onToggleCollapse, onFileOpen }: Sideba
       case 'files':
         return <FileTree onFileOpen={onFileOpen} />
       case 'search':
-        return (
-          <div style={{ padding: '8px', color: 'var(--text-secondary)', fontSize: '13px' }}>
-            搜索功能开发中
-          </div>
-        )
+        return <SearchPanel onFileOpen={onFileOpen} />
       case 'git':
         return <GitStatus />
       case 'settings':
-        return (
-          <div style={{ padding: '8px', color: 'var(--text-secondary)', fontSize: '13px' }}>
-            设置功能开发中
-          </div>
-        )
+        return <SettingsPanel />
     }
   }
 

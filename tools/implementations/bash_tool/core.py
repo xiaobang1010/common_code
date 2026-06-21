@@ -85,10 +85,17 @@ async def _execute(inp: BashInput, _context: ToolUseContext) -> ToolResult:
     timeout_sec = (inp.timeout or 120000) / 1000.0
     shell_cmd = _get_shell_cmd()
 
+    # Windows PowerShell 默认输出 ANSI 颜色码，前端不解析会导致乱码
+    # 在命令前加一行禁用颜色输出
+    if sys.platform == "win32":
+        actual_command = f"$PSStyle.OutputRendering='PlainText'; {inp.command}"
+    else:
+        actual_command = inp.command
+
     try:
         proc = await asyncio.create_subprocess_exec(
             *shell_cmd,
-            inp.command,
+            actual_command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

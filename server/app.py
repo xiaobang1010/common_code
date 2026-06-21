@@ -24,6 +24,9 @@ from fastapi.staticfiles import StaticFiles
 
 from query.loop import LoopResult
 from query.services.api.llm import StreamEvent
+from query.services.pricing import calculate_cost
+from startup.bootstrap.state import add_to_total_cost
+from startup.utils.config import get_global_config, save_global_config
 from tools.commands.commands import find_command
 from tools.commands.commands_context import CommandContext
 
@@ -124,11 +127,29 @@ async def chat_event_stream(prompt: str):
     queue: asyncio.Queue = asyncio.Queue()
 
     async def consume_engine():
-        """后台任务：消费引擎事件入队。"""
+        """后台任务：消费引擎事件入队，同时累加 token 和成本到 AppState。"""
         try:
             async for ev in engine.submitMessage(
                 prompt, user_context={}, system_context={}
             ):
+                # 拦截 usage 事件，累加 token 和成本到 AppState（和 repl.py 逻辑一致）
+                if isinstance(ev, StreamEvent) and ev.type == "usage" and ev.usage:
+                    state = app_state.get_state()
+                    prompt_tokens = ev.usage.get("prompt_tokens", 0)
+                    completion_tokens = ev.usage.get("completion_tokens", 0)
+                    cache_read = ev.usage.get("cache_read_input_tokens", 0)
+                    cache_creation = ev.usage.get("cache_creation_input_tokens", 0)
+                    state.token_usage.input_tokens += prompt_tokens
+                    state.token_usage.output_tokens += completion_tokens
+                    state.token_usage.cache_read_input_tokens += cache_read
+                    state.token_usage.cache_creation_input_tokens += cache_creation
+                    cost = calculate_cost(state.model or "", ev.usage)
+                    state.total_cost_usd += cost
+                    add_to_total_cost(
+                        cost,
+                        {"input_tokens": prompt_tokens, "output_tokens": completion_tokens},
+                        state.model or "",
+                    )
                 await queue.put(ev)
         except Exception as e:
             await queue.put(e)
@@ -148,6 +169,9 @@ async def chat_event_stream(prompt: str):
                 req = permission_bridge.get_pending_permission_request()
                 if req is not None:
                     yield f"data: {json.dumps(req, ensure_ascii=False, default=str)}\n\n"
+                else:
+                    # 推心跳，让前端知道后端还活着（AI 可能在思考或执行工具）
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
                 continue
 
             if ev is None:
@@ -354,37 +378,49 @@ async def read_file(path: str) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def _parse_porcelain_line(line: str) -> dict | None:
-    """解析 git status --porcelain 的一行。
+def _parse_porcelain_line(line: str) -> list[dict]:
+    """解析 git status --porcelain 的一行，返回变更项列表。
 
     --porcelain 输出格式：XY path，X 是暂存区状态，Y 是工作区状态。
-    返回 {"path": "...", "status": "..."}，无法解析时返回 None。
+    一个文件可能同时有暂存和未暂存的改动，此时返回两项。
+    返回 [{"path": "...", "status": "...", "staged": True/False}, ...]，无法解析时返回空列表。
     """
     if len(line) < 4:
-        return None
+        return []
     x = line[0]
     y = line[1]
     # 路径从第 4 个字符开始（XY + 空格）
     file_path = line[3:]
 
-    # 优先看工作区状态 Y，为空再看暂存区状态 X
-    code = y if y != " " else x
     status_map = {
         "M": "modified",
         "A": "added",
         "D": "deleted",
-        "?": "added",  # 未跟踪文件按 added 处理
         "R": "modified",  # 重命名按 modified 处理
         "C": "modified",  # 复制按 modified 处理
+        "?": "added",  # 未跟踪文件按 added 处理
     }
-    return {"path": file_path, "status": status_map.get(code, "unknown")}
+
+    changes: list[dict] = []
+    # 暂存区状态 X：空格或问号表示无暂存改动
+    if x not in (" ", "?"):
+        changes.append(
+            {"path": file_path, "status": status_map.get(x, "unknown"), "staged": True}
+        )
+    # 工作区状态 Y：空格表示无未暂存改动
+    if y != " ":
+        changes.append(
+            {"path": file_path, "status": status_map.get(y, "unknown"), "staged": False}
+        )
+    return changes
 
 
 @app.get("/api/git/status")
 async def git_status() -> dict:
     """Git 状态接口。
 
-    返回 {"branch": "...", "changes": [{"path", "status"}]}。
+    返回 {"branch": "...", "changes": [{"path", "status", "staged"}]}。
+    其中 staged 为 True 表示已暂存，False 表示未暂存。
     不在 git 仓库或调用失败时返回空分支和空变更列表。
     """
     root = _project_root()
@@ -411,8 +447,8 @@ async def git_status() -> dict:
         if status_proc.returncode == 0:
             for line in status_proc.stdout.splitlines():
                 parsed = _parse_porcelain_line(line)
-                if parsed is not None:
-                    changes.append(parsed)
+                if parsed:
+                    changes.extend(parsed)
 
         return {"branch": branch, "changes": changes}
     except (subprocess.SubprocessError, OSError):
@@ -431,6 +467,269 @@ async def abort_query() -> JSONResponse:
     返回 501 状态码和 {"error": "abort not implemented"}。
     """
     return JSONResponse(status_code=501, content={"error": "abort not implemented"})
+
+
+# ---------------------------------------------------------------------------
+# GET /api/search — 全局搜索
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/search")
+async def search(
+    q: str,
+    case_sensitive: bool = False,
+    regex: bool = False,
+) -> dict:
+    """全局搜索接口，用 ripgrep 搜索项目文件内容。
+
+    参数 q：搜索关键词。
+    参数 case_sensitive：是否区分大小写，默认 false。
+    参数 regex：是否按正则匹配，默认 false。
+    返回 {"results": [{"path", "line_number", "line", "matches"}]}。
+    rg 不存在或调用失败时返回空结果和 error 字段。
+    """
+    root = _project_root()
+
+    # 构建 rg 命令：JSON 输出、带行号、每文件最多 50 个匹配
+    cmd: list[str] = ["rg", "--json", "-n", "--max-count", "50"]
+
+    # 默认不区分大小写；区分大小写时不加 -i
+    if not case_sensitive:
+        cmd.append("-i")
+
+    # 非正则模式按字面字符串匹配
+    if not regex:
+        cmd.append("--fixed-strings")
+
+    # 排除常见无关目录
+    cmd.extend(
+        [
+            "-g", "!node_modules",
+            "-g", "!__pycache__",
+            "-g", "!.git",
+            "-g", "!dist",
+        ]
+    )
+
+    cmd.append(q)
+    cmd.append(".")
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return {"results": [], "error": "ripgrep not found"}
+
+    # rg --json 每行输出一个 JSON 对象，只取 type=="match" 的
+    results: list[dict] = []
+    for line in proc.stdout.splitlines():
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if obj.get("type") != "match":
+            continue
+        data = obj.get("data", {})
+        path = data.get("path", {}).get("text", "")
+        line_number = data.get("line_number", 0)
+        line_text = data.get("lines", {}).get("text", "")
+        submatches = data.get("submatches", [])
+        matches = [
+            {"start": sm.get("start", 0), "end": sm.get("end", 0)}
+            for sm in submatches
+        ]
+        results.append(
+            {
+                "path": path,
+                "line_number": line_number,
+                "line": line_text,
+                "matches": matches,
+            }
+        )
+
+    return {"results": results}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/stage — 暂存文件
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/git/stage")
+async def git_stage(body: dict) -> dict:
+    """暂存文件接口，执行 git add。
+
+    请求体：{"path": "..."}
+    返回 {"ok": true} 或 {"ok": false, "error": "..."}
+    """
+    path = body.get("path", "")
+    if not path:
+        return {"ok": False, "error": "path is required"}
+    root = _project_root()
+    try:
+        proc = subprocess.run(
+            ["git", "add", path],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError) as e:
+        return {"ok": False, "error": str(e)}
+    if proc.returncode != 0:
+        return {"ok": False, "error": proc.stderr.strip()}
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/unstage — 取消暂存
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/git/unstage")
+async def git_unstage(body: dict) -> dict:
+    """取消暂存接口，执行 git reset HEAD。
+
+    请求体：{"path": "..."}
+    返回 {"ok": true} 或 {"ok": false, "error": "..."}
+    """
+    path = body.get("path", "")
+    if not path:
+        return {"ok": False, "error": "path is required"}
+    root = _project_root()
+    try:
+        proc = subprocess.run(
+            ["git", "reset", "HEAD", path],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError) as e:
+        return {"ok": False, "error": str(e)}
+    if proc.returncode != 0:
+        return {"ok": False, "error": proc.stderr.strip()}
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/commit — 提交
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/git/commit")
+async def git_commit(body: dict) -> dict:
+    """提交接口，执行 git commit -m。
+
+    请求体：{"message": "..."}
+    返回 {"ok": true} 或 {"ok": false, "error": "..."}
+    """
+    message = body.get("message", "")
+    if not message:
+        return {"ok": False, "error": "message is required"}
+    root = _project_root()
+    try:
+        proc = subprocess.run(
+            ["git", "commit", "-m", message],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (subprocess.SubprocessError, OSError) as e:
+        return {"ok": False, "error": str(e)}
+    if proc.returncode != 0:
+        return {"ok": False, "error": proc.stderr.strip()}
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/git/diff — 获取文件 diff
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/git/diff")
+async def git_diff(path: str = "") -> dict:
+    """获取文件 diff 接口，执行 git diff。
+
+    参数 path：文件路径，可选。
+    返回 {"diff": "..."}。
+    """
+    root = _project_root()
+    cmd = ["git", "diff"]
+    if path:
+        cmd.append(path)
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return {"diff": ""}
+    return {"diff": proc.stdout}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/config — 读取 LLM 配置
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/config")
+async def get_config() -> dict:
+    """读取 LLM 配置接口。
+
+    返回 {"llm_base_url", "llm_api_key", "llm_model"}。
+    配置系统未初始化等异常情况下返回空值和 error 字段。
+    """
+    try:
+        config = get_global_config()
+        return {
+            "llm_base_url": config.llm_base_url or "",
+            "llm_api_key": config.llm_api_key or "",
+            "llm_model": config.llm_model or "",
+        }
+    except Exception as e:
+        return {
+            "llm_base_url": "",
+            "llm_api_key": "",
+            "llm_model": "",
+            "error": str(e),
+        }
+
+
+# ---------------------------------------------------------------------------
+# POST /api/config — 写入 LLM 配置
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/config")
+async def set_config(body: dict) -> dict:
+    """写入 LLM 配置接口。
+
+    请求体：{"llm_base_url", "llm_api_key", "llm_model"}，只更新传入的字段。
+    返回 {"ok": true} 或 {"ok": false, "error": "..."}
+    """
+    try:
+        config = get_global_config()
+        # 只更新传入的字段，不覆盖未传的字段
+        if "llm_base_url" in body:
+            config.llm_base_url = body["llm_base_url"]
+        if "llm_api_key" in body:
+            config.llm_api_key = body["llm_api_key"]
+        if "llm_model" in body:
+            config.llm_model = body["llm_model"]
+        save_global_config(config)
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 # ---------------------------------------------------------------------------
