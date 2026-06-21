@@ -1,4 +1,4 @@
-"""动态段注册表管理 — 参考原始 src/utils/systemPrompt.ts。"""
+"""动态段注册表管理。"""
 
 from __future__ import annotations
 

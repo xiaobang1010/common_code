@@ -1,4 +1,4 @@
-"""API 工具函数 — 参考原始 src/utils/api.ts。"""
+"""API 工具函数。"""
 
 from __future__ import annotations
 
@@ -15,20 +15,26 @@ if TYPE_CHECKING:
 # prepend_user_context
 # ---------------------------------------------------------------------------
 
-def prepend_user_context(messages: list[dict], context: str) -> list[dict]:
-    """在消息列表前插入 userContext（CLAUDE.md + 日期）。
+def prepend_user_context(messages: list[dict], context: dict[str, str] | None) -> list[dict]:
+    """在消息列表前插入 userContext（CLAUDE.md + 日期等）。
 
-    将上下文包装为 system-reminder 格式的 user 消息，插入到消息列表最前。
+    接受字典形式的上下文，每个键值对转换为 `# {key}\\n{value}` 分段，
+    多段之间用换行连接，再包装为 system-reminder 格式的 user 消息，
+    插入到消息列表最前。
     """
+    # 空字典或 None 时直接返回原消息列表，不做处理
     if not context:
         return messages
+
+    # 把字典转成 # key\nvalue 分段文本，多段用换行连接
+    context_text = "\n".join(f"# {key}\n{value}" for key, value in context.items())
 
     context_message = {
         "role": "user",
         "content": (
             "<system-reminder>\n"
             "As you answer the user's questions, you can use the following context:\n"
-            f"{context}\n"
+            f"{context_text}\n"
             "\n"
             "IMPORTANT: this context may or may not be relevant to your tasks. "
             "You should not respond to this context unless it is highly relevant to your task.\n"
@@ -42,11 +48,19 @@ def prepend_user_context(messages: list[dict], context: str) -> list[dict]:
 # append_system_context
 # ---------------------------------------------------------------------------
 
-def append_system_context(messages: list[dict], context: str) -> list[dict]:
-    """在消息列表后追加系统上下文。"""
+def append_system_context(messages: list[dict], context: dict[str, str] | None) -> list[dict]:
+    """在消息列表后追加系统上下文。
+
+    接受字典形式的上下文，每个键值对转换为 `{key}: {value}` 形式，
+    多段之间用换行连接，作为 system 消息追加到消息列表末尾。
+    """
+    # 空字典或 None 时直接返回原消息列表，不做处理
     if not context:
         return messages
-    return [*messages, {"role": "system", "content": context}]
+
+    # 把字典转成 key: value 形式文本，多段用换行连接
+    context_text = "\n".join(f"{key}: {value}" for key, value in context.items())
+    return [*messages, {"role": "system", "content": context_text}]
 
 
 # ---------------------------------------------------------------------------

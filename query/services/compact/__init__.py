@@ -1,17 +1,11 @@
 """压缩模块入口。
 
-按顺序执行四级压缩管线：
-1. snip → 如果释放足够 token，返回
-2. micro_compact → 如果释放足够 token，返回
-3. context_collapse（如果启用）→ 如果释放足够 token，返回
-4. auto_compact → 最终压缩
-
-参考原始 TypeScript 实现 src/services/compact/。
+聚合各压缩级别模块的接口：snip、micro_compact、context_collapse、auto_compact。
+四级压缩的编排逻辑已内联到 query/loop.py 的 _run_inline_compression，
+本模块只负责导出各级别的判断与执行函数。
 """
 
 from __future__ import annotations
-
-import json
 
 from query.services.compact.auto_compact import (
     AUTOCOMPACT_BUFFER_TOKENS,
@@ -51,93 +45,4 @@ __all__ = [
     "auto_compact_if_needed",
     "compact_conversation",
     "get_auto_compact_threshold",
-    # Pipeline
-    "run_compression_pipeline",
 ]
-
-
-# ---------------------------------------------------------------------------
-# Token 估算
-# ---------------------------------------------------------------------------
-
-BYTES_PER_TOKEN = 4
-
-
-def _estimate_tokens_for_messages(messages: list[dict]) -> int:
-    """粗略估算消息列表的 token 数。"""
-    total_chars = 0
-    for msg in messages:
-        total_chars += len(json.dumps(msg, ensure_ascii=False))
-    return max(1, total_chars // BYTES_PER_TOKEN)
-
-
-# ---------------------------------------------------------------------------
-# 压缩管线
-# ---------------------------------------------------------------------------
-
-
-async def run_compression_pipeline(
-    messages: list[dict],
-    model: str,
-    tracking: CompactTracking,
-    context_collapse_enabled: bool = False,
-) -> list[dict]:
-    """按顺序执行四级压缩管线。
-
-    执行顺序：
-    1. snip → 如果释放足够 token，返回
-    2. micro_compact → 如果释放足够 token，返回
-    3. context_collapse（如果启用）→ 如果释放足够 token，返回
-    4. auto_compact → 最终压缩
-
-    每一级压缩后检查 token 使用量是否降到安全水平
-    （context_window 的 85% 以下），如果是则提前返回。
-
-    Args:
-        messages: 消息列表
-        model: 模型名称
-        tracking: 压缩追踪状态
-        context_collapse_enabled: 是否启用 context collapse
-
-    Returns:
-        压缩后的消息列表
-    """
-    from startup.utils.model.config import get_effective_context_window
-
-    context_window = get_effective_context_window(model)
-    current_tokens = _estimate_tokens_for_messages(messages)
-
-    # 安全阈值：context_window 的 85%
-    safe_threshold = context_window * 0.85
-
-    result = messages
-
-    # ---- 第 1 级: Snip ----
-    if should_snip(result, context_window, current_tokens):
-        result = snip_messages(result, context_window, current_tokens)
-        current_tokens = _estimate_tokens_for_messages(result)
-        if current_tokens <= safe_threshold:
-            return result
-
-    # ---- 第 2 级: Microcompact ----
-    if should_micro_compact(result):
-        result = micro_compact_messages(result)
-        current_tokens = _estimate_tokens_for_messages(result)
-        if current_tokens <= safe_threshold:
-            return result
-
-    # ---- 第 3 级: Context Collapse（如果启用）----
-    if context_collapse_enabled and should_context_collapse(
-        result, context_window, current_tokens
-    ):
-        result = await context_collapse_messages(result, model, context_window)
-        current_tokens = _estimate_tokens_for_messages(result)
-        if current_tokens <= safe_threshold:
-            return result
-
-    # ---- 第 4 级: Autocompact ----
-    result, _was_compacted = await auto_compact_if_needed(
-        result, model, tracking, context_collapse_enabled
-    )
-
-    return result

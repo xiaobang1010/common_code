@@ -18,11 +18,22 @@ from typing import Any, Callable, Optional
 from startup.state.app_state import AppState, AppStateProvider
 
 from ink.ui.messages import MessageData, fold_messages, normalize_messages
-from ink.ui.message import render_message
+from ink.ui.message import render_message, render_tool_call_summary
 from ink.ui.prompt_input import PromptInput, InputMode
+from ink.renderer import RenderNode, LayoutInfo
 
 from tools.commands.commands import find_command, get_commands
 from tools.commands.commands_context import CommandContext
+
+from query.engine import QueryEngine, build_engine_config
+from query.services.pricing import calculate_cost
+from startup.bootstrap.state import add_to_total_cost
+
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from ink.core import Ink
+    from query.services.api.llm import StreamEvent
+    from query.loop import LoopResult
 
 
 # ---------------------------------------------------------------------------
@@ -63,13 +74,21 @@ class REPLScreen:
         prompt_input: 输入组件
     """
 
-    def __init__(self, app_state: AppStateProvider) -> None:
+    def __init__(self, app_state: AppStateProvider, ink: Optional["Ink"] = None) -> None:
         self._app_state = app_state
+        self._ink = ink
         self._screen: ScreenMode = ScreenMode.PROMPT
         self._messages: list[MessageData] = []
         self._prompt_input = PromptInput(multiline=False)
         self._is_running = False
         self._on_submit: Optional[Callable[[str], Any]] = None
+        # 流式输出缓冲区，用于 Ink 增量渲染
+        self._stream_buffer: str = ""
+        # 会话级引擎，持有消息历史与 token 用量，跨多次 submitMessage 持久化
+        # 注入权限弹窗回调：ASK 决策时调 show_permission_dialog 让用户选择
+        self._engine = QueryEngine(build_engine_config(
+            permission_prompt=self._permission_prompt,
+        ))
 
     @property
     def screen(self) -> ScreenMode:
@@ -105,10 +124,18 @@ class REPLScreen:
                 # 渲染状态栏
                 self.render_status_line()
 
+                # Ink 模式：input 前重置帧缓存，让 prompt_toolkit 接管屏幕
+                if self._ink is not None:
+                    self._ink.clear()
+
                 # 渲染提示符并获取输入
                 user_input = await asyncio.to_thread(
                     self._prompt_input.get_input, "> "
                 )
+
+                # Ink 模式：input 后重置帧缓存（prompt_toolkit 改了屏幕内容）
+                if self._ink is not None:
+                    self._ink.clear()
 
                 if not user_input:
                     continue
@@ -121,15 +148,15 @@ class REPLScreen:
                     break
 
                 if result.output:
-                    print(result.output)
+                    self._emit(result.output)
                     continue
 
-                # 普通消息 → 调用 LLM
+                # 普通消息 → 调用 LLM，把用户输入文本传给引擎
                 if not result.handled:
-                    await self._call_llm()
+                    await self._call_llm(user_input)
 
             except (EOFError, KeyboardInterrupt):
-                print("\nGoodbye!")
+                self._emit("\nGoodbye!")
                 self._is_running = False
                 break
 
@@ -141,116 +168,172 @@ class REPLScreen:
     # LLM 调用
     # -----------------------------------------------------------------------
 
-    async def _call_llm(self) -> None:
-        """调用 LLM 并流式输出响应，支持工具调用循环。"""
-        from query.services.api.client import get_default_model
-        from query.services.api.llm import query_model_with_streaming
-        from tools import get_tools
-        from tools.executor import execute_tool_call, ToolExecutionResult, tool_result_to_openai_message
-        from tools.protocol import ToolUseContext
+    async def _call_llm(self, prompt: str) -> None:
+        """调用 LLM 并流式输出响应，支持工具调用循环。
 
-        model = self._app_state.get_state().model or get_default_model()
-        tools = get_tools()
-        tool_context = ToolUseContext()
+        通过 self._engine.submitMessage 提交用户输入，引擎内部持有
+        完整消息历史并跨轮持久化。REPL 仅负责构建 user_context /
+        system_context 并传入引擎，同时消费 yield 的事件把 assistant
+        消息、tool 结果、压缩产物同步回 self._messages 供 UI 渲染。
+        """
+        from query.services.api.llm import StreamEvent
+        from query.loop import LoopResult
+        from query.utils.messages import is_compact_boundary_message
+        from startup.utils.context import get_user_context, get_system_context
 
-        # Agentic 循环：LLM → tool_calls → 执行 → 反馈 → LLM → ...
-        max_iterations = 20
-        for iteration in range(max_iterations):
-            openai_messages = self._messages_to_openai_format()
-            if not openai_messages:
-                return
+        # 构建上下文（对齐 TS 版：由调用方构建后传入引擎）
+        user_context = get_user_context()
+        system_context = get_system_context()
 
-            # 流式调用 LLM
-            full_text = ""
-            tool_calls_list: list[dict] = []
-            tool_calls_map: dict[str, dict] = {}  # 按 id 聚合增量 tool_calls
-            tool_calls_order: list[str] = []  # 保持插入顺序
-            finish_reason = None
+        # 引擎内部维护历史，这里只传 prompt；通过 yield 事件同步到 UI 消息列表
+        async for event in self._engine.submitMessage(
+            prompt, user_context=user_context, system_context=system_context
+        ):
+            if isinstance(event, StreamEvent):
+                self._handle_stream_event(event)
+            elif isinstance(event, dict):
+                self._handle_yielded_message(event, is_compact_boundary_message)
+            elif isinstance(event, LoopResult):
+                self._handle_loop_result(event)
 
-            try:
-                async for event in query_model_with_streaming(
-                    messages=openai_messages, tools=tools, model=model
-                ):
-                    if event.type == "content":
-                        full_text += (event.content or "")
-                        print(event.content or "", end="", flush=True)
-                    elif event.type == "tool_call_delta":
-                        tc_id = event.tool_call_id
-                        if tc_id:
-                            if tc_id not in tool_calls_map:
-                                tool_calls_map[tc_id] = {
-                                    "id": tc_id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": "",
-                                        "arguments": "",
-                                    },
-                                }
-                                tool_calls_order.append(tc_id)
-                            entry = tool_calls_map[tc_id]
-                            if event.tool_call_name:
-                                entry["function"]["name"] += event.tool_call_name
-                            if event.tool_call_arguments:
-                                entry["function"]["arguments"] += event.tool_call_arguments
-                    elif event.type == "done":
-                        finish_reason = event.finish_reason
-                    elif event.type == "usage" and event.usage:
-                        state = self._app_state.get_state()
-                        if event.usage.get("prompt_tokens"):
-                            state.token_usage.input_tokens = event.usage["prompt_tokens"]
-                        if event.usage.get("completion_tokens"):
-                            state.token_usage.output_tokens = event.usage["completion_tokens"]
-                    elif event.type == "error":
-                        print(f"\nError: {event.content}")
+    def _handle_stream_event(self, event: "StreamEvent") -> None:
+        """处理 query loop yield 的 StreamEvent。
 
-            except Exception as e:
-                print(f"\nError: {e}")
-                break
-
-            # 按插入顺序构建最终 tool_calls 列表
-            tool_calls_list = [tool_calls_map[tc_id] for tc_id in tool_calls_order]
-
-            # 将助手响应添加到消息列表
-            if full_text or tool_calls_list:
-                self._messages.append(MessageData(
-                    role="assistant",
-                    content=full_text or "",
-                    tool_calls=tool_calls_list if tool_calls_list else None,
-                ))
-
-            # 如果没有工具调用，循环结束
-            if not tool_calls_list or finish_reason != "tool_calls":
-                if full_text:
-                    print()  # 换行
-                break
-
-            print()  # 换行
-
-            # 执行工具调用
-            for tc in tool_calls_list:
-                tool_name = tc.get("function", {}).get("name", "unknown")
-                print(f"  \x1b[33m▸ {tool_name}\x1b[0m", flush=True)
-
-                result: ToolExecutionResult = await execute_tool_call(
-                    tc, tools, tool_context,
-                )
-
-                # 显示工具结果摘要
-                result_preview = result.content[:200] + "..." if len(result.content) > 200 else result.content
-                if result.is_error:
-                    print(f"  \x1b[31m✗ {tool_name}: {result_preview}\x1b[0m")
+        content → 流式输出（Ink 模式累积到 _stream_buffer 增量渲染）
+        tool_call_delta → 忽略（query loop 内部已聚合执行）
+        usage → 更新 token 计数
+        error → 打印错误
+        done → 流式结束，清空缓冲区
+        """
+        if event.type == "content":
+            # query loop 首个 content="" 是 turn-start 信号，跳过空内容
+            if event.content:
+                if self._ink is not None:
+                    # Ink 模式：累积到缓冲区，增量渲染（帧差分只更新最后一行）
+                    self._stream_buffer += event.content
+                    self._flush_ink()
                 else:
-                    print(f"  \x1b[32m✓ {tool_name}\x1b[0m", flush=True)
+                    print(event.content, end="", flush=True)
+        elif event.type == "usage" and event.usage:
+            state = self._app_state.get_state()
+            # token 用量累加（不是覆盖），跨多轮累计
+            prompt_tokens = event.usage.get("prompt_tokens", 0)
+            completion_tokens = event.usage.get("completion_tokens", 0)
+            cache_read = event.usage.get("cache_read_input_tokens", 0)
+            cache_creation = event.usage.get("cache_creation_input_tokens", 0)
+            state.token_usage.input_tokens += prompt_tokens
+            state.token_usage.output_tokens += completion_tokens
+            state.token_usage.cache_read_input_tokens += cache_read
+            state.token_usage.cache_creation_input_tokens += cache_creation
+            # 按模型定价算本次成本，累加到 AppState
+            cost = calculate_cost(state.model or "", event.usage)
+            state.total_cost_usd += cost
+            # 同步写入 bootstrap state（model_usage 用 input/output_tokens 键名）
+            add_to_total_cost(
+                cost,
+                {
+                    "input_tokens": prompt_tokens,
+                    "output_tokens": completion_tokens,
+                },
+                state.model or "",
+            )
+        elif event.type == "error":
+            self._emit(f"Error: {event.content}")
+        elif event.type == "done":
+            # 流式结束：清空缓冲区（完整 assistant 消息会通过 _handle_yielded_message 加入）
+            if self._ink is not None:
+                self._stream_buffer = ""
+            else:
+                print()  # 换行
 
-                # 将工具结果添加到消息列表
-                tool_msg = tool_result_to_openai_message(result)
-                self._messages.append(MessageData(
-                    role="tool",
-                    content=tool_msg.get("content", ""),
-                    tool_call_id=tool_msg.get("tool_call_id", ""),
-                ))
+    def _handle_yielded_message(
+        self,
+        msg: dict,
+        is_boundary_fn,
+    ) -> None:
+        """处理 query loop yield 的 dict 消息。
 
-            # 继续循环，让 LLM 处理工具结果
+        compact boundary → 替换完整历史（对齐 TS setMessages(() => [newMessage])），
+        清屏后渲染 boundary 标记
+        assistant / tool → append 到历史并渲染新增消息
+        压缩产物中的 summary 等普通消息 → append
+        """
+        width = self._get_terminal_width()
+        if is_boundary_fn(msg):
+            # 收到 boundary marker → 压缩发生了，替换完整历史
+            # query loop 会继续 yield summary 等后续消息，它们会正常 append
+            self._messages.clear()
+            boundary_msg = MessageData(
+                role=msg.get("role", "system"),
+                content=msg.get("content", ""),
+                is_compact_boundary=True,
+            )
+            self._messages.append(boundary_msg)
+            if self._ink is not None:
+                # Ink 模式：清空流式缓冲区并全量刷新
+                self._stream_buffer = ""
+                self._flush_ink()
+            else:
+                # 降级模式：清屏并渲染 boundary 分隔符
+                print("\033[2J\033[H", end="")
+                print(render_message(boundary_msg, width=width))
+        else:
+            # assistant 消息（含 tool_calls）或 tool 结果消息 → append
+            msg_data = MessageData(
+                role=msg.get("role", "user"),
+                content=msg.get("content", ""),
+                tool_calls=msg.get("tool_calls"),
+                tool_call_id=msg.get("tool_call_id"),
+            )
+            self._messages.append(msg_data)
+            if self._ink is not None:
+                # Ink 模式：清空流式缓冲区（完整消息已加入列表），全量刷新
+                self._stream_buffer = ""
+                self._flush_ink()
+            else:
+                # 降级模式：渲染新增消息
+                if msg_data.role == "assistant" and msg_data.tool_calls:
+                    # 有工具调用的 assistant：content 已流式打印，只渲染工具调用摘要
+                    for tc in msg_data.tool_calls:
+                        print(f"  {render_tool_call_summary(tc)}")
+                elif msg_data.role == "tool":
+                    # 工具结果：渲染预览（◈ 绿色前缀）
+                    print(render_message(msg_data, width=width))
+                # 纯文本 assistant（无 tool_calls）：content 已流式打印，不重复渲染
+
+    def _handle_loop_result(self, result: "LoopResult") -> None:
+        """处理 query loop yield 的 LoopResult，按退出原因给用户反馈。
+
+        - completed → 流式输出已自然结束，仅换行收尾
+        - prompt_too_long → 上下文超限且压缩未能恢复
+        - model_error → 模型调用异常
+        - max_output_tokens_exhausted → 输出 token 恢复次数用尽
+        - 其他 → 兜底打印 reason
+        """
+        if result.reason == "completed":
+            # 流式输出已自然结束；Ink 模式下缓冲区已在 done 事件清空
+            if self._ink is None:
+                print()  # 降级模式换行收尾
+        elif result.reason == "prompt_too_long":
+            self._emit("上下文过长且压缩未能恢复，请用 /compact 手动压缩或清理会话")
+        elif result.reason == "model_error":
+            self._emit(f"模型调用出错：{result.error}")
+        elif result.reason == "max_output_tokens_exhausted":
+            self._emit("输出 token 已用尽，请缩减请求或用 /compact 压缩历史")
+        else:
+            self._emit(f"循环退出：{result.reason}")
+
+    async def _permission_prompt(
+        self, tool_name: str, tool_input: dict, reason: str
+    ) -> str:
+        """权限确认弹窗回调，包装 show_permission_dialog。
+
+        executor 收到 ASK 决策时调用此回调，返回 "allow"/"deny"/"always_allow"。
+        show_permission_dialog 返回 PermissionDecision 枚举，其 value 正是这些字符串。
+        """
+        from ink.ui.permission_dialog import show_permission_dialog
+        decision = await show_permission_dialog(tool_name, tool_input, reason)
+        return decision.value
 
     # -----------------------------------------------------------------------
     # 输入处理
@@ -278,6 +361,13 @@ class REPLScreen:
             content=input_text,
         )
         self._messages.append(user_msg)
+
+        # 渲染新增的用户消息（▸ 蓝色前缀）
+        if self._ink is not None:
+            self._flush_ink()
+        else:
+            width = self._get_terminal_width()
+            print(render_message(user_msg, width=width))
 
         # 添加到历史记录
         self._prompt_input.add_to_history(input_text)
@@ -362,18 +452,154 @@ class REPLScreen:
     def _sync_messages_from_openai_format(self, openai_messages: list[dict]) -> None:
         """将 OpenAI 格式消息同步回内部 MessageData 列表。
 
-        仅在消息数量变化时更新（命令可能清空或压缩消息）。
+        内容感知：数量或任一条目的关键字段变化时才重建，
+        重建时从旧消息迁移 uuid/timestamp/is_compact_boundary 等元数据。
         """
+        # 数量不同，直接重建
         if len(openai_messages) != len(self._messages):
-            # 消息数量变化，重建列表
-            self._messages.clear()
-            for d in openai_messages:
-                self._messages.append(MessageData(
-                    role=d.get("role", "user"),
-                    content=d.get("content", ""),
-                    tool_calls=d.get("tool_calls"),
-                    tool_call_id=d.get("tool_call_id"),
-                ))
+            self._rebuild_messages_from_openai(openai_messages)
+            return
+        # 数量相同，逐条比较关键字段
+        for new_dict, old_msg in zip(openai_messages, self._messages):
+            if (new_dict.get("role") != old_msg.role or
+                    new_dict.get("content") != old_msg.content or
+                    new_dict.get("tool_calls") != old_msg.tool_calls or
+                    new_dict.get("tool_call_id") != old_msg.tool_call_id):
+                self._rebuild_messages_from_openai(openai_messages)
+                return
+        # 内容完全一致，不重建
+
+    def _rebuild_messages_from_openai(self, openai_messages: list[dict]) -> None:
+        """根据 OpenAI 格式消息重建内部列表，并迁移旧消息的元数据。"""
+        new_list: list[MessageData] = []
+        for i, d in enumerate(openai_messages):
+            new_msg = MessageData(
+                role=d.get("role", "user"),
+                content=d.get("content", ""),
+                tool_calls=d.get("tool_calls"),
+                tool_call_id=d.get("tool_call_id"),
+            )
+            # 从旧消息迁移元数据（如果该索引存在旧消息）
+            if i < len(self._messages):
+                old = self._messages[i]
+                new_msg.uuid = old.uuid
+                new_msg.timestamp = old.timestamp
+                # compact boundary 信息只存在于内部结构，OpenAI dict 里没有，需要从旧消息保留
+                new_msg.is_compact_boundary = old.is_compact_boundary
+            new_list.append(new_msg)
+        self._messages.clear()
+        self._messages.extend(new_list)
+
+    # -----------------------------------------------------------------------
+    # Ink 渲染辅助
+    # -----------------------------------------------------------------------
+
+    def _build_status_text(self) -> str:
+        """构建状态栏纯文本（不含 ANSI 颜色，颜色由 Ink props 处理）。"""
+        state = self._app_state.get_state()
+        parts: list[str] = []
+        if state.model:
+            parts.append(state.model)
+        usage = state.token_usage
+        if usage.input_tokens or usage.output_tokens:
+            parts.append(f"tokens: {usage.input_tokens}in/{usage.output_tokens}out")
+        if state.total_cost_usd > 0:
+            parts.append(f"cost: ${state.total_cost_usd:.4f}")
+        if self._screen == ScreenMode.TRANSCRIPT:
+            parts.append("[transcript]")
+        return " │ ".join(parts)
+
+    def _build_render_tree(self) -> RenderNode:
+        """构造完整屏幕的 RenderNode 树（状态栏 + 消息 + 流式输出）。
+
+        手动设置每个子节点的 layout_info.y 做垂直布局，
+        样式通过 props(fg) 传递（Ink 的 Screen 不解析 ANSI 转义）。
+        """
+        width = self._get_terminal_width()
+        children: list[RenderNode] = []
+        y = 0
+
+        def add_line(text: str, fg: str = "") -> None:
+            nonlocal y
+            props: dict = {"children": text}
+            if fg:
+                props["fg"] = fg
+            children.append(RenderNode(
+                type="text",
+                props=props,
+                layout_info=LayoutInfo(x=0, y=y, width=width, height=1),
+            ))
+            y += 1
+
+        # 状态栏
+        status = self._build_status_text()
+        if status:
+            add_line(status, fg="cyan")
+        add_line("")
+
+        # 消息列表
+        visible = fold_messages(self._messages, max_visible=50)
+        for msg in visible:
+            self._add_message_to_tree(msg, add_line)
+
+        # 流式输出（当前 assistant 正在生成的文本）
+        if self._stream_buffer:
+            add_line(f"● {self._stream_buffer}", fg="white")
+
+        return RenderNode(type="box", children=children)
+
+    def _add_message_to_tree(self, msg: MessageData, add_line) -> None:
+        """把单条消息转成 RenderNode 行，通过 add_line 回调添加。"""
+        if msg.is_compact_boundary:
+            add_line("─ ─ ─  compact boundary  ─ ─ ─", fg="gray")
+            return
+
+        prefix_map = {
+            "user": ("▸", "blue"),
+            "assistant": ("●", "white"),
+            "tool": ("◈", "green"),
+            "system": ("◆", "gray"),
+        }
+        prefix, fg = prefix_map.get(msg.role, ("·", "gray"))
+
+        if msg.role == "tool":
+            # 工具结果：预览截断 200 字符
+            preview = msg.content.strip()
+            if len(preview) > 200:
+                preview = preview[:197] + "..."
+            add_line(f"{prefix} {preview}", fg="green")
+        elif msg.role == "assistant" and msg.tool_calls:
+            if msg.content:
+                add_line(f"{prefix} {msg.content}", fg="white")
+            for tc in msg.tool_calls:
+                # 工具调用摘要（兼容 OpenAI 和内部格式）
+                name = tc.get("name", "")
+                if not name and "function" in tc:
+                    name = tc["function"].get("name", "unknown")
+                if not name:
+                    name = "unknown"
+                add_line(f"  [Tool: {name}]", fg="cyan")
+        else:
+            for line in msg.content.split("\n"):
+                add_line(f"{prefix} {line}", fg=fg)
+
+    def _flush_ink(self) -> None:
+        """用 Ink 渲染当前完整屏幕状态。"""
+        if self._ink is None:
+            return
+        self._ink.render(self._build_render_tree())
+
+    def _emit(self, text: str, role: str = "system") -> None:
+        """输出文本。
+
+        Ink 模式：加入消息列表并刷新渲染。
+        降级模式：直接 print。
+        """
+        if self._ink is not None:
+            self._messages.append(MessageData(role=role, content=text))
+            self._flush_ink()
+        else:
+            print(text)
 
     # -----------------------------------------------------------------------
     # 渲染方法
@@ -409,6 +635,12 @@ class REPLScreen:
         Returns:
             状态栏字符串
         """
+        if self._ink is not None:
+            # Ink 模式：状态栏已包含在完整渲染树中，刷新即可
+            self._flush_ink()
+            return self._build_status_text()
+
+        # 降级模式：ANSI 颜色 print
         state = self._app_state.get_state()
         parts: list[str] = []
 
@@ -440,8 +672,8 @@ class REPLScreen:
     def _render_welcome(self, state: AppState) -> None:
         """渲染欢迎信息。"""
         model = state.model or "default"
-        print(f"\x1b[1mCommon Code\x1b[0m (model: {model})")
-        print("Type /help for available commands.\n")
+        self._emit(f"Common Code (model: {model})")
+        self._emit("Type /help for available commands.")
 
     # -----------------------------------------------------------------------
     # 辅助方法
@@ -485,119 +717,3 @@ class REPLScreen:
             return size.columns
         except (AttributeError, ValueError):
             return 80
-
-
-# ---------------------------------------------------------------------------
-# 测试块
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    import asyncio as _asyncio
-
-    print("=== repl.py 测试 ===\n")
-
-    # 创建 AppStateProvider
-    provider = AppStateProvider()
-    state = provider.get_state()
-    state.model = "claude-sonnet-4-20250514"
-    state.total_cost_usd = 0.0523
-    state.token_usage.input_tokens = 1500
-    state.token_usage.output_tokens = 800
-
-    # 创建 REPLScreen
-    repl = REPLScreen(provider)
-
-    # 1. 测试斜杠命令路由（通过命令注册表）
-    print("--- 斜杠命令路由 ---")
-
-    # /help
-    result = repl.handle_prompt_submit("/help")
-    print(f"  /help: handled={result.handled}, should_exit={result.should_exit}")
-    assert "Available commands" in result.output
-    print(f"  输出包含 'Available commands': OK")
-
-    # /model
-    result2 = repl.handle_prompt_submit("/model")
-    print(f"  /model: {result2.output}")
-    assert "model" in result2.output.lower()
-
-    # /cost
-    result3 = repl.handle_prompt_submit("/cost")
-    print(f"  /cost:\n{result3.output}\n")
-    assert "cost" in result3.output.lower() or "token" in result3.output.lower()
-
-    # /clear
-    repl.add_message(MessageData(role="user", content="test"))
-    print(f"  添加消息后数量: {len(repl.messages)}")
-    result4 = repl.handle_prompt_submit("/clear")
-    print(f"  /clear: {result4.output}")
-    assert len(repl.messages) == 0
-    print(f"  清除后数量: {len(repl.messages)}")
-
-    # /compact
-    for i in range(60):
-        repl.add_message(MessageData(role="user", content=f"Message {i}"))
-    print(f"  添加60条消息后数量: {len(repl.messages)}")
-    result5 = repl.handle_prompt_submit("/compact")
-    print(f"  /compact: {result5.output}")
-
-    # /exit
-    result6 = repl.handle_prompt_submit("/exit")
-    print(f"  /exit: should_exit={result6.should_exit}")
-    assert result6.should_exit is True
-
-    # 未知命令
-    result7 = repl.handle_prompt_submit("/unknown")
-    print(f"  /unknown: {result7.output}")
-    assert "Unknown" in result7.output or "unknown" in result7.output.lower()
-
-    # 别名测试
-    result_h = repl.handle_prompt_submit("/h")
-    assert "Available commands" in result_h.output
-    print(f"  /h (alias for help): OK")
-
-    result_q = repl.handle_prompt_submit("/q")
-    assert result_q.should_exit is True
-    print(f"  /q (alias for exit): OK")
-
-    # 2. 测试普通消息提交
-    print("\n--- 普通消息提交 ---")
-    repl._messages.clear()
-    result8 = repl.handle_prompt_submit("Hello, how are you?")
-    print(f"  普通消息: handled={result8.handled}")
-    print(f"  消息数量: {len(repl.messages)}")
-    print(f"  最后消息: {repl.messages[-1].content}")
-
-    # 3. 测试渲染状态栏
-    print("\n--- 状态栏 ---")
-    status = repl.render_status_line()
-    print(f"  状态栏文本: {status}")
-
-    # 4. 测试屏幕切换
-    print("\n--- 屏幕切换 ---")
-    print(f"  初始模式: {repl.screen.value}")
-    repl.toggle_screen()
-    print(f"  切换后模式: {repl.screen.value}")
-    repl.toggle_screen()
-    print(f"  再次切换: {repl.screen.value}")
-
-    # 5. 测试辅助方法
-    print("\n--- 辅助方法 ---")
-    repl.add_assistant_response("I'm doing well, thanks!", tool_calls=[
-        {"id": "tu_1", "name": "read_file", "input": {"path": "/tmp/test.txt"}},
-    ])
-    print(f"  添加助手响应后数量: {len(repl.messages)}")
-
-    repl.add_tool_result("file contents here", "tu_1")
-    print(f"  添加工具结果后数量: {len(repl.messages)}")
-
-    # 6. 测试消息格式转换
-    print("\n--- 消息格式转换 ---")
-    openai_msgs = repl._messages_to_openai_format()
-    assert len(openai_msgs) == len(repl.messages)
-    roles = [m["role"] for m in openai_msgs]
-    assert roles == ["user", "assistant", "tool"], f"期望 [user, assistant, tool], 得到 {roles}"
-    print(f"  OpenAI 格式消息数: {len(openai_msgs)}")
-    print(f"  消息角色: {roles}")
-
-    print("\n=== 测试完成 ===")

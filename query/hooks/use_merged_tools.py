@@ -1,6 +1,4 @@
 """动态工具池组装 — 合并内置工具和 MCP 工具。
-
-参考原始 TS 版 fetchToolsForClient 和工具合并逻辑。
 """
 
 from __future__ import annotations
@@ -98,7 +96,7 @@ def mcp_tool_to_tool(mcp_tool: MCPTool, client: MCPClient) -> Tool:
         except Exception as e:
             return ToolResult(content=str(e), is_error=True)
 
-    # 构建完整工具名（参考 TS 版 buildMcpToolName）
+    # 构建完整工具名
     tool_name = f"mcp__{client.name}__{mcp_tool.name}"
 
     return build_tool(

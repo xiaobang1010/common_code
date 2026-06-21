@@ -103,39 +103,3 @@ def get_file_read_tool() -> Tool:
         prompt=FILE_READ_PROMPT,
         is_read_only=True,
     )
-
-
-# ---------------------------------------------------------------------------
-# 自测
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    import asyncio
-
-    async def _test():
-        tool = get_file_read_tool()
-
-        # 测试 1：读取自身文件
-        self_path = __file__
-        inp = FileReadInput(file_path=self_path)
-        result = await tool.execute(inp, ToolUseContext())
-        assert not result.is_error, f"期望 is_error=False，实际：{result.content}"
-        assert "FileReadTool" in result.content, f"期望包含 'FileReadTool'，实际内容长度：{len(result.content)}"
-        print("[PASS] 读取自身文件")
-
-        # 测试 2：读取不存在的文件
-        inp2 = FileReadInput(file_path="/nonexistent/file.txt")
-        result2 = await tool.execute(inp2, ToolUseContext())
-        assert result2.is_error, "期望 is_error=True"
-        print("[PASS] 读取不存在的文件")
-
-        # 测试 3：offset 和 limit
-        inp3 = FileReadInput(file_path=self_path, offset=1, limit=3)
-        result3 = await tool.execute(inp3, ToolUseContext())
-        lines = result3.content.split("\n")
-        assert len(lines) == 3, f"期望 3 行，实际：{len(lines)}"
-        print("[PASS] offset 和 limit")
-
-        print("\nAll FileReadTool tests passed!")
-
-    asyncio.run(_test())

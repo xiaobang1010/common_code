@@ -119,7 +119,7 @@ class Ink:
     # 公共 API
     # -----------------------------------------------------------------------
 
-    def render(self, content: Union[RenderNode, str, None]) -> None:
+    def render(self, content: "RenderNode | str | None") -> None:
         """渲染内容到终端。
 
         Args:
@@ -296,6 +296,16 @@ class Ink:
             self._repaint()
         self._on_render()
 
+    def clear(self) -> None:
+        """重置帧缓存，下次 render 将是全量渲染。
+
+        用于其他终端输出（如 prompt_toolkit 的 input）修改了屏幕后，
+        让 Ink 放弃旧的帧缓存，避免帧差分基于过期数据计算。
+        """
+        self._front_frame = empty_frame(self._terminal_rows, self._terminal_columns)
+        self._back_frame = empty_frame(self._terminal_rows, self._terminal_columns)
+        self._log.reset()
+
     # -----------------------------------------------------------------------
     # 内部方法
     # -----------------------------------------------------------------------
@@ -341,107 +351,3 @@ class Ink:
         self._front_frame = empty_frame(self._terminal_rows, self._terminal_columns)
         self._back_frame = empty_frame(self._terminal_rows, self._terminal_columns)
         self._log.reset()
-
-
-# ---------------------------------------------------------------------------
-# 测试块
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    import io
-
-    print("=== Ink 渲染引擎测试 ===\n")
-
-    # 1. 测试终端能力检测
-    print("--- 终端能力检测 ---")
-    caps = detect_terminal_capabilities()
-    print(f"  is_tty: {caps.is_tty}")
-    print(f"  columns: {caps.columns}, rows: {caps.rows}")
-    print(f"  true_color: {caps.true_color}")
-    print(f"  synchronized_output: {caps.synchronized_output}")
-    print(f"  term_program: {caps.term_program!r}")
-    print(f"  term: {caps.term!r}")
-
-    # 2. 测试简单文本渲染
-    print("\n--- 简单文本渲染 ---")
-    # 使用 StringIO 模拟 stdout 以避免影响真实终端
-    buffer = io.StringIO()
-    options = InkOptions(stdout=buffer)
-    ink = Ink(options)
-
-    # 渲染 "Hello, World!"
-    ink.render("Hello, World!")
-    output = buffer.getvalue()
-    print(f"  渲染输出: {output!r}")
-
-    # 3. 测试 Screen 缓冲区
-    print("\n--- Screen 缓冲区 ---")
-    screen = Screen(20, 5)
-    screen.set_cell(0, 0, "H")
-    screen.set_cell(1, 0, "e")
-    screen.set_cell(2, 0, "l")
-    screen.set_cell(3, 0, "l")
-    screen.set_cell(4, 0, "o")
-    rendered = screen.to_string()
-    print(f"  Screen 内容: {rendered!r}")
-
-    # 4. 测试带样式的渲染
-    print("\n--- 带样式的渲染 ---")
-    buffer2 = io.StringIO()
-    options2 = InkOptions(stdout=buffer2)
-    ink2 = Ink(options2)
-
-    node = RenderNode(
-        type="text",
-        props={"children": "Styled Text", "fg": "green", "bold": True},
-        layout_info=LayoutInfo(0, 0, 80, 24),
-    )
-    ink2.render(node)
-    output2 = buffer2.getvalue()
-    print(f"  带样式渲染输出: {output2!r}")
-
-    # 5. 测试帧差分
-    print("\n--- 帧差分 ---")
-    log = LogUpdate(stream=io.StringIO(), is_tty=True)
-
-    prev = empty_frame(24, 80)
-    prev.screen.set_cell(0, 0, "H")
-    prev.screen.set_cell(1, 0, "i")
-
-    next_frame = empty_frame(24, 80)
-    next_frame.screen.set_cell(0, 0, "H")
-    next_frame.screen.set_cell(1, 0, "o")  # 变化: i -> o
-
-    diff = log.render(prev, next_frame)
-    print(f"  差分 Patch 数量: {len(diff)}")
-    for i, patch in enumerate(diff):
-        print(f"    Patch[{i}]: type={patch.type}, "
-              f"content={getattr(patch, 'content', getattr(patch, 'str', ''))!r}")
-
-    # 6. 测试 alt-screen (仅在 TTY 环境中)
-    print("\n--- Alt-Screen 测试 ---")
-    if caps.is_tty:
-        print("  检测到 TTY 环境，测试 alt-screen 进入/退出...")
-        ink_tty = Ink()
-        ink_tty.enter_alternate_screen()
-        ink_tty.render("Alt-Screen Mode!")
-        time.sleep(0.5)
-        ink_tty.exit_alternate_screen()
-        ink_tty.cleanup()
-        print("  Alt-screen 测试完成")
-    else:
-        print("  非 TTY 环境，跳过 alt-screen 测试")
-
-    # 7. 测试 Screen resize
-    print("\n--- Screen Resize ---")
-    screen3 = Screen(10, 3)
-    screen3.set_cell(0, 0, "A")
-    screen3.set_cell(5, 2, "B")
-    screen3.resize(15, 5)
-    cell_a = screen3.get_cell(0, 0)
-    cell_b = screen3.get_cell(5, 2)
-    print(f"  Resize 后 (0,0)={cell_a.char if cell_a else 'None'}")
-    print(f"  Resize 后 (5,2)={cell_b.char if cell_b else 'None'}")
-    print(f"  新尺寸: {screen3.width}x{screen3.height}")
-
-    print("\n=== 测试完成 ===")

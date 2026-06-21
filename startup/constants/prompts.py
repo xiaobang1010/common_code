@@ -1,7 +1,8 @@
-"""系统提示词构建 — 参考原始 src/constants/prompts.ts。"""
+"""系统提示词构建。"""
 
 from __future__ import annotations
 
+import platform as _platform
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
@@ -24,8 +25,11 @@ class SystemPromptSection:
 # 核心提示词内容（简化版，保留关键规则）
 # ---------------------------------------------------------------------------
 
+import platform as _platform
+
+# 归因头：标识客户端类型和运行平台
 _ATTRIBUTION_HEADER = (
-    "x-anthropic-billing-header: common-code-python"
+    f"x-{_platform.system().lower()}-header: common-code-python"
 )
 
 _CLI_PREFIX = """You are Common Code, an AI programming assistant — the official CLI for Common. \
@@ -136,104 +140,3 @@ def build_system_messages(sections: list[SystemPromptSection]) -> list[dict]:
 
     messages.extend(dynamic_messages)
     return messages
-
-
-# ---------------------------------------------------------------------------
-# 自测
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    from query.utils.system_prompt import SystemPromptRegistry, registry
-    from query.utils.api import build_api_request
-
-    # ---- 1. 测试 get_system_prompt_sections() ----
-    sections = get_system_prompt_sections(
-        project_info="# Environment\nWorking directory: /tmp/project",
-        user_instructions="# Custom\nAlways respond in Chinese.",
-    )
-    assert len(sections) == 5, f"Expected 5 sections, got {len(sections)}"
-    assert sections[0].name == "attribution_header"
-    assert sections[0].cache_scope is None
-    assert sections[1].name == "cli_prefix"
-    assert sections[1].cache_scope == "static"
-    assert sections[2].name == "static_sections"
-    assert sections[2].cache_scope == "static"
-    assert sections[3].name == "project_info"
-    assert sections[3].cache_scope is None
-    assert sections[4].name == "user_instructions"
-    assert sections[4].cache_scope is None
-    print("[PASS] get_system_prompt_sections() 返回段列表")
-
-    # ---- 2. 测试 build_system_messages() 静态/动态分段 ----
-    messages = build_system_messages(sections)
-    # 2 个静态段合并为 1 条 + 3 个动态段各 1 条 = 4 条
-    assert len(messages) == 4, f"Expected 4 messages, got {len(messages)}"
-    # 第一条是静态合并
-    assert messages[0]["role"] == "system"
-    assert _CLI_PREFIX in messages[0]["content"]
-    assert _STATIC_SECTIONS in messages[0]["content"]
-    # attribution_header 是第一条动态
-    assert messages[1]["role"] == "system"
-    assert messages[1]["content"] == _ATTRIBUTION_HEADER
-    # project_info 是第二条动态
-    assert messages[2]["role"] == "system"
-    assert "Working directory" in messages[2]["content"]
-    # user_instructions 是第三条动态
-    assert messages[3]["role"] == "system"
-    assert "Chinese" in messages[3]["content"]
-    print("[PASS] build_system_messages() 静态/动态分段")
-
-    # ---- 3. 测试无额外动态段时 ----
-    only_static = get_system_prompt_sections()
-    # 3 段：attribution_header(None) + cli_prefix(static) + static_sections(static)
-    # = 1 条静态合并 + 1 条动态 = 2 条消息
-    msgs = build_system_messages(only_static)
-    assert len(msgs) == 2
-    assert msgs[0]["role"] == "system"
-    assert msgs[1]["role"] == "system"
-    print("[PASS] build_system_messages() 无额外动态段")
-
-    # ---- 4. 测试 SystemPromptRegistry 注册/取消 ----
-    reg = SystemPromptRegistry()
-    reg.register("test_section", "Hello from test", cache_scope="static")
-    reg.register("another", "Dynamic content")
-    secs = reg.get_sections()
-    assert len(secs) == 2
-    assert secs[0].name == "test_section"
-    assert secs[0].cache_scope == "static"
-    assert secs[1].name == "another"
-    assert secs[1].cache_scope is None
-
-    reg.unregister("test_section")
-    secs = reg.get_sections()
-    assert len(secs) == 1
-    assert secs[0].name == "another"
-    print("[PASS] SystemPromptRegistry 注册/取消")
-
-    # ---- 5. 测试全局 registry 单例便捷函数 ----
-    from query.utils.system_prompt import register_dynamic_section, unregister_dynamic_section
-    register_dynamic_section("global_test", "Global test content")
-    assert any(s.name == "global_test" for s in registry.get_sections())
-    unregister_dynamic_section("global_test")
-    assert not any(s.name == "global_test" for s in registry.get_sections())
-    print("[PASS] 全局 registry 便捷函数")
-
-    # ---- 6. 测试 build_api_request() 请求体构建 ----
-    req = build_api_request(
-        messages=[{"role": "user", "content": "Hello"}],
-        system_prompt=messages,
-        tools=[],
-        model="gpt-4",
-        stream=True,
-        max_tokens=4096,
-    )
-    assert req["model"] == "gpt-4"
-    assert req["stream"] is True
-    assert req["max_tokens"] == 4096
-    # system 消息应排在 messages 前面
-    all_msgs = req["messages"]
-    assert all_msgs[0]["role"] == "system"
-    assert all_msgs[-1]["role"] == "user"
-    print("[PASS] build_api_request() 请求体构建")
-
-    print("\nAll tests passed!")

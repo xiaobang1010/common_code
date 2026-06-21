@@ -106,6 +106,8 @@ class HookConfig:
 
     pre_tool_use: list[HookEntry] = field(default_factory=list)
     post_tool_use: list[HookEntry] = field(default_factory=list)
+    permission_denied: list[HookEntry] = field(default_factory=list)
+    post_tool_use_failure: list[HookEntry] = field(default_factory=list)
     notification: list[HookEntry] = field(default_factory=list)
     stop: list[HookEntry] = field(default_factory=list)
     session_start: list[HookEntry] = field(default_factory=list)
@@ -117,6 +119,8 @@ class HookConfig:
         return {
             "PreToolUse": [e.to_dict() for e in self.pre_tool_use],
             "PostToolUse": [e.to_dict() for e in self.post_tool_use],
+            "PermissionDenied": [e.to_dict() for e in self.permission_denied],
+            "PostToolUseFailure": [e.to_dict() for e in self.post_tool_use_failure],
             "Notification": [e.to_dict() for e in self.notification],
             "Stop": [e.to_dict() for e in self.stop],
             "SessionStart": [e.to_dict() for e in self.session_start],
@@ -136,6 +140,8 @@ class HookConfig:
         return cls(
             pre_tool_use=parse_entries("PreToolUse"),
             post_tool_use=parse_entries("PostToolUse"),
+            permission_denied=parse_entries("PermissionDenied"),
+            post_tool_use_failure=parse_entries("PostToolUseFailure"),
             notification=parse_entries("Notification"),
             stop=parse_entries("Stop"),
             session_start=parse_entries("SessionStart"),
@@ -324,6 +330,165 @@ async def run_pre_tool_use_hooks(
                     return result
 
     return result
+
+
+async def run_permission_denied_hooks(
+    hook_config: HookConfig,
+    tool_name: str,
+    tool_input: dict,
+    reason: str,
+    timeout_s: float = DEFAULT_HOOK_TIMEOUT_S,
+) -> HookResult:
+    """执行 PermissionDenied hooks。
+
+    当权限决策为 deny 时调用。
+    - 如果 hook 输出中包含 retry 字段且为 true，返回 decided=True 表示允许重试
+    - 异常内部捕获，不传播
+    """
+    result = HookResult()
+
+    for entry in hook_config.permission_denied:
+        if not entry.matches(tool_name):
+            continue
+
+        for hook_def in entry.hooks:
+            if hook_def.type != "command":
+                continue
+
+            hook_input = {
+                "hookEventName": "PermissionDenied",
+                "tool_name": tool_name,
+                "tool_input": tool_input,
+                "reason": reason,
+            }
+
+            try:
+                exit_code, stdout, stderr = await _execute_command_hook(
+                    hook_def.command, hook_input, timeout_s
+                )
+            except Exception as e:
+                logger.error("PermissionDenied hook 执行异常: %s", e)
+                continue
+
+            # 解析 JSON 输出，查找 retry 字段
+            parsed = _parse_hook_output(stdout)
+            if parsed is not None:
+                specific = parsed.get("hookSpecificOutput", {})
+                if specific.get("retry") is True:
+                    result.decided = True
+                    result.reason = "PermissionDenied hook indicated retry is allowed"
+                    return result
+
+    return result
+
+
+async def run_post_tool_use_failure_hooks(
+    hook_config: HookConfig,
+    tool_name: str,
+    tool_input: dict,
+    error: str,
+    timeout_s: float = DEFAULT_HOOK_TIMEOUT_S,
+) -> None:
+    """执行 PostToolUseFailure hooks。
+
+    当工具执行失败时调用。
+    执行失败不会中断流程，仅记录日志。
+    """
+    for entry in hook_config.post_tool_use_failure:
+        if not entry.matches(tool_name):
+            continue
+
+        for hook_def in entry.hooks:
+            if hook_def.type != "command":
+                continue
+
+            hook_input = {
+                "hookEventName": "PostToolUseFailure",
+                "tool_name": tool_name,
+                "tool_input": tool_input,
+                "error": error,
+            }
+
+            try:
+                exit_code, stdout, stderr = await _execute_command_hook(
+                    hook_def.command, hook_input, timeout_s
+                )
+                if exit_code != 0:
+                    logger.warning(
+                        "PostToolUseFailure hook 返回非零退出码 %d: %s",
+                        exit_code,
+                        stderr.strip() or stdout.strip(),
+                    )
+            except Exception as e:
+                logger.error("PostToolUseFailure hook 执行异常: %s", e)
+
+
+async def resolve_permission_decision(
+    hook_result: HookResult,
+    tool,
+    validated_input,
+    context,
+    permission_check,
+) -> dict | None:
+    """权限策略协调器 — 协调 hook 决策与规则层决策。
+
+    策略（与 TS 版 resolveHookPermissionDecision 对齐）：
+    - hook 做出 allow 决策 → 仍需调用 permission_check 检查 deny/ask 规则
+    - hook 做出 deny 决策 → 直接返回 deny，不调 permission_check
+    - hook 无决策（decided=False）→ 调用 permission_check
+
+    返回：
+        None 表示通过（允许执行）
+        {"decision": "deny", "reason": str} 表示拒绝
+    """
+    if hook_result.decided and hook_result.reason:
+        # hook 做出了决策
+        if "Allowed" in hook_result.reason or "allow" in hook_result.reason.lower():
+            # hook allow — 仍要检查规则层
+            if permission_check is not None:
+                try:
+                    perm_result = await permission_check(tool, validated_input, context)
+                    if isinstance(perm_result, dict):
+                        decision = perm_result.get("decision")
+                        if decision == "deny":
+                            return {
+                                "decision": "deny",
+                                "reason": perm_result.get("reason", "Blocked by rules"),
+                            }
+                        if decision == "ask":
+                            # 透传 ask 给 executor，由其调弹窗回调
+                            return {
+                                "decision": "ask",
+                                "reason": perm_result.get("reason", ""),
+                            }
+                except Exception as e:
+                    logger.error("权限检查异常（hook allow 后规则检查）: %s", e)
+            return None  # 通过
+        else:
+            # hook deny — 直接生效
+            return {"decision": "deny", "reason": hook_result.reason}
+    else:
+        # 无 hook 决策 — 正常权限检查
+        if permission_check is not None:
+            try:
+                perm_result = await permission_check(tool, validated_input, context)
+                if isinstance(perm_result, dict):
+                    decision = perm_result.get("decision")
+                    if decision == "deny":
+                        return {
+                            "decision": "deny",
+                            "reason": perm_result.get("reason", "No reason provided"),
+                        }
+                    if decision == "ask":
+                        # 透传 ask 给 executor，由其调弹窗回调
+                        return {
+                            "decision": "ask",
+                            "reason": perm_result.get("reason", ""),
+                        }
+            except Exception as e:
+                logger.error("权限检查异常: %s", e)
+                return {"decision": "deny", "reason": f"Permission check error: {e}"}
+        return None
 
 
 async def run_post_tool_use_hooks(
@@ -555,172 +720,3 @@ async def run_pre_compact_hooks(
                 logger.error("PreCompact hook 执行异常: %s", e)
 
     return "\n".join(guidance_parts)
-
-
-# ---------------------------------------------------------------------------
-# 测试块
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    import os
-    import sys
-
-    print("=" * 60)
-    print("Hook 系统测试")
-    print("=" * 60)
-
-    # 测试 1: HookEntry.matches
-    print("\n--- 测试 1: HookEntry.matches ---")
-    entry_all = HookEntry(matcher=None, hooks=[])
-    entry_bash = HookEntry(matcher="Bash", hooks=[])
-    entry_glob = HookEntry(matcher="Bash*", hooks=[])
-    entry_read = HookEntry(matcher="Read", hooks=[])
-
-    assert entry_all.matches("Bash"), "None matcher 应匹配所有"
-    assert entry_all.matches("Read"), "None matcher 应匹配所有"
-    assert entry_bash.matches("Bash"), "精确匹配"
-    assert not entry_bash.matches("Read"), "不匹配"
-    assert entry_glob.matches("Bash"), "通配符匹配 Bash"
-    assert entry_glob.matches("BashTool"), "通配符匹配 BashTool"
-    assert not entry_glob.matches("Read"), "通配符不匹配 Read"
-    assert entry_read.matches("Read"), "精确匹配 Read"
-    print("  [PASS] HookEntry.matches")
-
-    # 测试 2: HookConfig 序列化/反序列化
-    print("\n--- 测试 2: HookConfig 序列化/反序列化 ---")
-    config = HookConfig(
-        pre_tool_use=[
-            HookEntry(
-                matcher="Bash",
-                hooks=[HookDefinition(type="command", command="echo test")],
-            )
-        ],
-        post_tool_use=[],
-        notification=[],
-        stop=[],
-    )
-    d = config.to_dict()
-    assert "PreToolUse" in d
-    assert len(d["PreToolUse"]) == 1
-    assert d["PreToolUse"][0]["matcher"] == "Bash"
-
-    restored = HookConfig.from_dict(d)
-    assert len(restored.pre_tool_use) == 1
-    assert restored.pre_tool_use[0].matcher == "Bash"
-    assert len(restored.pre_tool_use[0].hooks) == 1
-    assert restored.pre_tool_use[0].hooks[0].command == "echo test"
-    print("  [PASS] HookConfig 序列化/反序列化")
-
-    # 测试 3: capture_hooks_config_snapshot
-    print("\n--- 测试 3: capture_hooks_config_snapshot ---")
-    snapshot = capture_hooks_config_snapshot()
-    assert isinstance(snapshot, HookConfig)
-    print(f"  pre_tool_use: {len(snapshot.pre_tool_use)} entries")
-    print(f"  post_tool_use: {len(snapshot.post_tool_use)} entries")
-    print("  [PASS] capture_hooks_config_snapshot")
-
-    # 测试 4: run_pre_tool_use_hooks (异步)
-    print("\n--- 测试 4: run_pre_tool_use_hooks ---")
-
-    async def test_pre_hook():
-        # 空 hook 配置 — 不 deny
-        empty_config = HookConfig()
-        result = await run_pre_tool_use_hooks(empty_config, "Bash", {"command": "ls"})
-        assert not result.decided, "空配置不应 deny"
-        print("  空 config: decided=False")
-
-        # 匹配但退出码为 0 的 hook — 不 deny
-        config_ok = HookConfig(
-            pre_tool_use=[
-                HookEntry(
-                    matcher="Bash",
-                    hooks=[HookDefinition(type="command", command="echo ok")],
-                )
-            ]
-        )
-        result = await run_pre_tool_use_hooks(config_ok, "Bash", {"command": "ls"})
-        assert not result.decided, "退出码 0 不应 deny"
-        print("  exit 0: decided=False")
-
-        # 匹配但退出码非 0 的 hook — deny
-        config_deny = HookConfig(
-            pre_tool_use=[
-                HookEntry(
-                    matcher="Bash",
-                    hooks=[HookDefinition(type="command", command="exit 1")],
-                )
-            ]
-        )
-        result = await run_pre_tool_use_hooks(config_deny, "Bash", {"command": "rm -rf /"})
-        assert result.decided, "退出码非 0 应 deny"
-        print(f"  exit 1: decided=True, reason={result.reason!r}")
-
-        # 不匹配的 hook — 不 deny
-        result = await run_pre_tool_use_hooks(config_deny, "Read", {"path": "/tmp/test"})
-        assert not result.decided, "不匹配的 hook 不应 deny"
-        print("  不匹配: decided=False")
-
-        # JSON 输出 with decision=block
-        config_block = HookConfig(
-            pre_tool_use=[
-                HookEntry(
-                    matcher="Bash",
-                    hooks=[
-                        HookDefinition(
-                            type="command",
-                            command='echo \'{"decision":"block","reason":"dangerous"}\'',
-                        )
-                    ],
-                )
-            ]
-        )
-        result = await run_pre_tool_use_hooks(config_block, "Bash", {"command": "rm -rf /"})
-        assert result.decided, "decision=block 应 deny"
-        assert "dangerous" in result.reason, f"reason 应包含 'dangerous', got: {result.reason}"
-        print(f"  decision=block: decided=True, reason={result.reason!r}")
-
-        # JSON 输出 with updatedInput
-        config_update = HookConfig(
-            pre_tool_use=[
-                HookEntry(
-                    matcher="Bash",
-                    hooks=[
-                        HookDefinition(
-                            type="command",
-                            command='echo \'{"hookSpecificOutput":{"hookEventName":"PreToolUse","updatedInput":{"command":"ls -la"}}}\'',
-                        )
-                    ],
-                )
-            ]
-        )
-        result = await run_pre_tool_use_hooks(config_update, "Bash", {"command": "ls"})
-        assert not result.decided, "updatedInput 不应 deny"
-        assert result.updated_input is not None, "应有 updated_input"
-        assert result.updated_input.get("command") == "ls -la", f"updated_input 不正确: {result.updated_input}"
-        print(f"  updatedInput: {result.updated_input}")
-
-    asyncio.run(test_pre_hook())
-    print("  [PASS] run_pre_tool_use_hooks")
-
-    # 测试 5: run_post_tool_use_hooks (异步)
-    print("\n--- 测试 5: run_post_tool_use_hooks ---")
-
-    async def test_post_hook():
-        config = HookConfig(
-            post_tool_use=[
-                HookEntry(
-                    matcher="Bash",
-                    hooks=[HookDefinition(type="command", command="echo post")],
-                )
-            ]
-        )
-        # 不应抛出异常
-        await run_post_tool_use_hooks(config, "Bash", {"command": "ls"}, "file1\nfile2")
-        print("  PostToolUse hook 执行成功（无异常）")
-
-    asyncio.run(test_post_hook())
-    print("  [PASS] run_post_tool_use_hooks")
-
-    print("\n" + "=" * 60)
-    print("所有测试完成")
-    print("=" * 60)

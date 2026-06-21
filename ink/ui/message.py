@@ -56,14 +56,33 @@ def render_tool_call_summary(tool_call: dict) -> str:
 
     格式：[Tool: name] args_preview...
 
+    兼容两种 tool_call 格式：
+    - Claude/内部格式: {"name": ..., "input": {...}}
+    - OpenAI 格式: {"id": ..., "function": {"name": ..., "arguments": "..."}}
+
     Args:
-        tool_call: 工具调用字典，包含 name 和 input
+        tool_call: 工具调用字典
 
     Returns:
         格式化的工具调用摘要字符串
     """
-    name = tool_call.get("name", "unknown")
+    name = tool_call.get("name", "")
     input_data = tool_call.get("input", {})
+
+    # 兼容 OpenAI 格式: {"id":..., "function":{"name":..., "arguments":"..."}}
+    if not name and "function" in tool_call:
+        func = tool_call["function"]
+        name = func.get("name", "")
+        args_raw = func.get("arguments", "{}")
+        if isinstance(args_raw, str):
+            try:
+                input_data = json.loads(args_raw) if args_raw else {}
+            except (json.JSONDecodeError, ValueError):
+                input_data = {}
+        else:
+            input_data = args_raw
+    if not name:
+        name = "unknown"
 
     # 生成参数预览
     if isinstance(input_data, dict) and input_data:
@@ -214,76 +233,3 @@ def _render_tool_message(msg: MessageData, prefix: str, width: int) -> str:
 def _render_unknown_message(msg: MessageData, prefix: str, width: int) -> str:
     """渲染未知角色消息。"""
     return f"{prefix} {_dim(f'[{msg.role}]')} {msg.content}"
-
-
-# ---------------------------------------------------------------------------
-# 测试块
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    print("=== message.py 测试 ===\n")
-
-    # 1. 测试 system 消息渲染
-    print("--- system 消息 ---")
-    sys_msg = MessageData(role="system", content="You are a helpful assistant.")
-    print(render_message(sys_msg, width=60))
-
-    # 2. 测试 user 消息渲染
-    print("\n--- user 消息 ---")
-    user_msg = MessageData(role="user", content="Please help me write a Python function that sorts a list.")
-    print(render_message(user_msg, width=60))
-
-    # 3. 测试 assistant 消息渲染（纯文本）
-    print("\n--- assistant 消息 (纯文本) ---")
-    asst_msg = MessageData(role="assistant", content="Here's a simple sorting function using Python's built-in sorted().")
-    print(render_message(asst_msg, width=60))
-
-    # 4. 测试 assistant 消息渲染（带工具调用）
-    print("\n--- assistant 消息 (带工具调用) ---")
-    asst_tool_msg = MessageData(
-        role="assistant",
-        content="Let me read that file for you.",
-        tool_calls=[
-            {"id": "tu_1", "name": "read_file", "input": {"path": "/tmp/example.txt"}},
-            {"id": "tu_2", "name": "bash", "input": {"command": "ls -la /tmp/"}},
-        ],
-    )
-    print(render_message(asst_tool_msg, width=60))
-
-    # 5. 测试 tool 消息渲染
-    print("\n--- tool 消息 ---")
-    tool_msg = MessageData(
-        role="tool",
-        content="line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7",
-        tool_call_id="tu_1",
-    )
-    print(render_message(tool_msg, width=60))
-
-    # 6. 测试 tool 消息渲染（长内容截断）
-    print("\n--- tool 消息 (长内容) ---")
-    long_tool_msg = MessageData(
-        role="tool",
-        content="x" * 300,
-        tool_call_id="tu_2",
-    )
-    print(render_message(long_tool_msg, width=60))
-
-    # 7. 测试压缩边界消息
-    print("\n--- compact boundary 消息 ---")
-    compact_msg = MessageData(role="system", content="", is_compact_boundary=True)
-    print(render_message(compact_msg, width=60))
-
-    # 8. 测试 render_tool_call_summary
-    print("\n--- render_tool_call_summary ---")
-    tc = {"name": "write_file", "input": {"path": "/tmp/test.py", "content": "print('hello')"}}
-    print(f"  {render_tool_call_summary(tc)}")
-
-    # 9. 测试 render_tool_result_preview
-    print("\n--- render_tool_result_preview ---")
-    short_result = "OK"
-    print(f"  短结果: {render_tool_result_preview(short_result)}")
-
-    long_result = "\n".join(f"Line {i}" for i in range(20))
-    print(f"  长结果:\n  {render_tool_result_preview(long_result, max_length=100)}")
-
-    print("\n=== 测试完成 ===")

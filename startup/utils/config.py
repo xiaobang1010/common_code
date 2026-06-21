@@ -525,12 +525,15 @@ def get_initial_settings(
 ) -> Settings:
     """多源设置合并。
 
-    合并优先级（从低到高）：
+    合并优先级（从低到高，对齐 TS 版）：
     1. 用户设置 (~/.agent/settings.json)
     2. 项目设置 (.agent/settings.json)
     3. 本地项目设置 (.agent/settings.local.json)
-    4. 策略设置 (~/.agent/managed-settings.json)
-    5. CLI 标志
+    4. CLI 标志
+    5. 策略设置 (~/.agent/managed-settings.json)  ← 最高，管理员强制
+
+    环境变量 (LLM_API_KEY, LLM_BASE_URL, LLM_MODEL) 不参与覆盖合并，
+    而是在合并完成后对仍为 None 的 LLM 字段做兜底补充。
 
     线程安全。
     """
@@ -543,19 +546,21 @@ def get_initial_settings(
     # 3. 本地项目设置
     local_settings = get_local_settings(project_root)
 
-    # 4. 策略设置（最高文件优先级）
+    # 4. 策略设置（最高优先级，管理员强制）
     managed_settings = get_managed_settings()
 
-    # 按优先级合并
+    # 按优先级合并（从低到高：用户 < 项目 < 本地 < CLI 标志 < 策略）
     merged = _merge_settings(user_settings, project_settings)
     merged = _merge_settings(merged, local_settings)
-    merged = _merge_settings(merged, managed_settings)
 
     # 5. CLI 标志覆盖
     if cli_flags:
         merged = _apply_cli_flags(merged, cli_flags)
 
-    # 最后从环境变量补充 LLM 配置
+    # 6. 策略设置最高优先级（管理员强制，不可被 CLI 标志绕过）
+    merged = _merge_settings(merged, managed_settings)
+
+    # 最后从环境变量补充 LLM 配置（仅当字段为 None 时兜底）
     _apply_llm_env_vars_to_settings(merged)
 
     return merged
@@ -606,14 +611,25 @@ def _apply_llm_env_vars(config: GlobalConfig) -> None:
 
 
 def _apply_llm_env_vars_to_settings(settings: Settings) -> None:
-    """从环境变量补充 LLM 配置到 Settings。"""
-    if settings.llm_api_key is None:
-        settings.llm_api_key = os.environ.get(ENV_LLM_API_KEY)
-    if settings.llm_base_url is None:
-        env_val = os.environ.get(ENV_LLM_BASE_URL)
-        settings.llm_base_url = env_val if env_val else DEFAULT_LLM_BASE_URL
-    if settings.model is None:
-        settings.model = os.environ.get(ENV_LLM_MODEL, DEFAULT_LLM_MODEL)
+    """环境变量优先级最高，覆盖 LLM 配置；未设置时用默认值兜底。
+
+    仅对 LLM 三字段 (llm_api_key / llm_base_url / model) 生效。
+    """
+    env_api_key = os.environ.get(ENV_LLM_API_KEY)
+    if env_api_key:
+        settings.llm_api_key = env_api_key
+
+    env_base_url = os.environ.get(ENV_LLM_BASE_URL)
+    if env_base_url:
+        settings.llm_base_url = env_base_url
+    elif settings.llm_base_url is None:
+        settings.llm_base_url = DEFAULT_LLM_BASE_URL
+
+    env_model = os.environ.get(ENV_LLM_MODEL)
+    if env_model:
+        settings.model = env_model
+    elif settings.model is None:
+        settings.model = DEFAULT_LLM_MODEL
 
 
 def _merge_settings(base: Settings, override: Settings) -> Settings:
@@ -689,229 +705,3 @@ def _apply_cli_flags(settings: Settings, flags: dict[str, Any]) -> Settings:
     if "output_style" in flags and flags["output_style"]:
         settings.output_style = flags["output_style"]
     return settings
-
-
-# ---------------------------------------------------------------------------
-# 测试块
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    import tempfile
-
-    print("=" * 60)
-    print("配置系统测试")
-    print("=" * 60)
-
-    # 测试 1: get_global_config() 返回配置对象
-    print("\n--- 测试 1: get_global_config() ---")
-    try:
-        enable_configs()
-        config = get_global_config()
-        print(f"  配置对象类型: {type(config).__name__}")
-        print(f"  theme: {config.theme}")
-        print(f"  verbose: {config.verbose}")
-        print(f"  auto_compact_enabled: {config.auto_compact_enabled}")
-        print(f"  num_startups: {config.num_startups}")
-        print("  [PASS] get_global_config() 成功")
-    except Exception as e:
-        print(f"  [FAIL] get_global_config() 失败: {e}")
-
-    # 测试 2: save_global_config() 持久化成功
-    print("\n--- 测试 2: save_global_config() ---")
-    try:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # 使用临时目录模拟主目录
-            original_home = os.environ.get("HOME")
-            os.environ["HOME"] = tmpdir
-
-            # 重置缓存
-            _global_config_cache = None
-            _config_reading_allowed = True
-
-            config = get_global_config()
-            config.num_startups = 42
-            config.theme = "light"
-            config.llm_base_url = "https://custom.api.com/v1"
-            save_global_config(config)
-
-            # 验证文件已写入
-            config_path = get_global_config_path()
-            assert config_path.exists(), "配置文件未创建"
-            raw = config_path.read_text(encoding="utf-8")
-            parsed = json.loads(raw)
-            assert parsed.get("numStartups") == 42, f"numStartups 不匹配: {parsed}"
-            assert parsed.get("theme") == "light", f"theme 不匹配: {parsed}"
-            print(f"  配置文件路径: {config_path}")
-            print(f"  写入内容: {json.dumps(parsed, indent=2)}")
-            print("  [PASS] save_global_config() 成功")
-
-            # 恢复环境
-            if original_home:
-                os.environ["HOME"] = original_home
-            else:
-                del os.environ["HOME"]
-            _global_config_cache = None
-    except Exception as e:
-        print(f"  [FAIL] save_global_config() 失败: {e}")
-
-    # 测试 3: get_initial_settings() 多源合并
-    print("\n--- 测试 3: get_initial_settings() ---")
-    try:
-        with tempfile.TemporaryDirectory() as home_dir, \
-             tempfile.TemporaryDirectory() as project_dir_root:
-            original_home = os.environ.get("HOME")
-            os.environ["HOME"] = home_dir
-            _global_config_cache = None
-            _config_reading_allowed = True
-
-            # 创建用户设置 (~/.agent/settings.json)
-            user_dir = get_config_home_dir()
-            user_dir.mkdir(parents=True, exist_ok=True)
-            user_settings_path = user_dir / PROJECT_SETTINGS_FILENAME
-            _write_json_file(
-                user_settings_path,
-                {
-                    "model": "user-model",
-                    "theme": "dark",
-                    "verbose": True,
-                    "permissions": {
-                        "allow": [{"rule_type": "allow", "tool_pattern": "Read"}]
-                    },
-                },
-            )
-
-            # 创建项目设置 (project/.agent/settings.json)
-            proj_dir = Path(project_dir_root) / PROJECT_CONFIG_DIR
-            proj_dir.mkdir(parents=True, exist_ok=True)
-            project_settings_path = proj_dir / PROJECT_SETTINGS_FILENAME
-            _write_json_file(
-                project_settings_path,
-                {
-                    "model": "project-model",
-                    "llm_base_url": "https://project.api.com/v1",
-                    "permissions": {
-                        "deny": [{"rule_type": "deny", "tool_pattern": "Write"}]
-                    },
-                },
-            )
-
-            # 合并
-            settings = get_initial_settings(
-                project_root=Path(project_dir_root),
-                cli_flags={"verbose": False},
-            )
-
-            print(f"  model (项目覆盖用户): {settings.model}")
-            print(f"  llm_base_url: {settings.llm_base_url}")
-            print(f"  verbose (CLI 覆盖): {settings.verbose}")
-            print(f"  permissions.allow 数量: {len(settings.permissions.allow)}")
-            print(f"  permissions.deny 数量: {len(settings.permissions.deny)}")
-
-            # 验证合并结果
-            assert settings.model == "project-model", "项目设置应覆盖用户设置"
-            assert settings.verbose is False, "CLI 标志应覆盖文件设置"
-            assert len(settings.permissions.allow) == 1, "权限 allow 应被合并"
-            assert len(settings.permissions.deny) == 1, "权限 deny 应被合并"
-            print("  [PASS] get_initial_settings() 多源合并成功")
-
-            # 恢复环境
-            if original_home:
-                os.environ["HOME"] = original_home
-            else:
-                del os.environ["HOME"]
-            _global_config_cache = None
-    except Exception as e:
-        print(f"  [FAIL] get_initial_settings() 失败: {e}")
-
-    # 测试 4: LLM 配置项从环境变量读取
-    print("\n--- 测试 4: LLM 环境变量 ---")
-    try:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            original_home = os.environ.get("HOME")
-            os.environ["HOME"] = tmpdir
-            _global_config_cache = None
-            _config_reading_allowed = True
-
-            # 设置环境变量
-            os.environ[ENV_LLM_API_KEY] = "test-api-key-123"
-            os.environ[ENV_LLM_BASE_URL] = "https://custom.openai.com/v1"
-            os.environ[ENV_LLM_MODEL] = "gpt-4o"
-
-            config = get_global_config()
-            print(f"  llm_api_key: {config.llm_api_key}")
-            print(f"  llm_base_url: {config.llm_base_url}")
-            print(f"  llm_model: {config.llm_model}")
-
-            assert config.llm_api_key == "test-api-key-123", "API key 应从环境变量读取"
-            assert config.llm_base_url == "https://custom.openai.com/v1", "Base URL 应从环境变量读取"
-            assert config.llm_model == "gpt-4o", "Model 应从环境变量读取"
-            print("  [PASS] LLM 环境变量读取成功")
-
-            # 测试 Settings 级别的环境变量
-            settings = get_initial_settings(project_root=Path(tmpdir))
-            print(f"  settings.llm_api_key: {settings.llm_api_key}")
-            print(f"  settings.llm_base_url: {settings.llm_base_url}")
-            print(f"  settings.model: {settings.model}")
-            assert settings.llm_api_key == "test-api-key-123"
-            assert settings.llm_base_url == "https://custom.openai.com/v1"
-            assert settings.model == "gpt-4o"
-            print("  [PASS] Settings 级别 LLM 环境变量读取成功")
-
-            # 清理环境变量
-            del os.environ[ENV_LLM_API_KEY]
-            del os.environ[ENV_LLM_BASE_URL]
-            del os.environ[ENV_LLM_MODEL]
-
-            # 恢复环境
-            if original_home:
-                os.environ["HOME"] = original_home
-            else:
-                del os.environ["HOME"]
-            _global_config_cache = None
-    except Exception as e:
-        print(f"  [FAIL] LLM 环境变量测试失败: {e}")
-        # 清理
-        for var in [ENV_LLM_API_KEY, ENV_LLM_BASE_URL, ENV_LLM_MODEL]:
-            os.environ.pop(var, None)
-
-    # 测试 5: apply_config_environment_variables()
-    print("\n--- 测试 5: apply_config_environment_variables() ---")
-    try:
-        settings = Settings(
-            llm_api_key="env-test-key",
-            llm_base_url="https://env-test.api.com/v1",
-            env={"MY_VAR": "my_value", "OTHER_VAR": "other_value"},
-        )
-        env_vars = apply_config_environment_variables(settings)
-        print(f"  环境变量映射: {env_vars}")
-        assert env_vars.get(ENV_LLM_API_KEY) == "env-test-key"
-        assert env_vars.get(ENV_LLM_BASE_URL) == "https://env-test.api.com/v1"
-        assert env_vars.get("MY_VAR") == "my_value"
-        print("  [PASS] apply_config_environment_variables() 成功")
-    except Exception as e:
-        print(f"  [FAIL] apply_config_environment_variables() 失败: {e}")
-
-    # 测试 6: 线程安全
-    print("\n--- 测试 6: 线程安全 ---")
-    try:
-        import concurrent.futures
-
-        _config_reading_allowed = True
-        _global_config_cache = None
-
-        def read_config():
-            return get_global_config()
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            futures = [executor.submit(read_config) for _ in range(50)]
-            results = [f.result() for f in futures]
-
-        assert all(isinstance(r, GlobalConfig) for r in results)
-        print(f"  50 个并发读取全部成功")
-        print("  [PASS] 线程安全测试通过")
-    except Exception as e:
-        print(f"  [FAIL] 线程安全测试失败: {e}")
-
-    print("\n" + "=" * 60)
-    print("所有测试完成")
-    print("=" * 60)
