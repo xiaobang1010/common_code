@@ -42,7 +42,7 @@ class QueryEngineConfig:
     """
 
     cwd: str = ""
-    model: str = "gpt-4o"
+    model: str = ""  # 空字符串表示用 get_default_model() 解析，避免硬编码错误模型名
     max_tokens: int = 8192
     temperature: float = 1.0
     permission_mode: str = "default"
@@ -91,10 +91,13 @@ def build_engine_config(**overrides: Any) -> QueryEngineConfig:
     """构建会话级配置，从环境变量读默认值。
 
     环境变量映射：
-      - COMMON_CODE_MODEL → model（默认 "gpt-4o"）
+      - COMMON_CODE_MODEL → model（兼容旧变量，优先用 get_default_model 统一配置路径）
       - COMMON_CODE_MAX_TOKENS → max_tokens（默认 8192）
       - COMMON_CODE_TEMPERATURE → temperature（默认 1.0）
       - COMMON_CODE_PERMISSION_MODE → permission_mode（默认 "default"）
+
+    model 字段优先级：COMMON_CODE_MODEL 环境变量 > get_default_model()（走 LLM_MODEL/配置文件/默认值）
+    这样 .env 里的 LLM_MODEL 和 ~/.agent/config.json 里的 llm_model 都能生效。
 
     permission_check 字段单独处理：
       - 调用方显式传了 permission_check（包括 None）→ 用传入值
@@ -109,8 +112,12 @@ def build_engine_config(**overrides: Any) -> QueryEngineConfig:
     Returns:
         QueryEngineConfig 不可变会话级配置
     """
+    # model 优先用 COMMON_CODE_MODEL 环境变量，没有就走统一的 get_default_model()
+    from query.services.api.client import get_default_model
+    default_model = os.environ.get("COMMON_CODE_MODEL") or get_default_model()
+
     defaults: dict[str, Any] = {
-        "model": os.environ.get("COMMON_CODE_MODEL", "gpt-4o"),
+        "model": default_model,
         "max_tokens": int(os.environ.get("COMMON_CODE_MAX_TOKENS", "8192")),
         "temperature": float(os.environ.get("COMMON_CODE_TEMPERATURE", "1.0")),
         "permission_mode": os.environ.get("COMMON_CODE_PERMISSION_MODE", "default"),

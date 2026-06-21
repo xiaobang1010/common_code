@@ -1,0 +1,11 @@
+{
+  "name": "common-code-electron",
+  "version": "0.1.0",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^28.3.3"
+  }
+}
