@@ -200,6 +200,8 @@ export function useChat() {
           ]
         })
       }
+    } else if (evt.type === 'heartbeat') {
+      // 后端心跳，不做任何事——知道连接还活着就行
     } else if (evt.type === 'permission_request') {
       // 弹出权限确认
       setPermissionRequest({

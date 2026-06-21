@@ -19,9 +19,12 @@ function spawnPython() {
   // cwd 设为 electron 的上级目录（项目根），保证 python -m server 能找到 server 包
   const projectRoot = path.join(__dirname, '..')
   // Windows 下用 shell: true 让系统自己找 uv.exe
+  // 强制 Python UTF-8 输出，避免中文乱码
+  const env = { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
   const child = spawn('uv', ['run', 'python', '-m', 'server'], {
     cwd: projectRoot,
-    shell: true
+    shell: true,
+    env
   })
 
   // 累积 stdout 数据的缓冲区，按行解析

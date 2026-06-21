@@ -169,6 +169,9 @@ async def chat_event_stream(prompt: str):
                 req = permission_bridge.get_pending_permission_request()
                 if req is not None:
                     yield f"data: {json.dumps(req, ensure_ascii=False, default=str)}\n\n"
+                else:
+                    # 推心跳，让前端知道后端还活着（AI 可能在思考或执行工具）
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
                 continue
 
             if ev is None:
