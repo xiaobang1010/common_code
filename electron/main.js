@@ -63,14 +63,19 @@ function spawnPython() {
 // 根据后端端口创建主窗口
 function createWindow(port) {
   win = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    width: 1400,
+    height: 900,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js')
     }
   })
 
-  win.loadURL('http://localhost:' + port)
+  // 开发模式加载 Vite dev server，生产模式加载后端提供的静态文件
+  if (process.env.ELECTRON_DEV === '1') {
+    win.loadURL('http://localhost:5173')
+  } else {
+    win.loadURL('http://localhost:' + port)
+  }
 
   win.on('closed', () => {
     win = null

@@ -1,22 +1,26 @@
 """FastAPI 应用定义，提供 HTTP 接口供 Electron 壳调用。
 
 路由：
-  GET  /                — 测试页
   GET  /api/state       — 获取会话状态
   POST /api/chat        — SSE 流式对话
   POST /api/command     — 斜杠命令
   POST /api/permission  — 回传权限决策
+
+根路径 "/" 由 StaticFiles 挂载的前端构建产物（frontend/dist）接管。
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
+import subprocess
 from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from query.loop import LoopResult
 from query.services.api.llm import StreamEvent
@@ -38,235 +42,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-# ---------------------------------------------------------------------------
-# GET / — 测试页
-# ---------------------------------------------------------------------------
-
-
-@app.get("/", response_class=HTMLResponse)
-async def index() -> str:
-    """返回端到端验证测试页。
-
-    包含输入框、发送按钮、消息显示区、状态栏，
-    用 fetch + ReadableStream 收 SSE 流，处理权限请求。
-    """
-    return """<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<title>Common Code</title>
-<style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #1e1e1e; color: #d4d4d4; height: 100vh; display: flex; flex-direction: column; }
-  #status-bar { padding: 6px 16px; background: #2d2d2d; border-bottom: 1px solid #404040; font-size: 12px; color: #888; display: flex; gap: 16px; }
-  #messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
-  .msg { padding: 8px 12px; border-radius: 6px; white-space: pre-wrap; word-break: break-word; }
-  .msg.user { background: #2a4a6a; align-self: flex-end; max-width: 80%; }
-  .msg.assistant { background: #2d2d2d; border: 1px solid #404040; max-width: 90%; }
-  .msg.tool { background: #1a3a1a; border: 1px solid #2a5a2a; font-size: 12px; max-width: 90%; }
-  .msg-prefix { font-weight: bold; margin-right: 6px; }
-  .msg.user .msg-prefix { color: #6cb6ff; }
-  .msg.assistant .msg-prefix { color: #fff; }
-  .msg.tool .msg-prefix { color: #4ec9b0; }
-  #input-bar { padding: 12px 16px; background: #2d2d2d; border-top: 1px solid #404040; display: flex; gap: 8px; }
-  #prompt-input { flex: 1; background: #1e1e1e; border: 1px solid #404040; color: #d4d4d4; padding: 8px 12px; border-radius: 4px; font-size: 14px; }
-  #prompt-input:focus { outline: none; border-color: #007acc; }
-  #send-btn { background: #007acc; color: #fff; border: none; padding: 8px 20px; border-radius: 4px; cursor: pointer; font-size: 14px; }
-  #send-btn:disabled { background: #555; cursor: not-allowed; }
-  #send-btn:hover:not(:disabled) { background: #1a8ad4; }
-  #perm-dialog { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); background: #2d2d2d; border: 1px solid #404040; border-radius: 8px; padding: 24px; min-width: 400px; z-index: 100; display: none; }
-  #perm-dialog h3 { color: #ffc107; margin-bottom: 12px; }
-  #perm-dialog .perm-info { margin: 6px 0; font-size: 13px; }
-  #perm-dialog .perm-buttons { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
-  #perm-dialog button { padding: 6px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; }
-  #perm-allow { background: #4ec9b0; color: #000; }
-  #perm-deny { background: #f44747; color: #fff; }
-  #perm-always { background: #007acc; color: #fff; }
-</style>
-</head>
-<body>
-<div id="status-bar">
-  <span id="st-model">model: -</span>
-  <span id="st-tokens">tokens: 0in/0out</span>
-  <span id="st-cost">cost: $0.0000</span>
-</div>
-<div id="messages"></div>
-<div id="input-bar">
-  <input id="prompt-input" type="text" placeholder="输入消息或 /命令..." autocomplete="off">
-  <button id="send-btn" onclick="send()">发送</button>
-</div>
-<div id="perm-dialog">
-  <h3>&#9888; 需要权限确认</h3>
-  <div class="perm-info"><strong>工具:</strong> <span id="perm-tool"></span></div>
-  <div class="perm-info"><strong>原因:</strong> <span id="perm-reason"></span></div>
-  <div class="perm-info"><strong>参数:</strong> <pre id="perm-input" style="margin-top:4px;max-height:200px;overflow:auto;font-size:12px;"></pre></div>
-  <div class="perm-buttons">
-    <button id="perm-deny" onclick="resolvePerm('deny')">拒绝</button>
-    <button id="perm-always" onclick="resolvePerm('always_allow')">总是允许</button>
-    <button id="perm-allow" onclick="resolvePerm('allow')">允许</button>
-  </div>
-</div>
-<script>
-const input = document.getElementById('prompt-input');
-const sendBtn = document.getElementById('send-btn');
-const msgBox = document.getElementById('messages');
-const permDialog = document.getElementById('perm-dialog');
-let currentPermId = null;
-let assistantEl = null; // 当前流式 assistant 消息元素
-
-input.addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
-
-function addMsg(role, text) {
-  const el = document.createElement('div');
-  el.className = 'msg ' + role;
-  const prefixMap = { user: '你', assistant: 'AI', tool: '工具' };
-  el.innerHTML = '<span class="msg-prefix">' + (prefixMap[role] || role) + '</span>';
-  el.appendChild(document.createTextNode(text));
-  msgBox.appendChild(el);
-  msgBox.scrollTop = msgBox.scrollHeight;
-  return el;
-}
-
-async function send() {
-  const prompt = input.value.trim();
-  if (!prompt) return;
-  input.value = '';
-  sendBtn.disabled = true;
-
-  // 斜杠命令走 /api/command
-  if (prompt.startsWith('/')) {
-    addMsg('user', prompt);
-    try {
-      const resp = await fetch('/api/command', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: prompt }),
-      });
-      const data = await resp.json();
-      addMsg('assistant', data.output || '(无输出)');
-    } catch (e) {
-      addMsg('assistant', '命令执行出错: ' + e.message);
-    }
-    sendBtn.disabled = false;
-    return;
-  }
-
-  // 普通消息走 /api/chat SSE 流
-  addMsg('user', prompt);
-  assistantEl = null;
-
-  try {
-    const resp = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt }),
-    });
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      // 按 SSE 格式分割：data: {...}\\n\\n
-      let idx;
-      while ((idx = buffer.indexOf('\\n\\n')) >= 0) {
-        const chunk = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 2);
-        if (chunk.startsWith('data: ')) {
-          handleSSE(JSON.parse(chunk.slice(6)));
-        }
-      }
-    }
-  } catch (e) {
-    addMsg('assistant', '连接出错: ' + e.message);
-  }
-  sendBtn.disabled = false;
-}
-
-function handleSSE(ev) {
-  if (ev.type === 'stream') {
-    if (ev.event_type === 'content' && ev.content) {
-      if (!assistantEl) assistantEl = addMsg('assistant', '');
-      assistantEl.textContent += ev.content;
-      msgBox.scrollTop = msgBox.scrollHeight;
-    } else if (ev.event_type === 'usage' && ev.usage) {
-      document.getElementById('st-tokens').textContent =
-        'tokens: ' + (ev.usage.prompt_tokens || 0) + 'in/' + (ev.usage.completion_tokens || 0) + 'out';
-    } else if (ev.event_type === 'error') {
-      addMsg('assistant', '错误: ' + (ev.error || ''));
-    }
-  } else if (ev.type === 'message') {
-    const m = ev.message;
-    if (m.role === 'tool') {
-      const preview = (m.content || '').slice(0, 200);
-      addMsg('tool', preview);
-    } else if (m.role === 'assistant' && m.tool_calls) {
-      // 有工具调用的 assistant 消息，显示工具名
-      if (assistantEl) assistantEl.textContent = m.content || '';
-      m.tool_calls.forEach(tc => {
-        const name = tc.function ? tc.function.name : (tc.name || 'unknown');
-        addMsg('tool', '[调用工具: ' + name + ']');
-      });
-    }
-  } else if (ev.type === 'loop_result') {
-    if (ev.reason && ev.reason !== 'completed') {
-      addMsg('assistant', '循环退出: ' + ev.reason + (ev.error ? ' (' + ev.error + ')' : ''));
-    }
-    assistantEl = null;
-  } else if (ev.type === 'permission_request') {
-    showPermDialog(ev);
-  }
-  // 流结束后刷新状态栏
-  if (ev.type === 'stream' && ev.event_type === 'done') {
-    fetchState();
-  }
-}
-
-function showPermDialog(req) {
-  currentPermId = req.request_id;
-  document.getElementById('perm-tool').textContent = req.tool_name || '';
-  document.getElementById('perm-reason').textContent = req.reason || '';
-  document.getElementById('perm-input').textContent = JSON.stringify(req.tool_input || {}, null, 2);
-  permDialog.style.display = 'block';
-}
-
-async function resolvePerm(decision) {
-  permDialog.style.display = 'none';
-  if (!currentPermId) return;
-  try {
-    await fetch('/api/permission', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ request_id: currentPermId, decision }),
-    });
-  } catch (e) {
-    addMsg('assistant', '权限回传出错: ' + e.message);
-  }
-  currentPermId = null;
-}
-
-async function fetchState() {
-  try {
-    const resp = await fetch('/api/state');
-    const data = await resp.json();
-    document.getElementById('st-model').textContent = 'model: ' + (data.model || '-');
-    const u = data.token_usage || {};
-    document.getElementById('st-tokens').textContent =
-      'tokens: ' + (u.input_tokens || 0) + 'in/' + (u.output_tokens || 0) + 'out';
-    document.getElementById('st-cost').textContent = 'cost: $' + (data.total_cost_usd || 0).toFixed(4);
-  } catch (e) {}
-}
-
-fetchState();
-input.focus();
-</script>
-</body>
-</html>"""
 
 
 # ---------------------------------------------------------------------------
@@ -465,3 +240,202 @@ async def resolve_permission(body: dict) -> dict:
     if ok:
         return {"ok": True}
     return {"ok": False, "error": "request not found"}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/files/list — 列目录
+# ---------------------------------------------------------------------------
+
+# 这些目录不展示给前端
+_EXCLUDED_DIRS = {"__pycache__", "node_modules", "dist", ".git"}
+
+
+def _project_root() -> str:
+    """返回项目根目录（server 的上级目录）。"""
+    return os.path.dirname(os.path.dirname(__file__))
+
+
+def _is_within_root(target: str, root: str) -> bool:
+    """判断 target 是否仍在 root 目录内（含 root 本身）。"""
+    try:
+        return os.path.commonpath([root, target]) == root
+    except ValueError:
+        # 跨驱动器等情况，直接拒绝
+        return False
+
+
+@app.get("/api/files/list")
+async def list_files(path: str = ".") -> dict:
+    """列目录接口。
+
+    参数 path：相对路径，默认 "."（项目根目录）。
+    返回 {"items": [{"name", "type", "path"}]}，
+    目录排前面、文件排后面，各自按名字排序。
+    隐藏文件和指定目录会被排除。
+    """
+    root = _project_root()
+    target = os.path.normpath(os.path.join(root, path))
+
+    # 路径安全检查：不允许穿越到项目根之外
+    if not _is_within_root(target, root):
+        return {"items": []}
+
+    if not os.path.isdir(target):
+        return {"items": []}
+
+    dirs: list[dict] = []
+    files: list[dict] = []
+    for name in os.listdir(target):
+        # 排除隐藏文件
+        if name.startswith("."):
+            continue
+        full = os.path.join(target, name)
+        rel = os.path.relpath(full, root).replace("\\", "/")
+        if os.path.isdir(full):
+            if name in _EXCLUDED_DIRS:
+                continue
+            dirs.append({"name": name, "type": "dir", "path": rel})
+        else:
+            files.append({"name": name, "type": "file", "path": rel})
+
+    dirs.sort(key=lambda x: x["name"])
+    files.sort(key=lambda x: x["name"])
+    return {"items": dirs + files}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/files/read — 读文件内容
+# ---------------------------------------------------------------------------
+
+# 扩展名到语言标识的映射
+_EXT_TO_LANG = {
+    ".py": "python",
+    ".js": "javascript",
+    ".ts": "typescript",
+    ".json": "json",
+    ".md": "markdown",
+    ".html": "html",
+    ".css": "css",
+    ".txt": "plaintext",
+}
+
+
+@app.get("/api/files/read")
+async def read_file(path: str) -> Any:
+    """读文件内容接口。
+
+    参数 path：相对路径。
+    返回 {"content": "...", "language": "..."}。
+    文件不存在返回 404，路径穿越返回 403。
+    """
+    root = _project_root()
+    target = os.path.normpath(os.path.join(root, path))
+
+    # 路径安全检查：不允许 .. 路径穿越
+    if not _is_within_root(target, root):
+        return JSONResponse(status_code=403, content={"error": "path traversal denied"})
+
+    if not os.path.isfile(target):
+        return JSONResponse(status_code=404, content={"error": "file not found"})
+
+    try:
+        with open(target, "r", encoding="utf-8") as f:
+            content = f.read()
+    except (OSError, UnicodeDecodeError):
+        return JSONResponse(status_code=500, content={"error": "read failed"})
+
+    ext = os.path.splitext(path)[1].lower()
+    language = _EXT_TO_LANG.get(ext, "plaintext")
+    return {"content": content, "language": language}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/git/status — Git 状态
+# ---------------------------------------------------------------------------
+
+
+def _parse_porcelain_line(line: str) -> dict | None:
+    """解析 git status --porcelain 的一行。
+
+    --porcelain 输出格式：XY path，X 是暂存区状态，Y 是工作区状态。
+    返回 {"path": "...", "status": "..."}，无法解析时返回 None。
+    """
+    if len(line) < 4:
+        return None
+    x = line[0]
+    y = line[1]
+    # 路径从第 4 个字符开始（XY + 空格）
+    file_path = line[3:]
+
+    # 优先看工作区状态 Y，为空再看暂存区状态 X
+    code = y if y != " " else x
+    status_map = {
+        "M": "modified",
+        "A": "added",
+        "D": "deleted",
+        "?": "added",  # 未跟踪文件按 added 处理
+        "R": "modified",  # 重命名按 modified 处理
+        "C": "modified",  # 复制按 modified 处理
+    }
+    return {"path": file_path, "status": status_map.get(code, "unknown")}
+
+
+@app.get("/api/git/status")
+async def git_status() -> dict:
+    """Git 状态接口。
+
+    返回 {"branch": "...", "changes": [{"path", "status"}]}。
+    不在 git 仓库或调用失败时返回空分支和空变更列表。
+    """
+    root = _project_root()
+
+    try:
+        branch_proc = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        branch = branch_proc.stdout.strip() if branch_proc.returncode == 0 else ""
+
+        status_proc = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+        changes: list[dict] = []
+        if status_proc.returncode == 0:
+            for line in status_proc.stdout.splitlines():
+                parsed = _parse_porcelain_line(line)
+                if parsed is not None:
+                    changes.append(parsed)
+
+        return {"branch": branch, "changes": changes}
+    except (subprocess.SubprocessError, OSError):
+        return {"branch": "", "changes": []}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/abort — 取消当前查询（占位）
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/abort")
+async def abort_query() -> JSONResponse:
+    """取消当前查询（占位实现）。
+
+    返回 501 状态码和 {"error": "abort not implemented"}。
+    """
+    return JSONResponse(status_code=501, content={"error": "abort not implemented"})
+
+
+# ---------------------------------------------------------------------------
+# 静态文件 — 挂载前端构建产物
+# ---------------------------------------------------------------------------
+# 必须放在所有 API 路由（/api/*）之后，否则 /api/* 请求会被静态文件拦截。
+# server/__main__.py 运行时 cwd 是项目根目录，前端构建产物在 frontend/dist。
+app.mount("/", StaticFiles(directory="frontend/dist", html=True), name="frontend")
