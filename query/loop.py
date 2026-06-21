@@ -395,6 +395,8 @@ async def query_loop(
             tools=engine_config.tools,
             context=ToolUseContext(),
             permission_check=engine_config.permission_check,
+            permission_prompt=engine_config.permission_prompt,
+            always_allowed=engine.always_allowed,
         )
         tool_result_messages: list[dict] = []
 

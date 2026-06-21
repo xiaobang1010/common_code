@@ -36,6 +36,8 @@ class QueryEngineConfig:
         system_prompt_sections: 系统提示词段落
         max_turns: 最大轮次（None 表示不限）
         permission_check: 工具调用前的权限检查回调，None 表示跳过权限检查
+        permission_prompt: 权限确认弹窗回调，当 permission_check 返回 ask 决策时调用。
+            签名 (tool_name, tool_input, reason) -> "allow"|"deny"|"always_allow"，None 表示无弹窗
         deps: I/O 依赖
     """
 
@@ -48,6 +50,7 @@ class QueryEngineConfig:
     system_prompt_sections: list[Any] = field(default_factory=list)
     max_turns: int | None = None
     permission_check: Callable | None = None
+    permission_prompt: Callable | None = None
     deps: QueryDeps = field(default_factory=production_deps)
 
 
@@ -57,7 +60,13 @@ class QueryEngineConfig:
 
 
 async def _default_permission_check(tool, input_args, context):
-    """默认权限检查 — 调用 has_permissions_to_use_tool。"""
+    """默认权限检查 — 调用 has_permissions_to_use_tool。
+
+    返回值：
+        {"decision": "allow"} — 允许执行
+        {"decision": "deny", "reason": ...} — 拒绝
+        {"decision": "ask", "reason": ...} — 需要用户确认，由上层调弹窗回调处理
+    """
     from tools.utils.permissions.permissions import has_permissions_to_use_tool
 
     result = has_permissions_to_use_tool(
@@ -67,7 +76,9 @@ async def _default_permission_check(tool, input_args, context):
     )
     if result.decision.value == "deny":
         return {"decision": "deny", "reason": result.reason}
-    # allow 和 ask 都先放行（ask 的交互式弹窗是上层的事）
+    if result.decision.value == "ask":
+        # ASK 不再静默放行，透传给上层（executor 调 permission_prompt 弹窗）
+        return {"decision": "ask", "reason": result.reason}
     return {"decision": "allow"}
 
 
@@ -141,6 +152,8 @@ class QueryEngine:
         self._turn_count: int = 0
         # 整个会话一个 sessionId
         self._session_id: str = config.deps.get_uuid()
+        # 会话级 ALWAYS_ALLOW 集合：用户选过 always_allow 的工具后续直接放行
+        self._always_allowed: set[str] = set()
 
     @property
     def mutable_messages(self) -> list[dict]:
@@ -166,6 +179,11 @@ class QueryEngine:
     def session_id(self) -> str:
         """会话 ID，整个会话不变。"""
         return self._session_id
+
+    @property
+    def always_allowed(self) -> set[str]:
+        """会话级 ALWAYS_ALLOW 工具集合，跨轮持久化。"""
+        return self._always_allowed
 
     @property
     def config(self) -> QueryEngineConfig:

@@ -56,14 +56,33 @@ def render_tool_call_summary(tool_call: dict) -> str:
 
     格式：[Tool: name] args_preview...
 
+    兼容两种 tool_call 格式：
+    - Claude/内部格式: {"name": ..., "input": {...}}
+    - OpenAI 格式: {"id": ..., "function": {"name": ..., "arguments": "..."}}
+
     Args:
-        tool_call: 工具调用字典，包含 name 和 input
+        tool_call: 工具调用字典
 
     Returns:
         格式化的工具调用摘要字符串
     """
-    name = tool_call.get("name", "unknown")
+    name = tool_call.get("name", "")
     input_data = tool_call.get("input", {})
+
+    # 兼容 OpenAI 格式: {"id":..., "function":{"name":..., "arguments":"..."}}
+    if not name and "function" in tool_call:
+        func = tool_call["function"]
+        name = func.get("name", "")
+        args_raw = func.get("arguments", "{}")
+        if isinstance(args_raw, str):
+            try:
+                input_data = json.loads(args_raw) if args_raw else {}
+            except (json.JSONDecodeError, ValueError):
+                input_data = {}
+        else:
+            input_data = args_raw
+    if not name:
+        name = "unknown"
 
     # 生成参数预览
     if isinstance(input_data, dict) and input_data:

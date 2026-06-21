@@ -248,10 +248,13 @@ async def cmd_model(context: CommandContext) -> str:
 
 
 async def cmd_cost(context: CommandContext) -> str:
-    """显示当前会话的成本统计。"""
+    """显示当前会话的成本统计。
+
+    统一从 AppState 读取累计成本和 token 用量，不再读 bootstrap state 的独立副本。
+    """
     lines: list[str] = ["Session cost:", ""]
 
-    # 从 app_state 读取
+    # 统一从 app_state 读取
     if context.app_state is not None:
         state = context.app_state.get_state()
         lines.append(f"  Total cost: ${state.total_cost_usd:.4f}")
@@ -260,27 +263,8 @@ async def cmd_cost(context: CommandContext) -> str:
         lines.append(f"  Output tokens: {usage.output_tokens}")
         lines.append(f"  Cache read tokens: {usage.cache_read_input_tokens}")
         lines.append(f"  Cache creation tokens: {usage.cache_creation_input_tokens}")
-
-    # 从 bootstrap state 读取
-    try:
-        from startup.bootstrap.state import (
-            get_total_cost_usd,
-            get_total_input_tokens,
-            get_total_output_tokens,
-            get_total_duration,
-        )
-        cost = get_total_cost_usd()
-        input_tokens = get_total_input_tokens()
-        output_tokens = get_total_output_tokens()
-        duration_ms = get_total_duration()
-
-        lines.append("")
-        lines.append(f"  Accumulated cost: ${cost:.4f}")
-        lines.append(f"  Accumulated input tokens: {input_tokens}")
-        lines.append(f"  Accumulated output tokens: {output_tokens}")
-        lines.append(f"  Session duration: {duration_ms / 1000:.1f}s")
-    except ImportError:
-        pass
+    else:
+        lines.append("  (state unavailable)")
 
     return "\n".join(lines)
 

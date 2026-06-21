@@ -9,10 +9,10 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
+from ink.core import Ink, InkOptions
 from ink.screens.repl import REPLScreen
 from startup.state.app_state import AppStateProvider
 
@@ -31,10 +31,10 @@ async def launch_repl(
     """启动 REPL 交互界面。
 
     执行步骤：
-      1. 创建 REPLScreen 实例
-      2. 初始化 Ink 渲染引擎（Python 版本简化为终端渲染）
+      1. 创建 Ink 渲染引擎实例并进入 alternate screen
+      2. 创建 REPLScreen 实例（注入 Ink）
       3. 进入 REPL 主循环
-      4. 清理退出
+      4. 清理退出（退出 alternate screen + Ink cleanup）
 
     Args:
         app_state: 应用状态提供者
@@ -42,11 +42,17 @@ async def launch_repl(
     """
     logger.info("启动 REPL...")
 
-    # 1. 创建 REPLScreen 实例
-    repl_screen = REPLScreen(app_state)
+    # 1. 初始化 Ink 渲染引擎
+    ink = Ink(InkOptions())
+    try:
+        ink.enter_alternate_screen()
+    except Exception as e:
+        # alt-screen 不可用时降级为普通终端输出
+        logger.warning("无法进入 alternate screen，降级为普通输出: %s", e)
 
-    # 2. 初始化渲染 — Python 版本使用终端直接渲染
-    #    （原始 TS 版本使用 Ink/React 渲染树，Python 版本简化为终端输出）
+    # 2. 创建 REPLScreen 实例（注入 Ink 引擎）
+    repl_screen = REPLScreen(app_state, ink=ink)
+
     try:
         # 3. 进入 REPL 主循环
         await repl_screen.run()
@@ -58,6 +64,11 @@ async def launch_repl(
     finally:
         # 4. 清理退出
         repl_screen.stop()
+        try:
+            ink.exit_alternate_screen()
+        except Exception:
+            pass
+        ink.cleanup()
         logger.info("REPL 已退出")
 
 

@@ -119,7 +119,7 @@ class Ink:
     # 公共 API
     # -----------------------------------------------------------------------
 
-    def render(self, content: Union[RenderNode, str, None]) -> None:
+    def render(self, content: "RenderNode | str | None") -> None:
         """渲染内容到终端。
 
         Args:
@@ -295,6 +295,16 @@ class Ink:
         else:
             self._repaint()
         self._on_render()
+
+    def clear(self) -> None:
+        """重置帧缓存，下次 render 将是全量渲染。
+
+        用于其他终端输出（如 prompt_toolkit 的 input）修改了屏幕后，
+        让 Ink 放弃旧的帧缓存，避免帧差分基于过期数据计算。
+        """
+        self._front_frame = empty_frame(self._terminal_rows, self._terminal_columns)
+        self._back_frame = empty_frame(self._terminal_rows, self._terminal_columns)
+        self._log.reset()
 
     # -----------------------------------------------------------------------
     # 内部方法

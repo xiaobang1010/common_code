@@ -77,6 +77,8 @@ async def execute_tool_call(
     context: ToolUseContext,
     hook_config: HookConfig | None = None,
     permission_check: Callable | None = None,
+    permission_prompt: Callable | None = None,
+    always_allowed: set[str] | None = None,
 ) -> ToolExecutionResult:
     """完整工具执行管线。
 
@@ -85,7 +87,7 @@ async def execute_tool_call(
     2. Pydantic 验证
     3. validateInput
     4. PreToolUse Hooks
-    5. 权限决策
+    5. 权限决策（allow 直接通过 / deny 拒绝 / ask 调 permission_prompt 弹窗）
     6. tool.execute()
     7. PostToolUse Hooks
     8. 封装返回
@@ -175,9 +177,47 @@ async def execute_tool_call(
             validated_input = hook_result.updated_input
 
     # ---- 5. 权限决策 ----
-    perm_decision = await resolve_permission_decision(
-        hook_result, tool, validated_input, context, permission_check,
-    )
+    # 先检查 always_allowed：用户之前选过 always_allow 的工具直接放行
+    if always_allowed and tool_name in always_allowed:
+        perm_decision = None
+    else:
+        perm_decision = await resolve_permission_decision(
+            hook_result, tool, validated_input, context, permission_check,
+        )
+
+    # 处理 ask 决策：调弹窗回调让用户选择 allow/deny/always_allow
+    if perm_decision is not None and perm_decision.get("decision") == "ask":
+        if permission_prompt is not None:
+            # 准备 input dict 供弹窗显示
+            if isinstance(validated_input, BaseModel):
+                prompt_input = validated_input.model_dump()
+            else:
+                prompt_input = validated_input
+            try:
+                choice = await permission_prompt(
+                    tool_name,
+                    prompt_input,
+                    perm_decision.get("reason", ""),
+                )
+            except Exception:
+                choice = "deny"
+            if choice == "allow":
+                perm_decision = None  # 放行
+            elif choice == "always_allow":
+                # 持久化到会话级集合，后续该工具不再弹窗
+                if always_allowed is not None:
+                    always_allowed.add(tool_name)
+                perm_decision = None  # 放行
+            else:
+                # deny 或无效选择 → 拒绝
+                perm_decision = {"decision": "deny", "reason": "User denied permission"}
+        else:
+            # 没有 prompt 回调，默认拒绝（安全第一）
+            perm_decision = {
+                "decision": "deny",
+                "reason": "Permission required but no prompt available",
+            }
+
     if perm_decision is not None:
         # 权限被拒绝，先跑 PermissionDenied hooks
         if hook_config is not None:
@@ -255,11 +295,16 @@ async def execute_tool_calls(
     context: ToolUseContext,
     hook_config: HookConfig | None = None,
     permission_check: Callable | None = None,
+    permission_prompt: Callable | None = None,
+    always_allowed: set[str] | None = None,
 ) -> list[ToolExecutionResult]:
     """批量执行工具调用（串行执行，按顺序）。"""
     results: list[ToolExecutionResult] = []
     for tc in tool_calls:
-        result = await execute_tool_call(tc, tools, context, hook_config, permission_check)
+        result = await execute_tool_call(
+            tc, tools, context, hook_config,
+            permission_check, permission_prompt, always_allowed,
+        )
         results.append(result)
     return results
 
@@ -286,11 +331,15 @@ class StreamingToolExecutor:
         context: ToolUseContext,
         hook_config: HookConfig | None = None,
         permission_check: Callable | None = None,
+        permission_prompt: Callable | None = None,
+        always_allowed: set[str] | None = None,
     ) -> None:
         self._tools = tools
         self._context = context
         self._hook_config = hook_config
         self._permission_check = permission_check
+        self._permission_prompt = permission_prompt
+        self._always_allowed = always_allowed
         # 按 tool_call_id 聚合的 delta，每个值是 {"id": str, "name": str, "arguments": str}
         self._delta_map: dict[str, dict] = {}
         # 已启动执行的 tool_call_id 集合
@@ -361,6 +410,8 @@ class StreamingToolExecutor:
             self._context,
             self._hook_config,
             self._permission_check,
+            self._permission_prompt,
+            self._always_allowed,
         )
         self._completed_results.append(result)
         self._pending_tasks.pop(call_id, None)

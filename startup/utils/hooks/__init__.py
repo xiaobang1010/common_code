@@ -448,11 +448,19 @@ async def resolve_permission_decision(
             if permission_check is not None:
                 try:
                     perm_result = await permission_check(tool, validated_input, context)
-                    if isinstance(perm_result, dict) and perm_result.get("decision") == "deny":
-                        return {
-                            "decision": "deny",
-                            "reason": perm_result.get("reason", "Blocked by rules"),
-                        }
+                    if isinstance(perm_result, dict):
+                        decision = perm_result.get("decision")
+                        if decision == "deny":
+                            return {
+                                "decision": "deny",
+                                "reason": perm_result.get("reason", "Blocked by rules"),
+                            }
+                        if decision == "ask":
+                            # 透传 ask 给 executor，由其调弹窗回调
+                            return {
+                                "decision": "ask",
+                                "reason": perm_result.get("reason", ""),
+                            }
                 except Exception as e:
                     logger.error("权限检查异常（hook allow 后规则检查）: %s", e)
             return None  # 通过
@@ -464,11 +472,19 @@ async def resolve_permission_decision(
         if permission_check is not None:
             try:
                 perm_result = await permission_check(tool, validated_input, context)
-                if isinstance(perm_result, dict) and perm_result.get("decision") == "deny":
-                    return {
-                        "decision": "deny",
-                        "reason": perm_result.get("reason", "No reason provided"),
-                    }
+                if isinstance(perm_result, dict):
+                    decision = perm_result.get("decision")
+                    if decision == "deny":
+                        return {
+                            "decision": "deny",
+                            "reason": perm_result.get("reason", "No reason provided"),
+                        }
+                    if decision == "ask":
+                        # 透传 ask 给 executor，由其调弹窗回调
+                        return {
+                            "decision": "ask",
+                            "reason": perm_result.get("reason", ""),
+                        }
             except Exception as e:
                 logger.error("权限检查异常: %s", e)
                 return {"decision": "deny", "reason": f"Permission check error: {e}"}
