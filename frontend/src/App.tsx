@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import ActivityBar from './components/ActivityBar'
 import Sidebar from './components/Sidebar'
-import EditorArea from './components/EditorArea'
+import EditorArea, { type EditorAreaHandle } from './components/EditorArea'
 import AIPanel from './components/AIPanel'
 import StatusBar from './components/StatusBar'
 import { useChat } from './hooks/useChat'
@@ -19,6 +19,9 @@ function App() {
 
   // 聊天状态提升到 App 层，方便 AIPanel 和 StatusBar 共享
   const chat = useChat()
+
+  // 编辑区 ref，用于文件树点击打开文件
+  const editorRef = useRef<EditorAreaHandle>(null)
 
   // 根据折叠状态计算各列宽度
   const gridColumns = [
@@ -44,9 +47,9 @@ function App() {
         activeView={activeView}
         collapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
-        onFileOpen={() => {}}
+        onFileOpen={(path) => editorRef.current?.openFile(path)}
       />
-      <EditorArea />
+      <EditorArea ref={editorRef} />
       <AIPanel
         collapsed={aiPanelCollapsed}
         onToggleCollapse={() => setAiPanelCollapsed(!aiPanelCollapsed)}
