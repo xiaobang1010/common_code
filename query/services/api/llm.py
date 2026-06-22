@@ -184,6 +184,16 @@ def parse_stream_chunk(chunk: Any) -> list[StreamEvent]:
                     content=content,
                 ))
 
+            # delta.reasoning_content → 思考过程（DeepSeek R1/V3/V4 的思维链）
+            # DeepSeek 模型把思考放在 reasoning_content，实际回复放在 content
+            # 都要输出给用户看
+            reasoning = getattr(delta, "reasoning_content", None)
+            if reasoning is not None and reasoning:
+                events.append(StreamEvent(
+                    type="content",
+                    content=reasoning,
+                ))
+
             # delta.tool_calls → tool_call_delta 事件
             tool_calls = getattr(delta, "tool_calls", None)
             if tool_calls:
@@ -216,7 +226,7 @@ def parse_stream_chunk(chunk: Any) -> list[StreamEvent]:
     usage = getattr(chunk, "usage", None)
     if usage is not None:
         usage_dict: dict[str, Any] = {}
-        # 提取所有可能的 usage 字段（兼容对象属性和字典键两种格式）
+        # 提取标准字段（兼容对象属性和字典键两种格式）
         all_attrs = (
             "prompt_tokens", "completion_tokens", "total_tokens",
             "cache_read_input_tokens", "cache_creation_input_tokens",
@@ -227,6 +237,33 @@ def parse_stream_chunk(chunk: Any) -> list[StreamEvent]:
                 val = usage.get(attr)
             if val is not None:
                 usage_dict[attr] = val
+
+        # 兼容 DeepSeek / OpenAI 格式的缓存字段
+        # DeepSeek: prompt_cache_hit_tokens（缓存命中）, prompt_cache_miss_tokens（未命中）
+        # OpenAI:   prompt_tokens_details.cached_tokens（缓存的 token 数）
+        if "cache_read_input_tokens" not in usage_dict:
+            cache_hit = getattr(usage, "prompt_cache_hit_tokens", None)
+            if cache_hit is None and isinstance(usage, dict):
+                cache_hit = usage.get("prompt_cache_hit_tokens")
+            if cache_hit is None:
+                # 尝试 prompt_tokens_details.cached_tokens
+                details = getattr(usage, "prompt_tokens_details", None)
+                if details is None and isinstance(usage, dict):
+                    details = usage.get("prompt_tokens_details")
+                if details is not None:
+                    cache_hit = getattr(details, "cached_tokens", None)
+                    if cache_hit is None and isinstance(details, dict):
+                        cache_hit = details.get("cached_tokens")
+            if cache_hit and cache_hit > 0:
+                usage_dict["cache_read_input_tokens"] = cache_hit
+
+        if "cache_creation_input_tokens" not in usage_dict:
+            cache_miss = getattr(usage, "prompt_cache_miss_tokens", None)
+            if cache_miss is None and isinstance(usage, dict):
+                cache_miss = usage.get("prompt_cache_miss_tokens")
+            if cache_miss and cache_miss > 0:
+                usage_dict["cache_creation_input_tokens"] = cache_miss
+
         # 只在有真实数据时生成 usage 事件（过滤掉全 0 的占位 usage）
         if usage_dict and any(v > 0 for v in usage_dict.values() if isinstance(v, int)):
             events.append(StreamEvent(

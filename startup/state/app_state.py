@@ -95,6 +95,10 @@ class TokenUsage:
     output_tokens: int = 0
     cache_read_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
+    # 最近一次请求的 prompt_tokens，反映当前上下文大小（覆盖，不累加）
+    last_prompt_tokens: int = 0
+    # 最近一次请求的 cache_creation_input_tokens，反映已缓存大小（覆盖，不累加）
+    last_cache_creation: int = 0
 
 
 @dataclass

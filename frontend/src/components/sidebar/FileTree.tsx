@@ -11,16 +11,52 @@ interface FileTreeProps {
   onFileOpen: (path: string) => void
 }
 
-// 根据文件扩展名返回对应颜色
+// 根据文件扩展名返回对应颜色 - 精致的语法色
 function getFileColor(name: string): string {
-  if (name.endsWith('.py')) return 'var(--accent)' // 蓝色
-  if (name.endsWith('.js') || name.endsWith('.ts')) return 'var(--warning)' // 黄色
-  if (name.endsWith('.json')) return 'var(--text-secondary)' // 灰色
-  if (name.endsWith('.md')) return 'var(--text-primary)' // 白色
+  if (name.endsWith('.py')) return 'var(--syntax-function)'
+  if (name.endsWith('.js') || name.endsWith('.jsx')) return 'var(--warning)'
+  if (name.endsWith('.ts') || name.endsWith('.tsx')) return 'var(--info)'
+  if (name.endsWith('.json')) return 'var(--syntax-number)'
+  if (name.endsWith('.md')) return 'var(--text-secondary)'
+  if (name.endsWith('.css') || name.endsWith('.scss')) return 'var(--syntax-keyword)'
+  if (name.endsWith('.html')) return 'var(--syntax-number)'
   return 'var(--text-primary)'
 }
 
-// 单个树节点，递归渲染子项
+// 文件夹图标 SVG
+function FolderIcon({ open }: { open: boolean }) {
+  return open ? (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+      <path d="M3 12h18" stroke="var(--border-strong)" strokeWidth="1" />
+    </svg>
+  ) : (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+    </svg>
+  )
+}
+
+// 文件图标 SVG
+function FileIcon({ color }: { color: string }) {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <path d="M14 2v6h6" />
+    </svg>
+  )
+}
+
+// 加载中图标
+function LoadingIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" strokeWidth="2" strokeLinecap="round">
+      <path d="M21 12a9 9 0 1 1-6.219-8.56" style={{ animation: 'spin 1s linear infinite' }} />
+    </svg>
+  )
+}
+
+// 单个树节点
 interface FileTreeNodeProps {
   item: FileItem
   depth: number
@@ -32,10 +68,10 @@ function FileTreeNode({ item, depth, onFileOpen }: FileTreeNodeProps) {
   const [children, setChildren] = useState<FileItem[]>([])
   const [loaded, setLoaded] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [hovered, setHovered] = useState(false)
 
   const isDir = item.type === 'dir'
 
-  // 点击文件夹：展开/折叠，首次展开时懒加载子目录；点击文件：触发打开
   const handleClick = async () => {
     if (!isDir) {
       onFileOpen(item.path)
@@ -57,30 +93,37 @@ function FileTreeNode({ item, depth, onFileOpen }: FileTreeNodeProps) {
     setExpanded(!expanded)
   }
 
-  const icon = isDir ? (expanded ? '📂' : '📁') : '📄'
+  const fileColor = getFileColor(item.name)
 
   return (
     <div>
       <div
         onClick={handleClick}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
         style={{
           display: 'flex',
           alignItems: 'center',
-          gap: '4px',
-          paddingLeft: depth * 12 + 8,
+          gap: '6px',
+          paddingLeft: depth * 14 + 8,
           paddingRight: '8px',
-          height: '24px',
+          height: '26px',
           cursor: 'pointer',
-          color: isDir ? 'var(--text-primary)' : getFileColor(item.name),
+          color: isDir ? 'var(--text-primary)' : fileColor,
           fontSize: '13px',
+          fontFamily: 'var(--font-ui)',
           whiteSpace: 'nowrap',
           userSelect: 'none',
+          backgroundColor: hovered ? 'var(--bg-tertiary)' : 'transparent',
+          borderRadius: 'var(--radius-sm)',
+          margin: '0 4px',
+          transition: 'background var(--transition-fast)',
         }}
       >
-        <span style={{ width: '16px', textAlign: 'center' }}>
-          {loading ? '⏳' : icon}
+        <span style={{ width: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          {loading ? <LoadingIcon /> : isDir ? <FolderIcon open={expanded} /> : <FileIcon color={fileColor} />}
         </span>
-        <span>{item.name}</span>
+        <span style={{ fontWeight: isDir ? 500 : 400 }}>{item.name}</span>
       </div>
       {isDir && expanded && loaded && (
         <div>
@@ -98,7 +141,6 @@ function FileTree({ onFileOpen }: FileTreeProps) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
-  // 初始加载根目录
   useEffect(() => {
     const loadRoot = async () => {
       try {
@@ -117,19 +159,20 @@ function FileTree({ onFileOpen }: FileTreeProps) {
 
   if (loading) {
     return (
-      <div style={{ padding: '8px', color: 'var(--text-secondary)', fontSize: '13px' }}>
-        加载中...
+      <div style={{ padding: '16px', color: 'var(--text-tertiary)', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <LoadingIcon />
+        加载中
       </div>
     )
   }
   if (error) {
     return (
-      <div style={{ padding: '8px', color: 'var(--error)', fontSize: '13px' }}>{error}</div>
+      <div style={{ padding: '16px', color: 'var(--error)', fontSize: '12px' }}>{error}</div>
     )
   }
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: '4px 0' }}>
+    <div style={{ flex: 1, overflow: 'auto', padding: '6px 0' }}>
       {rootItems.map((item) => (
         <FileTreeNode key={item.path} item={item} depth={0} onFileOpen={onFileOpen} />
       ))}

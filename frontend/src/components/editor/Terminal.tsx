@@ -18,12 +18,18 @@ function getTerminalAPI(): ElectronTerminalAPI | undefined {
   return w.electronAPI?.terminal
 }
 
-// 集成终端：通过 Electron 主进程的 node-pty 接入真实 PowerShell。
+interface TerminalProps {
+  // 父组件分配的唯一实例 id，变化时会重新创建终端
+  instanceId: string
+  // 终端创建完成后的回调，把 pty id 回传给父组件管理
+  onReady?: (ptyId: string) => void
+}
+
+// 单个终端实例：通过 Electron 主进程的 node-pty 接入真实 PowerShell。
 // 开发模式（浏览器直连 Vite，没有 preload）下降级显示提示。
-function Terminal() {
-  // 终端挂载的容器
+// 父组件通过 instanceId 控制何时重新创建（切换 tab 时复用同一个 XTerm 容器）
+function Terminal({ instanceId, onReady }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null)
-  // 终端实例，存到 ref 以便卸载时清理
   const termRef = useRef<XTerm | null>(null)
 
   useEffect(() => {
@@ -35,10 +41,12 @@ function Terminal() {
     // 创建终端实例，深色主题适配整体风格
     const term = new XTerm({
       fontSize: 13,
-      fontFamily: 'Consolas, "Courier New", monospace',
+      fontFamily: 'JetBrains Mono, Consolas, "Courier New", monospace',
       theme: {
-        background: '#1e1e1e',
-        foreground: '#d4d4d4',
+        background: '#0f1115',
+        foreground: '#e6e9ef',
+        cursor: '#f5a623',
+        selectionBackground: 'rgba(245, 166, 35, 0.2)',
       },
       cursorBlink: true,
     })
@@ -49,7 +57,7 @@ function Terminal() {
 
     termRef.current = term
 
-    // 没有 preload 接口（开发模式浏览器访问），降级提示后直接返回
+    // 没有 preload 接口（开发模式浏览器访问），降级提示
     if (!api) {
       term.writeln('\x1b[33m当前为开发模式（浏览器直连），终端不可用。请在 Electron 中运行以使用集成终端。\x1b[0m')
       return () => {
@@ -58,18 +66,17 @@ function Terminal() {
       }
     }
 
-    // 有 preload 接口，创建真实终端
     let disposed = false
     let cleanupOutput: (() => void) | undefined
-    let termId: string | undefined
+    let ptyId: string | undefined
 
     api.create().then((id) => {
-      // 组件已卸载则立刻清理刚创建的终端，避免泄漏
       if (disposed) {
         api.dispose(id)
         return
       }
-      termId = id
+      ptyId = id
+      onReady?.(id)
 
       // 转发用户输入到 pty
       term.onData((data) => {
@@ -81,18 +88,17 @@ function Terminal() {
         api.resize(id, cols, rows)
       })
 
-      // 接收 pty 输出，只写属于当前组件的终端
+      // 接收 pty 输出
       cleanupOutput = api.onOutput((outputId, data) => {
         if (outputId === id) {
           term.write(data)
         }
       })
 
-      // 创建后按当前尺寸同步一次，保证 pty 列数行数与 xterm 一致
       api.resize(id, term.cols, term.rows)
     })
 
-    // 容器尺寸变化时重新拟合，fit 会触发 onResize 进而转发给 pty
+    // 容器尺寸变化时重新拟合
     const resizeObserver = new ResizeObserver(() => {
       fitAddon.fit()
     })
@@ -102,11 +108,13 @@ function Terminal() {
       disposed = true
       resizeObserver.disconnect()
       if (cleanupOutput) cleanupOutput()
-      if (termId) api.dispose(termId)
+      if (ptyId) api.dispose(ptyId)
       term.dispose()
       termRef.current = null
     }
-  }, [])
+    // instanceId 变化时整个终端重建
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [instanceId])
 
   return (
     <div
@@ -114,7 +122,7 @@ function Terminal() {
       style={{
         width: '100%',
         height: '100%',
-        backgroundColor: '#1e1e1e',
+        backgroundColor: '#0f1115',
         padding: '4px 8px',
         overflow: 'hidden',
       }}

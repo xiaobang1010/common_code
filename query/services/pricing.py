@@ -63,11 +63,10 @@ def calculate_cost(model: str, usage: dict) -> float:
       - prompt_tokens / completion_tokens / total_tokens（OpenAI 风格）
       - cache_read_input_tokens / cache_creation_input_tokens（Claude 风格，可选）
 
-    模型不在定价表中返回 0.0 并打 warning。
+    模型不在定价表中返回 0.0。
     """
     pricing = _match_pricing(model)
     if pricing is None:
-        logger.warning(f"模型 {model} 不在定价表中，成本按 0 计算")
         return 0.0
 
     # 输入 token：优先 prompt_tokens，兼容 input_tokens

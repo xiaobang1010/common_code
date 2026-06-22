@@ -57,7 +57,7 @@ function spawnPython() {
   })
 
   child.stderr.on('data', (data) => {
-    console.error('[python stderr]', data.toString())
+    // 不打印到控制台，避免干扰用户
   })
 
   child.on('exit', (code) => {

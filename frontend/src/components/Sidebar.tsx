@@ -20,9 +20,40 @@ interface SidebarProps {
 }
 
 function Sidebar({ activeView, collapsed, onToggleCollapse, onFileOpen }: SidebarProps) {
-  // 折叠状态下只渲染一个空容器，不显示内容
+  // 折叠状态下渲染一个窄条展开按钮
   if (collapsed) {
-    return <div style={{ backgroundColor: 'var(--bg-secondary)' }} />
+    return (
+      <div
+        style={{
+          backgroundColor: 'var(--bg-base)',
+          borderRight: '1px solid var(--border-subtle)',
+          height: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: 'pointer',
+          transition: 'background var(--transition-fast)',
+        }}
+        onClick={onToggleCollapse}
+        title="展开侧边栏"
+        onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg-tertiary)')}
+        onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--bg-base)')}
+      >
+        <span
+          style={{
+            color: 'var(--text-tertiary)',
+            fontSize: '11px',
+            writingMode: 'vertical-rl',
+            letterSpacing: '1.5px',
+            userSelect: 'none',
+            fontFamily: 'var(--font-ui)',
+            fontWeight: 500,
+          }}
+        >
+          » {viewTitles[activeView]}
+        </span>
+      </div>
+    )
   }
 
   // 根据活动视图渲染对应内容
@@ -53,11 +84,11 @@ function Sidebar({ activeView, collapsed, onToggleCollapse, onFileOpen }: Sideba
       {/* 顶部标题栏 + 折叠按钮 */}
       <div
         style={{
-          height: '36px',
+          height: '44px',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          padding: '0 8px',
+          padding: '0 8px 0 16px',
           borderBottom: '1px solid var(--border)',
           flexShrink: 0,
         }}
@@ -67,6 +98,9 @@ function Sidebar({ activeView, collapsed, onToggleCollapse, onFileOpen }: Sideba
             fontSize: '11px',
             textTransform: 'uppercase',
             color: 'var(--text-secondary)',
+            fontFamily: 'var(--font-ui)',
+            fontWeight: 600,
+            letterSpacing: '1.2px',
           }}
         >
           {viewTitles[activeView]}
@@ -77,13 +111,27 @@ function Sidebar({ activeView, collapsed, onToggleCollapse, onFileOpen }: Sideba
           style={{
             border: 'none',
             background: 'transparent',
-            color: 'var(--text-secondary)',
+            color: 'var(--text-tertiary)',
             cursor: 'pointer',
-            fontSize: '14px',
-            padding: '2px 4px',
+            padding: '4px 6px',
+            borderRadius: 'var(--radius-sm)',
+            transition: 'all var(--transition-fast)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = 'var(--bg-tertiary)'
+            e.currentTarget.style.color = 'var(--accent)'
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = 'transparent'
+            e.currentTarget.style.color = 'var(--text-tertiary)'
           }}
         >
-          «
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M15 6l-6 6 6 6" />
+          </svg>
         </button>
       </div>
       {/* 视图内容区 */}
