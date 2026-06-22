@@ -11,6 +11,13 @@ export interface ChatMessage {
     args: unknown
   }>
   isStreaming?: boolean
+  // 工具执行步骤：工具名 + 参数 + 结果，用于可展开的执行过程展示
+  toolStep?: {
+    toolName: string
+    args: string
+    result?: string
+    isRunning?: boolean
+  }
 }
 
 // token 用量
@@ -19,6 +26,10 @@ export interface TokenUsage {
   output_tokens: number
   cache_read_input_tokens: number
   cache_creation_input_tokens: number
+  // 最近一次请求的 prompt_tokens，反映当前上下文大小
+  last_prompt_tokens: number
+  // 最近一次请求的 cache_creation_input_tokens，反映已缓存大小
+  last_cache_creation: number
 }
 
 // 权限请求
@@ -45,6 +56,10 @@ interface SSEEvent {
   }
   error?: string
   finish_reason?: string
+  // 工具调用增量字段
+  tool_call_id?: string
+  tool_call_name?: string
+  tool_call_arguments?: string
   message?: {
     role: string
     content?: string
@@ -72,6 +87,8 @@ export function useChat() {
     output_tokens: 0,
     cache_read_input_tokens: 0,
     cache_creation_input_tokens: 0,
+    last_prompt_tokens: 0,
+    last_cache_creation: 0,
   })
   const [totalCost, setTotalCost] = useState(0)
   const [model, setModel] = useState('')
@@ -119,6 +136,30 @@ export function useChat() {
             prev.map(m => (m.id === id ? { ...m, content: assistantContentRef.current } : m))
           )
         }
+      } else if (evt.event_type === 'tool_call_delta' && evt.tool_call_name) {
+        // 工具调用开始：创建一个"正在执行工具"的步骤消息
+        // 只在第一次收到工具名时创建，后续的 arguments 增量忽略（避免消息爆炸）
+        const toolName = evt.tool_call_name
+        setMessages(prev => {
+          // 已有同名工具步骤且在运行中，不重复创建
+          const last = prev[prev.length - 1]
+          if (last?.toolStep?.isRunning && last.toolStep.toolName === toolName) {
+            return prev
+          }
+          return [
+            ...prev,
+            {
+              id: genId(),
+              role: 'tool' as const,
+              content: '',
+              toolStep: {
+                toolName,
+                args: evt.tool_call_arguments || '',
+                isRunning: true,
+              },
+            },
+          ]
+        })
       } else if (evt.event_type === 'usage' && evt.usage) {
         // 不在前端累加——后端 AppState 已正确累加，对话结束后 fetchState 会拉准确值
         // 前端累加会导致和后端值不一致（cache 字段没加、重复计算等）
@@ -138,11 +179,24 @@ export function useChat() {
     } else if (evt.type === 'message' && evt.message) {
       const msg = evt.message
       if (msg.role === 'tool') {
-        // 工具执行结果
-        setMessages(prev => [
-          ...prev,
-          { id: genId(), role: 'tool', content: (msg.content || '').slice(0, 500) },
-        ])
+        // 工具执行结果：填到最近的运行中工具步骤里，标记为完成
+        const toolResult = (msg.content || '').slice(0, 500)
+        setMessages(prev => {
+          // 从后往前找第一个运行中的工具步骤
+          const idx = [...prev].reverse().findIndex(m => m.toolStep?.isRunning)
+          if (idx === -1) {
+            // 没找到运行中的步骤，兜底新建一条工具消息
+            return [...prev, { id: genId(), role: 'tool', content: toolResult }]
+          }
+          const realIdx = prev.length - 1 - idx
+          const updated = [...prev]
+          updated[realIdx] = {
+            ...updated[realIdx],
+            content: toolResult,
+            toolStep: { ...updated[realIdx].toolStep!, result: toolResult, isRunning: false },
+          }
+          return updated
+        })
       } else if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
         // 含工具调用的 assistant 消息：更新当前流式消息，添加工具调用摘要
         setMessages(prev => {
@@ -357,10 +411,34 @@ export function useChat() {
     [permissionRequest]
   )
 
+  // 停止当前对话：调后端 abort 接口取消任务，并立即恢复输入状态
+  const abort = useCallback(async () => {
+    try {
+      await fetch('/api/abort', { method: 'POST' })
+    } catch {
+      // 忽略网络错误，反正前端也要强制恢复
+    }
+    // 强制恢复输入状态，并标记当前流式消息为已完成
+    const id = currentAssistantId.current
+    if (id) {
+      setMessages(prev => prev.map(m => (m.id === id ? { ...m, isStreaming: false } : m)))
+    }
+    // 把运行中的工具步骤标记为已停止
+    setMessages(prev => prev.map(m =>
+      m.toolStep?.isRunning
+        ? { ...m, toolStep: { ...m.toolStep, isRunning: false, result: m.toolStep.result || '已停止' } }
+        : m
+    ))
+    currentAssistantId.current = null
+    assistantContentRef.current = ''
+    setIsStreaming(false)
+  }, [])
+
   return {
     messages,
     isStreaming,
     sendMessage,
+    abort,
     tokenUsage,
     totalCost,
     model,

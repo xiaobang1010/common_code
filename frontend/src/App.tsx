@@ -106,6 +106,7 @@ function App() {
             messages={chat.messages}
             isStreaming={chat.isStreaming}
             sendMessage={chat.sendMessage}
+            abort={chat.abort}
             tokenUsage={chat.tokenUsage}
             permissionRequest={chat.permissionRequest}
             resolvePermission={chat.resolvePermission}

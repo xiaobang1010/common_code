@@ -3,10 +3,102 @@ import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 // @ts-ignore
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
+import { useState } from 'react'
 import type { ChatMessage as ChatMessageType } from '../../hooks/useChat'
 
 interface Props {
   message: ChatMessageType
+}
+
+// 可展开的工具执行步骤卡片，对齐 ZCode 的执行过程展示
+function ToolStepCard({ message }: { message: ChatMessageType }) {
+  const [expanded, setExpanded] = useState(false)
+  const step = message.toolStep!
+  const isRunning = step.isRunning
+
+  return (
+    <div
+      style={{
+        alignSelf: 'flex-start',
+        maxWidth: '90%',
+        borderRadius: 'var(--radius-md)',
+        backgroundColor: 'var(--bg-base)',
+        border: '1px solid var(--border-subtle)',
+        borderLeft: `2px solid ${isRunning ? 'var(--accent)' : 'var(--success)'}`,
+        overflow: 'hidden',
+      }}
+    >
+      {/* 头部：点击展开/折叠 */}
+      <div
+        onClick={() => setExpanded(!expanded)}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          padding: '8px 12px',
+          cursor: 'pointer',
+          fontSize: '12px',
+          fontFamily: 'var(--font-mono)',
+          color: isRunning ? 'var(--accent)' : 'var(--text-secondary)',
+          userSelect: 'none',
+          transition: 'background var(--transition-fast)',
+        }}
+        onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)')}
+        onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+      >
+        {/* 运行中转圈图标，完成是勾 */}
+        {isRunning ? (
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ animation: 'spin 1s linear infinite' }}>
+            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+          </svg>
+        ) : (
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--success)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M20 6L9 17l-5-5" />
+          </svg>
+        )}
+        <span style={{ fontWeight: 500 }}>
+          {isRunning ? '执行中' : '已完成'} · {step.toolName}
+        </span>
+        <span style={{ marginLeft: 'auto', color: 'var(--text-tertiary)', fontSize: '10px' }}>
+          {expanded ? '▾' : '▸'}
+        </span>
+      </div>
+
+      {/* 展开后的详情：参数 + 结果 */}
+      {expanded && (
+        <div style={{ borderTop: '1px solid var(--border-subtle)', padding: '10px 12px' }}>
+          {/* 参数 */}
+          {step.args && (
+            <div style={{ marginBottom: '8px' }}>
+              <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '4px', letterSpacing: '1px', textTransform: 'uppercase' }}>
+                参数
+              </div>
+              <pre style={{ margin: 0, fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                {step.args}
+              </pre>
+            </div>
+          )}
+          {/* 结果 */}
+          {step.result && (
+            <div>
+              <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '4px', letterSpacing: '1px', textTransform: 'uppercase' }}>
+                结果
+              </div>
+              <pre style={{ margin: 0, fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '200px', overflow: 'auto' }}>
+                {step.result}
+              </pre>
+            </div>
+          )}
+          {/* 运行中还没有结果 */}
+          {isRunning && !step.result && (
+            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
+              等待结果...
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function ChatMessage({ message }: Props) {
@@ -18,6 +110,11 @@ function ChatMessage({ message }: Props) {
   const isAssistant = message.role === 'assistant'
   const isTool = message.role === 'tool'
   const isSystem = message.role === 'system'
+
+  // 有 toolStep 的工具消息：渲染可展开卡片
+  if (isTool && message.toolStep) {
+    return <ToolStepCard message={message} />
+  }
 
   // 工具结果截断
   const displayContent =

@@ -34,6 +34,8 @@ from tools.commands.commands_context import CommandContext
 app_state: Any = None
 engine: Any = None
 permission_bridge: Any = None
+# 当前对话任务，用于 abort 接口取消
+current_task: Any = None
 
 app = FastAPI(title="Common Code Server")
 
@@ -65,6 +67,10 @@ async def get_state() -> dict:
             "output_tokens": usage.output_tokens,
             "cache_read_input_tokens": usage.cache_read_input_tokens,
             "cache_creation_input_tokens": usage.cache_creation_input_tokens,
+            # 当前上下文大小（最近一次请求的 prompt_tokens，覆盖不累加）
+            "last_prompt_tokens": usage.last_prompt_tokens,
+            # 已缓存大小（最近一次请求的 cache_creation_input_tokens，覆盖不累加）
+            "last_cache_creation": usage.last_cache_creation,
         },
         "total_cost_usd": state.total_cost_usd,
     }
@@ -95,6 +101,13 @@ def serialize_event(event: Any) -> dict:
             result["error"] = str(event.error)
         if event.finish_reason is not None:
             result["finish_reason"] = event.finish_reason
+        # 工具调用增量字段，让前端能实时展示"正在调用工具 X"
+        if event.tool_call_id is not None:
+            result["tool_call_id"] = event.tool_call_id
+        if event.tool_call_name is not None:
+            result["tool_call_name"] = event.tool_call_name
+        if event.tool_call_arguments is not None:
+            result["tool_call_arguments"] = event.tool_call_arguments
         return result
 
     if isinstance(event, dict):
@@ -143,6 +156,9 @@ async def chat_event_stream(prompt: str):
                     state.token_usage.output_tokens += completion_tokens
                     state.token_usage.cache_read_input_tokens += cache_read
                     state.token_usage.cache_creation_input_tokens += cache_creation
+                    # 最近一次请求的上下文大小和缓存大小（覆盖，不累加）
+                    state.token_usage.last_prompt_tokens = prompt_tokens
+                    state.token_usage.last_cache_creation = cache_creation
                     cost = calculate_cost(state.model or "", ev.usage)
                     state.total_cost_usd += cost
                     add_to_total_cost(
@@ -158,6 +174,9 @@ async def chat_event_stream(prompt: str):
             await queue.put(None)
 
     task = asyncio.create_task(consume_engine())
+    # 记录到全局变量，供 /api/abort 取消
+    global current_task
+    current_task = task
 
     try:
         while True:
@@ -197,6 +216,8 @@ async def chat_event_stream(prompt: str):
                 await task
             except asyncio.CancelledError:
                 pass
+        # 清理全局引用
+        current_task = None
 
 
 @app.post("/api/chat")
@@ -462,11 +483,21 @@ async def git_status() -> dict:
 
 @app.post("/api/abort")
 async def abort_query() -> JSONResponse:
-    """取消当前查询（占位实现）。
+    """取消当前正在进行的对话任务。
 
-    返回 501 状态码和 {"error": "abort not implemented"}。
+    通过取消 consume_engine 后台任务来中断对话，
+    SSE 流会因任务取消而结束，前端收到连接关闭后恢复输入状态。
     """
-    return JSONResponse(status_code=501, content={"error": "abort not implemented"})
+    global current_task
+    if current_task is not None and not current_task.done():
+        current_task.cancel()
+        try:
+            await current_task
+        except asyncio.CancelledError:
+            pass
+        current_task = None
+        return JSONResponse(content={"ok": True})
+    return JSONResponse(content={"ok": False, "error": "no running task"})
 
 
 # ---------------------------------------------------------------------------

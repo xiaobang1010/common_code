@@ -3,13 +3,13 @@ import ChatStream from './ai/ChatStream'
 import ChatInput from './ai/ChatInput'
 import ContextPanel from './ai/ContextPanel'
 import ModifiedFilesPanel from './ai/ModifiedFilesPanel'
-import PermissionDialog from './ai/PermissionDialog'
 import type { ChatMessage as ChatMessageType, PermissionRequest, TokenUsage } from '../hooks/useChat'
 
 interface AIPanelProps {
   messages: ChatMessageType[]
   isStreaming: boolean
   sendMessage: (prompt: string) => void
+  abort: () => void
   tokenUsage: TokenUsage
   permissionRequest: PermissionRequest | null
   resolvePermission: (decision: 'allow' | 'deny' | 'always_allow') => void
@@ -19,6 +19,7 @@ function AIPanel({
   messages,
   isStreaming,
   sendMessage,
+  abort,
   tokenUsage,
   permissionRequest,
   resolvePermission,
@@ -144,13 +145,15 @@ function AIPanel({
           background: 'linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.15))',
         }}
       >
-        <ChatInput onSend={sendMessage} disabled={isStreaming} />
+        <ChatInput
+          onSend={sendMessage}
+          disabled={isStreaming}
+          isStreaming={isStreaming}
+          onStop={abort}
+          permissionRequest={permissionRequest}
+          onResolve={resolvePermission}
+        />
       </div>
-
-      {/* 权限确认模态层 */}
-      {permissionRequest && (
-        <PermissionDialog request={permissionRequest} onResolve={resolvePermission} />
-      )}
     </div>
   )
 }

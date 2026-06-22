@@ -5,15 +5,10 @@ interface Props {
   totalCost: number
   isStreaming: boolean
   model: string
+  windowSize?: number
 }
 
-function StatusBar({ tokenUsage, totalCost, isStreaming, model }: Props) {
-  const totalTokens =
-    tokenUsage.input_tokens +
-    tokenUsage.output_tokens +
-    tokenUsage.cache_read_input_tokens +
-    tokenUsage.cache_creation_input_tokens
-
+function StatusBar({ tokenUsage, totalCost, isStreaming, model, windowSize = 200000 }: Props) {
   return (
     <div
       style={{
@@ -49,7 +44,7 @@ function StatusBar({ tokenUsage, totalCost, isStreaming, model }: Props) {
         </span>
       </div>
 
-      {/* 右侧：模型、token、成本 */}
+      {/* 右侧：模型、上下文、缓存、成本 */}
       <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
         <span title="当前模型">
           <span style={{ color: 'var(--text-tertiary)' }}>model</span>{' '}
@@ -62,9 +57,24 @@ function StatusBar({ tokenUsage, totalCost, isStreaming, model }: Props) {
             backgroundColor: 'var(--border)',
           }}
         />
-        <span title="Token 用量">
-          <span style={{ color: 'var(--text-tertiary)' }}>tokens</span>{' '}
-          <span style={{ color: 'var(--text-primary)' }}>{totalTokens.toLocaleString()}</span>
+        <span title="当前上下文大小 / 窗口大小">
+          <span style={{ color: 'var(--text-tertiary)' }}>上下文</span>{' '}
+          <span style={{ color: 'var(--text-primary)' }}>
+            {tokenUsage.last_prompt_tokens.toLocaleString()} / {windowSize.toLocaleString()}
+          </span>
+        </span>
+        <span
+          style={{
+            width: '1px',
+            height: '12px',
+            backgroundColor: 'var(--border)',
+          }}
+        />
+        <span title="已缓存 token">
+          <span style={{ color: 'var(--text-tertiary)' }}>缓存</span>{' '}
+          <span style={{ color: 'var(--accent)' }}>
+            {tokenUsage.last_cache_creation.toLocaleString()}
+          </span>
         </span>
         <span
           style={{
