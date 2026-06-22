@@ -5,7 +5,7 @@ interface Props {
   disabled: boolean
 }
 
-// 硬编码的斜杠命令列表
+// 斜杠命令列表
 const COMMANDS = [
   { name: '/help', desc: '显示帮助' },
   { name: '/clear', desc: '清空对话' },
@@ -21,12 +21,11 @@ function ChatInput({ onSend, disabled }: Props) {
   const [value, setValue] = useState('')
   const [showCommands, setShowCommands] = useState(false)
   const [selectedIdx, setSelectedIdx] = useState(0)
+  const [isFocused, setIsFocused] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
-  // 根据当前输入过滤命令
   const filteredCommands = COMMANDS.filter(c => c.name.startsWith(value))
 
-  // 输入变化时决定是否显示命令补全
   useEffect(() => {
     if (value.startsWith('/') && filteredCommands.length > 0) {
       setShowCommands(true)
@@ -46,7 +45,6 @@ function ChatInput({ onSend, disabled }: Props) {
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (showCommands) {
-      // 命令补全模式：上下键选择，Enter 选中，Esc 关闭
       if (e.key === 'ArrowDown') {
         e.preventDefault()
         setSelectedIdx(prev => (prev + 1) % filteredCommands.length)
@@ -64,14 +62,13 @@ function ChatInput({ onSend, disabled }: Props) {
       }
       if (e.key === 'Enter') {
         e.preventDefault()
-        // 选中的命令填入输入框
         setValue(filteredCommands[selectedIdx].name + ' ')
         setShowCommands(false)
         textareaRef.current?.focus()
         return
       }
     } else {
-      // 普通模式：Enter 发送，Shift+Enter 换行
+      // Enter 发送，Shift+Enter 换行，Ctrl/Cmd+Enter 也发送
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault()
         handleSend()
@@ -89,13 +86,15 @@ function ChatInput({ onSend, disabled }: Props) {
             bottom: '100%',
             left: 0,
             right: 0,
-            backgroundColor: 'var(--bg-tertiary)',
-            border: '1px solid var(--border)',
-            borderRadius: '4px',
-            marginBottom: '4px',
-            maxHeight: '200px',
+            backgroundColor: 'var(--bg-elevated)',
+            border: '1px solid var(--border-strong)',
+            borderRadius: 'var(--radius-md)',
+            marginBottom: '6px',
+            maxHeight: '220px',
             overflowY: 'auto',
             zIndex: 10,
+            boxShadow: 'var(--shadow-md)',
+            backdropFilter: 'blur(8px)',
           }}
         >
           {filteredCommands.map((cmd, idx) => (
@@ -107,45 +106,119 @@ function ChatInput({ onSend, disabled }: Props) {
                 textareaRef.current?.focus()
               }}
               style={{
-                padding: '6px 12px',
+                padding: '8px 14px',
                 cursor: 'pointer',
-                backgroundColor: idx === selectedIdx ? 'var(--accent)' : 'transparent',
-                color: idx === selectedIdx ? '#fff' : 'var(--text-primary)',
+                backgroundColor: idx === selectedIdx ? 'var(--accent-soft)' : 'transparent',
+                color: 'var(--text-primary)',
                 fontSize: '13px',
                 display: 'flex',
                 justifyContent: 'space-between',
+                alignItems: 'center',
+                transition: 'background var(--transition-fast)',
               }}
             >
-              <span>{cmd.name}</span>
-              <span style={{ color: 'var(--text-secondary)', fontSize: '11px' }}>
+              <span style={{ fontFamily: 'var(--font-mono)', color: idx === selectedIdx ? 'var(--accent)' : 'var(--text-primary)' }}>
+                {cmd.name}
+              </span>
+              <span style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>
                 {cmd.desc}
               </span>
             </div>
           ))}
         </div>
       )}
-      <textarea
-        ref={textareaRef}
-        value={value}
-        onChange={e => setValue(e.target.value)}
-        onKeyDown={handleKeyDown}
-        disabled={disabled}
-        placeholder="输入消息或 /命令..."
-        rows={2}
+
+      {/* 输入框容器 - 聚焦时有发光边框 */}
+      <div
         style={{
-          width: '100%',
-          resize: 'none',
-          backgroundColor: 'var(--bg-tertiary)',
-          border: '1px solid var(--border)',
-          borderRadius: '4px',
-          padding: '8px',
-          color: 'var(--text-primary)',
-          fontSize: '13px',
-          fontFamily: 'inherit',
-          outline: 'none',
-          opacity: disabled ? 0.5 : 1,
+          position: 'relative',
+          borderRadius: 'var(--radius-lg)',
+          background: 'var(--bg-tertiary)',
+          border: `1px solid ${isFocused ? 'var(--accent)' : 'var(--border)'}`,
+          boxShadow: isFocused
+            ? '0 0 0 3px var(--accent-soft), 0 0 20px var(--accent-glow)'
+            : 'none',
+          transition: 'all var(--transition)',
         }}
-      />
+      >
+        <textarea
+          ref={textareaRef}
+          value={value}
+          onChange={e => setValue(e.target.value)}
+          onKeyDown={handleKeyDown}
+          disabled={disabled}
+          onFocus={() => setIsFocused(true)}
+          onBlur={() => setIsFocused(false)}
+          placeholder={disabled ? 'AI 正在思考...' : '描述你想做什么，或输入 / 命令'}
+          rows={2}
+          style={{
+            width: '100%',
+            resize: 'none',
+            background: 'transparent',
+            border: 'none',
+            borderRadius: 'var(--radius-lg)',
+            padding: '12px 14px 32px',
+            color: 'var(--text-primary)',
+            fontSize: '14px',
+            fontFamily: 'var(--font-ui)',
+            lineHeight: 1.5,
+            outline: 'none',
+            opacity: disabled ? 0.6 : 1,
+          }}
+        />
+
+        {/* 底部工具栏 - 发送按钮和提示 */}
+        <div
+          style={{
+            position: 'absolute',
+            bottom: '6px',
+            left: '8px',
+            right: '8px',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            pointerEvents: 'none',
+          }}
+        >
+          <span
+            style={{
+              fontSize: '10px',
+              color: 'var(--text-tertiary)',
+              fontFamily: 'var(--font-mono)',
+              letterSpacing: '0.3px',
+            }}
+          >
+            {value.startsWith('/') ? 'Tab 选中命令' : 'Shift+Enter 换行'}
+          </span>
+          <button
+            onClick={handleSend}
+            disabled={disabled || !value.trim()}
+            style={{
+              pointerEvents: 'auto',
+              padding: '4px 10px',
+              border: 'none',
+              borderRadius: 'var(--radius-sm)',
+              background: value.trim() && !disabled
+                ? 'linear-gradient(135deg, var(--accent), #ff7a45)'
+                : 'var(--bg-elevated)',
+              color: value.trim() && !disabled ? '#1a1a1a' : 'var(--text-tertiary)',
+              fontSize: '11px',
+              fontFamily: 'var(--font-ui)',
+              fontWeight: 600,
+              cursor: value.trim() && !disabled ? 'pointer' : 'default',
+              transition: 'all var(--transition-fast)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+            }}
+          >
+            发送
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M5 12h14M13 5l7 7-7 7" />
+            </svg>
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

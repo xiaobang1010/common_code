@@ -94,29 +94,34 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(({ collapsed, o
 
   const activeTab = openTabs.find((t) => t.path === activePath)
 
-  // 折叠时渲染一个窄条展开按钮，点击恢复编辑器
+  // 折叠时渲染一个窄条展开按钮
   if (collapsed) {
     return (
       <div
         style={{
-          backgroundColor: 'var(--bg-secondary)',
-          borderLeft: '1px solid var(--border)',
+          backgroundColor: 'var(--bg-base)',
+          borderLeft: '1px solid var(--border-subtle)',
           height: '100%',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           cursor: 'pointer',
+          transition: 'background var(--transition-fast)',
         }}
         onClick={onToggleCollapse}
         title="展开编辑器"
+        onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg-tertiary)')}
+        onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--bg-base)')}
       >
         <span
           style={{
-            color: 'var(--text-secondary)',
-            fontSize: '14px',
+            color: 'var(--text-tertiary)',
+            fontSize: '11px',
             writingMode: 'vertical-rl',
-            letterSpacing: '2px',
+            letterSpacing: '1.5px',
             userSelect: 'none',
+            fontFamily: 'var(--font-ui)',
+            fontWeight: 500,
           }}
         >
           » 编辑器
@@ -136,7 +141,15 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(({ collapsed, o
       }}
     >
       {/* 顶部标签栏 + 折叠按钮 */}
-      <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'stretch',
+          flexShrink: 0,
+          backgroundColor: 'var(--bg-primary)',
+          borderBottom: '1px solid var(--border)',
+        }}
+      >
         {openTabs.length > 0 && (
           <Tabs
             tabs={openTabs}
@@ -151,14 +164,27 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(({ collapsed, o
           style={{
             border: 'none',
             background: 'transparent',
-            color: 'var(--text-secondary)',
+            color: 'var(--text-tertiary)',
             cursor: 'pointer',
-            fontSize: '14px',
-            padding: '2px 4px',
+            padding: '0 10px',
             marginLeft: 'auto',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            transition: 'all var(--transition-fast)',
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = 'var(--bg-tertiary)'
+            e.currentTarget.style.color = 'var(--accent)'
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = 'transparent'
+            e.currentTarget.style.color = 'var(--text-tertiary)'
           }}
         >
-          «
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M9 6l6 6-6 6" />
+          </svg>
         </button>
       </div>
       {activeTab ? (
