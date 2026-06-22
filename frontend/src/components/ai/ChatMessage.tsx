@@ -122,20 +122,52 @@ function ChatMessage({ message }: Props) {
       ? message.content.slice(0, 240) + ' …'
       : message.content
 
-  // 系统消息：极简居中
+  // 系统消息：错误用红色左边条，普通系统消息用极简文字
   if (isSystem) {
+    const isError = displayContent.startsWith('错误') || displayContent.startsWith('请求失败') || displayContent.startsWith('权限回传失败')
+
+    if (isError) {
+      // 错误消息：左对齐红色边条，不是圆框
+      return (
+        <div
+          style={{
+            alignSelf: 'flex-start',
+            maxWidth: '90%',
+            padding: '8px 12px',
+            fontSize: '12px',
+            fontFamily: 'var(--font-mono)',
+            color: 'var(--error)',
+            backgroundColor: 'rgba(255, 107, 107, 0.06)',
+            border: '1px solid rgba(255, 107, 107, 0.2)',
+            borderLeft: '2px solid var(--error)',
+            borderRadius: 'var(--radius-md)',
+            lineHeight: 1.5,
+            wordBreak: 'break-word',
+            whiteSpace: 'pre-wrap',
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: '8px',
+          }}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '2px' }}>
+            <circle cx="12" cy="12" r="10" />
+            <path d="M12 8v4M12 16h.01" />
+          </svg>
+          <span>{displayContent}</span>
+        </div>
+      )
+    }
+
+    // 普通系统消息：极简文字，无边框
     return (
       <div
         style={{
           alignSelf: 'center',
-          padding: '6px 14px',
+          padding: '4px 12px',
           fontSize: '11px',
           color: 'var(--text-tertiary)',
           fontFamily: 'var(--font-mono)',
           letterSpacing: '0.3px',
-          backgroundColor: 'var(--bg-base)',
-          borderRadius: '100px',
-          border: '1px solid var(--border-subtle)',
           maxWidth: '90%',
           textAlign: 'center',
         }}

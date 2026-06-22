@@ -580,11 +580,22 @@ def apply_config_environment_variables(settings: Settings | None = None) -> dict
     for key, value in settings.env.items():
         env_vars[key] = value
 
-    # LLM 配置映射
-    if settings.llm_api_key:
-        env_vars[ENV_LLM_API_KEY] = settings.llm_api_key
-    if settings.llm_base_url:
-        env_vars[ENV_LLM_BASE_URL] = settings.llm_base_url
+    # LLM 配置映射：优先用 GlobalConfig（~/.agent/config.json），这是用户配置的真实来源
+    # settings.json 里的 llm 字段可能只是默认值，不能覆盖 config.json
+    try:
+        global_config = get_global_config()
+        if global_config.llm_api_key:
+            env_vars[ENV_LLM_API_KEY] = global_config.llm_api_key
+        if global_config.llm_base_url:
+            env_vars[ENV_LLM_BASE_URL] = global_config.llm_base_url
+        if global_config.llm_model:
+            env_vars[ENV_LLM_MODEL] = global_config.llm_model
+    except Exception:
+        # GlobalConfig 未初始化时，回退到 settings
+        if settings.llm_api_key:
+            env_vars[ENV_LLM_API_KEY] = settings.llm_api_key
+        if settings.llm_base_url:
+            env_vars[ENV_LLM_BASE_URL] = settings.llm_base_url
 
     return env_vars
 
@@ -614,6 +625,7 @@ def _apply_llm_env_vars_to_settings(settings: Settings) -> None:
     """环境变量优先级最高，覆盖 LLM 配置；未设置时用默认值兜底。
 
     仅对 LLM 三字段 (llm_api_key / llm_base_url / model) 生效。
+    注意：不在 base_url 和 model 为 None 时设默认值——那会覆盖 config.json 的配置。
     """
     env_api_key = os.environ.get(ENV_LLM_API_KEY)
     if env_api_key:
@@ -622,14 +634,12 @@ def _apply_llm_env_vars_to_settings(settings: Settings) -> None:
     env_base_url = os.environ.get(ENV_LLM_BASE_URL)
     if env_base_url:
         settings.llm_base_url = env_base_url
-    elif settings.llm_base_url is None:
-        settings.llm_base_url = DEFAULT_LLM_BASE_URL
+    # 不再设默认值——让 config.json 的配置通过 get_global_config 生效
 
     env_model = os.environ.get(ENV_LLM_MODEL)
     if env_model:
         settings.model = env_model
-    elif settings.model is None:
-        settings.model = DEFAULT_LLM_MODEL
+    # 不再设默认值——让 config.json 的配置通过 get_global_config 生效
 
 
 def _merge_settings(base: Settings, override: Settings) -> Settings:

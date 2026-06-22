@@ -23,6 +23,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from query.loop import LoopResult
+from query.services.api.client import reset_client
 from query.services.api.llm import StreamEvent
 from query.services.pricing import calculate_cost
 from startup.bootstrap.state import add_to_total_cost
@@ -758,6 +759,14 @@ async def set_config(body: dict) -> dict:
         if "llm_model" in body:
             config.llm_model = body["llm_model"]
         save_global_config(config)
+
+        # 配置变更后：重置 LLM 客户端缓存 + 更新 AppState 的 model 字段
+        # 否则引擎还会用旧模型名调 API，报 Invalid model id
+        reset_client()
+        state = app_state.get_state()
+        from query.services.api.client import get_default_model
+        state.model = get_default_model()
+
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}
