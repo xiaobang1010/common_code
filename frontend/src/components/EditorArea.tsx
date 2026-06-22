@@ -2,6 +2,7 @@ import { forwardRef, useImperativeHandle, useState, useRef, useCallback, useEffe
 import Tabs from './editor/Tabs'
 import CodeEditor from './editor/CodeEditor'
 import Terminal from './editor/Terminal'
+import Resizer from './Resizer'
 
 // 打开的标签页信息
 interface OpenTab {
@@ -9,6 +10,13 @@ interface OpenTab {
   name: string
   content: string
   language: string
+}
+
+// 终端 tab 信息
+interface TerminalTab {
+  id: string       // 前端分配的实例 id
+  title: string    // 显示名称
+  ptyId?: string   // 后端 pty id，创建后填充
 }
 
 // 暴露给父组件的方法
@@ -22,12 +30,21 @@ interface EditorAreaProps {
   onToggleCollapse: () => void
 }
 
+// 生成唯一 id
+const genId = () => `term-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+
 const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(({ collapsed, onToggleCollapse }, ref) => {
   const [openTabs, setOpenTabs] = useState<OpenTab[]>([])
   const [activePath, setActivePath] = useState('')
-  // 终端面板是否可见
+
+  // 终端面板状态
   const [terminalVisible, setTerminalVisible] = useState(true)
-  // 用 ref 跟踪已打开的标签，避免闭包读到旧值
+  const [terminalHeight, setTerminalHeight] = useState(220)
+  const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>(() => [
+    { id: genId(), title: 'TERMINAL' },
+  ])
+  const [activeTerminalId, setActiveTerminalId] = useState<string>(() => terminalTabs[0].id)
+
   const openTabsRef = useRef<OpenTab[]>([])
 
   // Ctrl+` 切换终端面板
@@ -53,7 +70,6 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(({ collapsed, o
   // 打开文件：已打开则切换标签，否则请求内容后新增标签
   const openFile = useCallback(
     async (path: string) => {
-      // 折叠状态下先展开编辑器
       if (collapsed) {
         onToggleCollapse()
       }
@@ -79,7 +95,7 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(({ collapsed, o
 
   useImperativeHandle(ref, () => ({ openFile }), [openFile])
 
-  // 关闭标签：若关的是激活标签，则切到相邻标签
+  // 关闭文件标签
   const handleClose = (path: string) => {
     updateTabs((prev) => {
       const next = prev.filter((t) => t.path !== path)
@@ -94,7 +110,49 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(({ collapsed, o
 
   const activeTab = openTabs.find((t) => t.path === activePath)
 
-  // 折叠时渲染一个窄条展开按钮
+  // 新建终端 tab
+  const addTerminal = useCallback(() => {
+    const newTab: TerminalTab = { id: genId(), title: 'TERMINAL' }
+    setTerminalTabs((prev) => [...prev, newTab])
+    setActiveTerminalId(newTab.id)
+  }, [])
+
+  // 关闭终端 tab
+  const closeTerminal = useCallback((id: string) => {
+    setTerminalTabs((prev) => {
+      const next = prev.filter((t) => t.id !== id)
+      if (next.length === 0) {
+        // 至少保留一个，或者隐藏面板
+        const fresh = { id: genId(), title: 'TERMINAL' }
+        setActiveTerminalId(fresh.id)
+        return [fresh]
+      }
+      if (id === activeTerminalId) {
+        setActiveTerminalId(next[next.length - 1].id)
+      }
+      return next
+    })
+  }, [activeTerminalId])
+
+  // 终端拖拽调高度
+  // 分隔条是终端的顶边界
+  // 向下拖（delta 正）= 顶边界下移 = 终端变矮
+  // 向上拖（delta 负）= 顶边界上移 = 终端变高
+  // 分隔条跟着鼠标走，符合物理直觉
+  const handleTerminalResize = useCallback((delta: number) => {
+    setTerminalHeight((prev) => {
+      return Math.max(80, Math.min(500, prev - delta))
+    })
+  }, [])
+
+  // 终端创建完成回调
+  const handleTerminalReady = useCallback((tabId: string, ptyId: string) => {
+    setTerminalTabs((prev) =>
+      prev.map((t) => (t.id === tabId ? { ...t, ptyId } : t))
+    )
+  }, [])
+
+  // 折叠时渲染展开按钮
   if (collapsed) {
     return (
       <div
@@ -187,6 +245,8 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(({ collapsed, o
           </svg>
         </button>
       </div>
+
+      {/* 代码编辑区 */}
       {activeTab ? (
         <div style={{ flex: 1, overflow: 'hidden' }}>
           <CodeEditor
@@ -209,59 +269,174 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(({ collapsed, o
           Common Code — 选择文件查看内容
         </div>
       )}
-      {/* 底部终端面板，可折叠，Ctrl+` 切换 */}
+
+      {/* 底部终端面板 - 多 tab + 可调高度 */}
       {terminalVisible && (
-        <div
-          style={{
-            height: '220px',
-            display: 'flex',
-            flexDirection: 'column',
-            borderTop: '1px solid var(--border)',
-            flexShrink: 0,
-          }}
-        >
-          {/* 终端标题栏，点击 × 可隐藏 */}
+        <>
+          {/* 上方拖拽条 */}
+          <Resizer direction="vertical" onResize={handleTerminalResize} />
           <div
             style={{
-              height: '30px',
+              height: terminalHeight,
               display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              padding: '0 8px',
-              backgroundColor: 'var(--bg-secondary)',
-              borderBottom: '1px solid var(--border)',
+              flexDirection: 'column',
+              borderTop: '1px solid var(--border)',
               flexShrink: 0,
+              backgroundColor: 'var(--bg-base)',
             }}
           >
-            <span
+            {/* 终端 tab 栏 */}
+            <div
               style={{
-                fontSize: '11px',
-                textTransform: 'uppercase',
-                color: 'var(--text-secondary)',
+                height: '32px',
+                display: 'flex',
+                alignItems: 'stretch',
+                backgroundColor: 'var(--bg-primary)',
+                borderBottom: '1px solid var(--border-subtle)',
+                flexShrink: 0,
               }}
             >
-              终端
-            </span>
-            <button
-              onClick={() => setTerminalVisible(false)}
-              title="隐藏终端 (Ctrl+`)"
-              style={{
-                border: 'none',
-                background: 'transparent',
-                color: 'var(--text-secondary)',
-                cursor: 'pointer',
-                fontSize: '14px',
-                padding: '2px 4px',
-              }}
-            >
-              ×
-            </button>
+              {terminalTabs.map((tab, idx) => {
+                const active = tab.id === activeTerminalId
+                return (
+                  <div
+                    key={tab.id}
+                    onClick={() => setActiveTerminalId(tab.id)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      padding: '0 12px',
+                      cursor: 'pointer',
+                      fontSize: '11px',
+                      fontFamily: 'var(--font-mono)',
+                      color: active ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                      backgroundColor: active ? 'var(--bg-base)' : 'transparent',
+                      borderRight: '1px solid var(--border-subtle)',
+                      borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
+                      whiteSpace: 'nowrap',
+                      transition: 'all var(--transition-fast)',
+                      letterSpacing: '0.5px',
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!active) {
+                        e.currentTarget.style.color = 'var(--text-secondary)'
+                        e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)'
+                      }
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!active) {
+                        e.currentTarget.style.color = 'var(--text-tertiary)'
+                        e.currentTarget.style.backgroundColor = 'transparent'
+                      }
+                    }}
+                  >
+                    <span>{tab.title} {idx + 1}</span>
+                    {/* 关闭按钮 - 多于 1 个 tab 才显示 */}
+                    {terminalTabs.length > 1 && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          closeTerminal(tab.id)
+                        }}
+                        title="关闭终端"
+                        style={{
+                          border: 'none',
+                          background: 'transparent',
+                          color: 'var(--text-tertiary)',
+                          cursor: 'pointer',
+                          padding: '0',
+                          width: '14px',
+                          height: '14px',
+                          borderRadius: '3px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          transition: 'all var(--transition-fast)',
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.background = 'var(--bg-elevated)'
+                          e.currentTarget.style.color = 'var(--error)'
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.background = 'transparent'
+                          e.currentTarget.style.color = 'var(--text-tertiary)'
+                        }}
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+                )
+              })}
+              {/* 新建终端按钮 */}
+              <button
+                onClick={addTerminal}
+                title="新建终端"
+                style={{
+                  border: 'none',
+                  background: 'transparent',
+                  color: 'var(--text-tertiary)',
+                  cursor: 'pointer',
+                  padding: '0 10px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  transition: 'all var(--transition-fast)',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'var(--bg-tertiary)'
+                  e.currentTarget.style.color = 'var(--accent)'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'transparent'
+                  e.currentTarget.style.color = 'var(--text-tertiary)'
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+              </button>
+              {/* 右侧隐藏按钮 */}
+              <button
+                onClick={() => setTerminalVisible(false)}
+                title="隐藏终端 (Ctrl+`)"
+                style={{
+                  border: 'none',
+                  background: 'transparent',
+                  color: 'var(--text-tertiary)',
+                  cursor: 'pointer',
+                  padding: '0 10px',
+                  marginLeft: 'auto',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  transition: 'all var(--transition-fast)',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'var(--bg-tertiary)'
+                  e.currentTarget.style.color = 'var(--text-primary)'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'transparent'
+                  e.currentTarget.style.color = 'var(--text-tertiary)'
+                }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M6 9l6 6 6-6" />
+                </svg>
+              </button>
+            </div>
+            {/* 终端内容区 - 只渲染当前激活的终端，切换 tab 重建 */}
+            <div style={{ flex: 1, overflow: 'hidden' }}>
+              <Terminal
+                key={activeTerminalId}
+                instanceId={activeTerminalId}
+                onReady={(ptyId) => handleTerminalReady(activeTerminalId, ptyId)}
+              />
+            </div>
           </div>
-          {/* 终端内容区 */}
-          <div style={{ flex: 1, overflow: 'hidden' }}>
-            <Terminal />
-          </div>
-        </div>
+        </>
       )}
     </div>
   )
