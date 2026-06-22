@@ -16,7 +16,13 @@ export interface EditorAreaHandle {
   openFile: (path: string) => void
 }
 
-const EditorArea = forwardRef<EditorAreaHandle>((_, ref) => {
+// EditorArea 的 props
+interface EditorAreaProps {
+  collapsed: boolean
+  onToggleCollapse: () => void
+}
+
+const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(({ collapsed, onToggleCollapse }, ref) => {
   const [openTabs, setOpenTabs] = useState<OpenTab[]>([])
   const [activePath, setActivePath] = useState('')
   // 终端面板是否可见
@@ -47,6 +53,10 @@ const EditorArea = forwardRef<EditorAreaHandle>((_, ref) => {
   // 打开文件：已打开则切换标签，否则请求内容后新增标签
   const openFile = useCallback(
     async (path: string) => {
+      // 折叠状态下先展开编辑器
+      if (collapsed) {
+        onToggleCollapse()
+      }
       if (openTabsRef.current.some((t) => t.path === path)) {
         setActivePath(path)
         return
@@ -64,7 +74,7 @@ const EditorArea = forwardRef<EditorAreaHandle>((_, ref) => {
         console.error('读取文件失败', e)
       }
     },
-    [updateTabs]
+    [updateTabs, collapsed, onToggleCollapse]
   )
 
   useImperativeHandle(ref, () => ({ openFile }), [openFile])
@@ -84,6 +94,37 @@ const EditorArea = forwardRef<EditorAreaHandle>((_, ref) => {
 
   const activeTab = openTabs.find((t) => t.path === activePath)
 
+  // 折叠时渲染一个窄条展开按钮，点击恢复编辑器
+  if (collapsed) {
+    return (
+      <div
+        style={{
+          backgroundColor: 'var(--bg-secondary)',
+          borderLeft: '1px solid var(--border)',
+          height: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: 'pointer',
+        }}
+        onClick={onToggleCollapse}
+        title="展开编辑器"
+      >
+        <span
+          style={{
+            color: 'var(--text-secondary)',
+            fontSize: '14px',
+            writingMode: 'vertical-rl',
+            letterSpacing: '2px',
+            userSelect: 'none',
+          }}
+        >
+          » 编辑器
+        </span>
+      </div>
+    )
+  }
+
   return (
     <div
       style={{
@@ -94,14 +135,32 @@ const EditorArea = forwardRef<EditorAreaHandle>((_, ref) => {
         overflow: 'hidden',
       }}
     >
-      {openTabs.length > 0 && (
-        <Tabs
-          tabs={openTabs}
-          activePath={activePath}
-          onSwitch={setActivePath}
-          onClose={handleClose}
-        />
-      )}
+      {/* 顶部标签栏 + 折叠按钮 */}
+      <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+        {openTabs.length > 0 && (
+          <Tabs
+            tabs={openTabs}
+            activePath={activePath}
+            onSwitch={setActivePath}
+            onClose={handleClose}
+          />
+        )}
+        <button
+          onClick={onToggleCollapse}
+          title="折叠编辑器"
+          style={{
+            border: 'none',
+            background: 'transparent',
+            color: 'var(--text-secondary)',
+            cursor: 'pointer',
+            fontSize: '14px',
+            padding: '2px 4px',
+            marginLeft: 'auto',
+          }}
+        >
+          «
+        </button>
+      </div>
       {activeTab ? (
         <div style={{ flex: 1, overflow: 'hidden' }}>
           <CodeEditor

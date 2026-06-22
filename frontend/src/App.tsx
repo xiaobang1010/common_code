@@ -14,8 +14,8 @@ function App() {
   const [activeView, setActiveView] = useState<ViewType>('files')
   // 侧边栏是否折叠
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  // AI 面板是否折叠
-  const [aiPanelCollapsed, setAiPanelCollapsed] = useState(false)
+  // 编辑器是否折叠（默认展开）
+  const [editorCollapsed, setEditorCollapsed] = useState(false)
 
   // 聊天状态提升到 App 层，方便 AIPanel 和 StatusBar 共享
   const chat = useChat()
@@ -23,12 +23,13 @@ function App() {
   // 编辑区 ref，用于文件树点击打开文件
   const editorRef = useRef<EditorAreaHandle>(null)
 
-  // 根据折叠状态计算各列宽度
+  // 根据折叠状态计算各列宽度：活动栏 + 侧边栏 + AI面板(1fr，主角) + 编辑器(可折叠)
+  // 折叠时侧边栏和编辑器都留 28px 显示展开按钮
   const gridColumns = [
     '48px',
-    sidebarCollapsed ? '0px' : '240px',
+    sidebarCollapsed ? '28px' : '240px',
     '1fr',
-    aiPanelCollapsed ? '0px' : '420px',
+    editorCollapsed ? '28px' : '50%',
   ].join(' ')
 
   return (
@@ -49,16 +50,18 @@ function App() {
         onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
         onFileOpen={(path) => editorRef.current?.openFile(path)}
       />
-      <EditorArea ref={editorRef} />
       <AIPanel
-        collapsed={aiPanelCollapsed}
-        onToggleCollapse={() => setAiPanelCollapsed(!aiPanelCollapsed)}
         messages={chat.messages}
         isStreaming={chat.isStreaming}
         sendMessage={chat.sendMessage}
         tokenUsage={chat.tokenUsage}
         permissionRequest={chat.permissionRequest}
         resolvePermission={chat.resolvePermission}
+      />
+      <EditorArea
+        ref={editorRef}
+        collapsed={editorCollapsed}
+        onToggleCollapse={() => setEditorCollapsed(!editorCollapsed)}
       />
       {/* 状态栏横跨整行 */}
       <div style={{ gridColumn: '1 / -1' }}>

@@ -7,8 +7,6 @@ import PermissionDialog from './ai/PermissionDialog'
 import type { ChatMessage as ChatMessageType, PermissionRequest, TokenUsage } from '../hooks/useChat'
 
 interface AIPanelProps {
-  collapsed: boolean
-  onToggleCollapse: () => void
   // 来自 useChat 的状态
   messages: ChatMessageType[]
   isStreaming: boolean
@@ -19,8 +17,6 @@ interface AIPanelProps {
 }
 
 function AIPanel({
-  collapsed,
-  onToggleCollapse,
   messages,
   isStreaming,
   sendMessage,
@@ -30,11 +26,6 @@ function AIPanel({
 }: AIPanelProps) {
   // 信息子面板是否展开
   const [infoExpanded, setInfoExpanded] = useState(true)
-
-  // 折叠状态下只渲染空容器
-  if (collapsed) {
-    return <div style={{ backgroundColor: 'var(--bg-secondary)' }} />
-  }
 
   return (
     <div
@@ -48,33 +39,18 @@ function AIPanel({
         position: 'relative',
       }}
     >
-      {/* 顶部标题栏 + 折叠按钮 */}
+      {/* 顶部标题栏 */}
       <div
         style={{
           height: '36px',
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'space-between',
           padding: '0 8px',
           borderBottom: '1px solid var(--border)',
           flexShrink: 0,
         }}
       >
         <span style={{ fontSize: '13px', color: 'var(--text-primary)' }}>AI 对话</span>
-        <button
-          onClick={onToggleCollapse}
-          title="折叠 AI 面板"
-          style={{
-            border: 'none',
-            background: 'transparent',
-            color: 'var(--text-secondary)',
-            cursor: 'pointer',
-            fontSize: '14px',
-            padding: '2px 4px',
-          }}
-        >
-          »
-        </button>
       </div>
 
       {/* 对话流（占满中间，可滚动） */}

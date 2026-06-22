@@ -20,9 +20,35 @@ interface SidebarProps {
 }
 
 function Sidebar({ activeView, collapsed, onToggleCollapse, onFileOpen }: SidebarProps) {
-  // 折叠状态下只渲染一个空容器，不显示内容
+  // 折叠状态下渲染一个窄条展开按钮，点击恢复侧边栏
   if (collapsed) {
-    return <div style={{ backgroundColor: 'var(--bg-secondary)' }} />
+    return (
+      <div
+        style={{
+          backgroundColor: 'var(--bg-secondary)',
+          borderRight: '1px solid var(--border)',
+          height: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: 'pointer',
+        }}
+        onClick={onToggleCollapse}
+        title="展开侧边栏"
+      >
+        <span
+          style={{
+            color: 'var(--text-secondary)',
+            fontSize: '14px',
+            writingMode: 'vertical-rl',
+            letterSpacing: '2px',
+            userSelect: 'none',
+          }}
+        >
+          » {viewTitles[activeView]}
+        </span>
+      </div>
+    )
   }
 
   // 根据活动视图渲染对应内容
