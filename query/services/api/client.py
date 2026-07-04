@@ -120,7 +120,16 @@ def build_http_client() -> httpx.Client:
 
 
 def _resolve_base_url() -> str:
-    """解析 base_url，优先级：LLM_BASE_URL > 配置文件 > 默认值。"""
+    """解析 base_url，优先级：LLM 供应商插件 > LLM_BASE_URL > 配置文件 > 默认值。"""
+    # 优先从 LLM 供应商注册表取
+    try:
+        from query.services.api.providers import get_registry
+        provider = get_registry().get_active_provider()
+        if provider is not None:
+            return provider.base_url
+    except ImportError:
+        pass
+
     return (
         os.environ.get(ENV_LLM_BASE_URL)
         or _get_config_field("llm_base_url")
@@ -129,7 +138,16 @@ def _resolve_base_url() -> str:
 
 
 def _resolve_api_key() -> str | None:
-    """解析 api_key，优先级：LLM_API_KEY > 配置文件 > 默认值。"""
+    """解析 api_key，优先级：LLM 供应商插件 > LLM_API_KEY > 配置文件 > 默认值。"""
+    # 优先从 LLM 供应商注册表取
+    try:
+        from query.services.api.providers import get_registry
+        provider = get_registry().get_active_provider()
+        if provider is not None and provider.api_key:
+            return provider.api_key
+    except ImportError:
+        pass
+
     return (
         os.environ.get(ENV_LLM_API_KEY)
         or _get_config_field("llm_api_key")
@@ -138,7 +156,16 @@ def _resolve_api_key() -> str | None:
 
 
 def _resolve_model() -> str:
-    """解析默认模型名，优先级：LLM_MODEL > 配置文件 > 默认值。"""
+    """解析默认模型名，优先级：LLM 供应商插件 > LLM_MODEL > 配置文件 > 默认值。"""
+    # 优先从 LLM 供应商注册表取
+    try:
+        from query.services.api.providers import get_registry
+        provider = get_registry().get_active_provider()
+        if provider is not None and provider.model:
+            return provider.model
+    except ImportError:
+        pass
+
     return (
         os.environ.get(ENV_LLM_MODEL)
         or _get_config_field("llm_model")

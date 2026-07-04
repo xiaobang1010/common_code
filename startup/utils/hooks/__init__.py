@@ -169,6 +169,7 @@ def capture_hooks_config_snapshot() -> HookConfig:
     """从配置中读取 hooks 配置并返回快照。
 
     读取合并后的 settings 中的 hooks 字段，构建 HookConfig。
+    然后合并插件提供的 hooks（standard kind 插件的 hooks/hooks.json）。
     如果配置系统未初始化或无 hooks 配置，返回空的 HookConfig。
     """
     try:
@@ -176,12 +177,37 @@ def capture_hooks_config_snapshot() -> HookConfig:
 
         settings = get_initial_settings()
         hooks_data = settings.hooks
-        if not hooks_data:
-            return HookConfig()
-        return HookConfig.from_dict(hooks_data)
+        if hooks_data:
+            config = HookConfig.from_dict(hooks_data)
+        else:
+            config = HookConfig()
+
+        # 合并插件提供的 hooks
+        try:
+            from startup.plugins.standard_loader import get_all_plugin_hooks
+            plugin_hooks = get_all_plugin_hooks()
+            if plugin_hooks:
+                _merge_plugin_hooks(config, plugin_hooks)
+        except ImportError:
+            pass
+
+        return config
     except Exception as e:
         logger.warning("捕获 hooks 配置快照失败: %s", e)
         return HookConfig()
+
+
+def _merge_plugin_hooks(config: "HookConfig", plugin_hooks: dict) -> None:
+    """把插件提供的 hooks 配置合并到 HookConfig。"""
+    for key, value in plugin_hooks.items():
+        if hasattr(config, key.lower()):
+            existing = getattr(config, key.lower(), [])
+            if isinstance(existing, list) and isinstance(value, list):
+                existing.extend(value)
+            elif isinstance(existing, list):
+                existing.append(value)
+            else:
+                setattr(config, key.lower(), value)
 
 
 # ---------------------------------------------------------------------------

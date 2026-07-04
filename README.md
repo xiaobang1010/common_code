@@ -15,6 +15,7 @@
 - **Skills 能力包**：可热插拔的 prompt 能力包，`~/.agent/skills/` 或项目级 `.agent/skills/` 下放 `SKILL.md`，LLM 按需自动调用或用户 `/skill-name` 触发
 - **子代理（Subagent）**：主代理通过 Agent 工具派生隔离上下文的子代理执行子任务，内置 general-purpose（全工具）和 Explore（只读搜索）两种类型
 - **多代理协作（Multi-Agent）**：多个具名 teammate 组成团队，通过文件邮箱双向通信、共享任务列表协调分工，支持任务分配与并行协作
+- **插件系统**：约定优先的插件容器，支持三类插件——standard（技能/命令/hooks/MCP 能力包）、llm-provider（可切换的 LLM 供应商）、memory（记忆后端）。项目自带 `skill-creator` 和 `spec-mode` 两个内置插件，启动即用
 - **Skills 机制**：可热插拔的 prompt 能力包，LLM 根据描述自动匹配调用，也支持 `/skill-name` 斜杠命令触发
 - **Subagent 机制**：主代理可派生隔离上下文的子代理执行子任务，内置 general-purpose（全工具）和 Explore（只读）两种类型
 - **Multi-Agent 协作**：多个具名 teammate 组成团队，通过文件邮箱双向通信、共享任务列表协调分工，支持任务创建/分配/认领
@@ -98,5 +99,6 @@ common_code/
 │   ├── subagent/         Subagent 机制（隔离上下文子代理）
 │   └── team/             Multi-Agent 机制（团队协作 + 文件邮箱 + 共享任务）
 ├── startup/         启动初始化（配置加载、工作目录、hooks）
+│   └── plugins/         插件系统（三类插件：standard/llm-provider/memory）
 └── ink/             终端 CLI 时代的历史遗留（可忽略）
 ```

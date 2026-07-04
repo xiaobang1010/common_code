@@ -78,7 +78,15 @@ def get_all_skills() -> list[Skill]:
     except ImportError:
         pass  # loader 尚未实现
 
-    # 内置 skill（去重：文件优先）
+    # 插件提供的 skill（standard kind 插件的 skills/ 子目录）
+    try:
+        from startup.plugins.standard_loader import get_all_plugin_skills
+        plugin_skills = get_all_plugin_skills()
+        skills.extend(plugin_skills)
+    except ImportError:
+        pass
+
+    # 内置 skill（去重：文件和插件优先）
     file_names = {s.name for s in skills}
     for skill in _bundled_skills:
         if skill.name not in file_names:

@@ -756,21 +756,37 @@ async def git_diff(path: str = "") -> dict:
 async def get_config() -> dict:
     """读取 LLM 配置接口。
 
-    返回 {"llm_base_url", "llm_api_key", "llm_model"}。
+    返回 {"llm_base_url", "llm_api_key", "llm_model", "llm_providers", "active_provider"}。
     配置系统未初始化等异常情况下返回空值和 error 字段。
     """
     try:
         config = get_global_config()
+
+        # 获取 LLM 供应商信息
+        llm_providers = []
+        active_provider = None
+        try:
+            from query.services.api.providers import get_registry
+            registry = get_registry()
+            llm_providers = registry.list_providers()
+            active_provider = registry.get_active_name()
+        except ImportError:
+            pass
+
         return {
             "llm_base_url": config.llm_base_url or "",
             "llm_api_key": config.llm_api_key or "",
             "llm_model": config.llm_model or "",
+            "llm_providers": llm_providers,
+            "active_provider": active_provider,
         }
     except Exception as e:
         return {
             "llm_base_url": "",
             "llm_api_key": "",
             "llm_model": "",
+            "llm_providers": [],
+            "active_provider": None,
             "error": str(e),
         }
 
@@ -808,6 +824,110 @@ async def set_config(body: dict) -> dict:
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/plugins — 获取已安装插件列表
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/plugins")
+async def list_plugins() -> dict:
+    """返回已安装插件列表。
+
+    返回：{"plugins": [{"name", "version", "kind", "enabled", "description"}]}
+    """
+    from startup.plugins.manager import PluginManager
+
+    plugins = PluginManager.get_all_plugins()
+    return {
+        "plugins": [
+            {
+                "name": p.manifest.name,
+                "version": p.manifest.version,
+                "kind": p.manifest.kind,
+                "enabled": p.enabled,
+                "description": p.manifest.description,
+            }
+            for p in plugins
+        ]
+    }
+
+
+# ---------------------------------------------------------------------------
+# POST /api/plugins/enable — 启用插件
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/plugins/enable")
+async def enable_plugin(body: dict) -> dict:
+    """启用插件。请求体：{"name": "..."}"""
+    from startup.plugins.manager import PluginManager
+
+    name = body.get("name", "")
+    ok = PluginManager.enable_plugin(name)
+    if not ok:
+        return {"ok": False, "error": f"Plugin not found: {name}"}
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/plugins/disable — 禁用插件
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/plugins/disable")
+async def disable_plugin(body: dict) -> dict:
+    """禁用插件。请求体：{"name": "..."}"""
+    from startup.plugins.manager import PluginManager
+
+    name = body.get("name", "")
+    ok = PluginManager.disable_plugin(name)
+    if not ok:
+        return {"ok": False, "error": f"Plugin not found: {name}"}
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/plugins/llm-provider/switch — 切换 LLM 供应商
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/plugins/llm-provider/switch")
+async def switch_llm_provider(body: dict) -> dict:
+    """切换 LLM 供应商。请求体：{"provider": "..."}"""
+    from query.services.api.providers import get_registry
+
+    provider_name = body.get("provider", "")
+    registry = get_registry()
+    ok = registry.set_active(provider_name)
+    if not ok:
+        return {"ok": False, "error": f"LLM provider not found: {provider_name}"}
+
+    # 更新 AppState model
+    provider = registry.get_active_provider()
+    if provider and app_state:
+        state = app_state.get_state()
+        state.model = provider.model
+
+    return {"ok": True, "active_provider": provider_name}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/plugins/llm-providers — 获取可用 LLM 供应商列表
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/plugins/llm-providers")
+async def list_llm_providers() -> dict:
+    """返回可用 LLM 供应商列表和当前激活的供应商。"""
+    from query.services.api.providers import get_registry
+
+    registry = get_registry()
+    return {
+        "providers": registry.list_providers(),
+        "active": registry.get_active_name(),
+    }
 
 
 # ---------------------------------------------------------------------------

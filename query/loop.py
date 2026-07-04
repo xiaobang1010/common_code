@@ -337,6 +337,23 @@ async def query_loop(
     # skill 列表增量注入追踪（跨轮保持，避免重复注入）
     sent_skills: set[str] = set()
 
+    # 首轮记忆检索：若有启用的记忆插件，检索相关历史记忆注入上下文
+    if not messages and user_context is None:
+        try:
+            from query.services.memory.registry import get_active_memory
+            memory = get_active_memory()
+            if memory is not None:
+                import asyncio
+                results = await memory.search("", limit=3)
+                if results:
+                    mem_text = "\n".join(
+                        f"- {r.get('content', '')[:200]}" for r in results if r.get("content")
+                    )
+                    if mem_text:
+                        user_context = {"历史记忆": mem_text}
+        except Exception:
+            pass  # 记忆检索失败不中断循环
+
     # eslint-disable-next-line no-constant-condition
     while True:
         # 从引擎读取当前消息

@@ -1,0 +1,7 @@
+{
+  "name": "spec-mode",
+  "version": "0.1.0",
+  "description": "Spec 驱动开发模式：为复杂任务生成 spec/tasks/checklist 三件套，经确认后逐项执行并实时更新状态。",
+  "author": { "name": "Z.ai" },
+  "kind": "standard"
+}

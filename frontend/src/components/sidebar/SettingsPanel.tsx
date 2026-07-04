@@ -5,6 +5,17 @@ interface LLMConfig {
   llm_base_url: string
   llm_api_key: string
   llm_model: string
+  llm_providers?: { name: string; base_url: string; model: string }[]
+  active_provider?: string | null
+}
+
+// 插件结构
+interface PluginInfo {
+  name: string
+  version: string
+  kind: string
+  enabled: boolean
+  description: string
 }
 
 function SettingsPanel() {
@@ -17,6 +28,13 @@ function SettingsPanel() {
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
 
+  // LLM 供应商
+  const [providers, setProviders] = useState<{ name: string; base_url: string; model: string }[]>([])
+  const [activeProvider, setActiveProvider] = useState<string | null>(null)
+
+  // 插件列表
+  const [plugins, setPlugins] = useState<PluginInfo[]>([])
+
   // 加载当前配置
   useEffect(() => {
     const loadConfig = async () => {
@@ -26,6 +44,8 @@ function SettingsPanel() {
         setBaseUrl(json.llm_base_url || '')
         setApiKey(json.llm_api_key || '')
         setModel(json.llm_model || '')
+        setProviders(json.llm_providers || [])
+        setActiveProvider(json.active_provider || null)
       } catch (e) {
         setError('加载配置失败')
         console.error(e)
@@ -34,6 +54,12 @@ function SettingsPanel() {
       }
     }
     loadConfig()
+
+    // 加载插件列表
+    fetch('/api/plugins')
+      .then(r => r.json())
+      .then(data => setPlugins(data.plugins || []))
+      .catch(() => {})
   }, [])
 
   // 保存配置
@@ -148,6 +174,106 @@ function SettingsPanel() {
             style={inputStyle}
           />
         </div>
+        {/* LLM 供应商切换（有插件供应商时显示） */}
+        {providers.length > 0 && (
+          <div>
+            <label style={labelStyle}>LLM 供应商</label>
+            <select
+              value={activeProvider || ''}
+              onChange={async (e) => {
+                const val = e.target.value
+                try {
+                  await fetch('/api/plugins/llm-provider/switch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ provider: val }),
+                  })
+                  setActiveProvider(val)
+                  setMessage('供应商已切换')
+                  setTimeout(() => setMessage(''), 3000)
+                } catch {
+                  setError('切换失败')
+                }
+              }}
+              style={inputStyle}
+            >
+              {providers.map(p => (
+                <option key={p.name} value={p.name}>
+                  {p.name} ({p.model})
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* 插件列表 */}
+        {plugins.length > 0 && (
+          <div>
+            <label style={labelStyle}>插件</label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              {plugins.map(p => (
+                <div
+                  key={p.name}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    padding: '6px 8px',
+                    backgroundColor: 'var(--bg-primary)',
+                    border: '1px solid var(--border)',
+                    borderRadius: '2px',
+                    fontSize: '12px',
+                  }}
+                >
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ color: 'var(--text-primary)', fontWeight: 500 }}>
+                      {p.name}
+                      <span style={{ color: 'var(--text-tertiary)', marginLeft: '6px', fontSize: '11px' }}>
+                        v{p.version} · {p.kind}
+                      </span>
+                    </div>
+                    {p.description && (
+                      <div style={{ color: 'var(--text-tertiary)', fontSize: '11px', marginTop: '2px' }}>
+                        {p.description}
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    onClick={async () => {
+                      const endpoint = p.enabled ? '/api/plugins/disable' : '/api/plugins/enable'
+                      try {
+                        await fetch(endpoint, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ name: p.name }),
+                        })
+                        // 刷新列表
+                        const res = await fetch('/api/plugins')
+                        const data = await res.json()
+                        setPlugins(data.plugins || [])
+                      } catch {
+                        setError('操作失败')
+                      }
+                    }}
+                    style={{
+                      border: '1px solid var(--border)',
+                      backgroundColor: p.enabled ? 'var(--accent-soft)' : 'var(--bg-primary)',
+                      color: p.enabled ? 'var(--accent)' : 'var(--text-tertiary)',
+                      padding: '2px 10px',
+                      fontSize: '11px',
+                      cursor: 'pointer',
+                      borderRadius: '2px',
+                      flexShrink: 0,
+                    }}
+                  >
+                    {p.enabled ? '已启用' : '已禁用'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* 保存按钮 */}
         <button
           onClick={handleSave}

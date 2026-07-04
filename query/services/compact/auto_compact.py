@@ -245,6 +245,16 @@ async def compact_conversation(
         "content": summary_content,
     }
 
+    # 若有启用的记忆插件，存储摘要
+    try:
+        from query.services.memory.registry import get_active_memory
+        memory = get_active_memory()
+        if memory is not None:
+            import asyncio
+            asyncio.ensure_future(memory.store("default", "compact_summary", summary))
+    except Exception:
+        pass  # 记忆存储失败不中断压缩
+
     return system_messages + [boundary_marker, summary_message] + skill_messages + messages_to_keep
 
 
