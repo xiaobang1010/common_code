@@ -366,10 +366,40 @@ export function useChat() {
             body: JSON.stringify({ command: prompt }),
           })
           const data = await resp.json()
-          setMessages(prev => [
-            ...prev,
-            { id: genId(), role: 'system', content: data.output || '' },
-          ])
+
+          // skill 触发：把 skill 正文作为 prompt 走 /api/chat SSE 流
+          if (data.is_skill) {
+            // 显示 skill 激活提示
+            setMessages(prev => [
+              ...prev,
+              { id: genId(), role: 'system', content: `Launching skill: ${data.skill_name}` },
+            ])
+            // 预创建 assistant 占位消息
+            const assistantId = genId()
+            currentAssistantId.current = assistantId
+            assistantContentRef.current = ''
+            reasoningContentRef.current = ''
+            hasToolCallStartedRef.current = false
+            pendingToolReasoningRef.current = ''
+            setMessages(prev => [
+              ...prev,
+              { id: assistantId, role: 'assistant', content: '', isStreaming: true },
+            ])
+            // skill 正文作为 prompt 发到 /api/chat
+            const chatResp = await fetch('/api/chat', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ prompt: data.skill_prompt }),
+            })
+            if (!chatResp.ok) throw new Error(`HTTP ${chatResp.status}`)
+            await parseSSEStream(chatResp)
+          } else {
+            // 普通命令：展示输出
+            setMessages(prev => [
+              ...prev,
+              { id: genId(), role: 'system', content: data.output || '' },
+            ])
+          }
         } catch (e) {
           setMessages(prev => [
             ...prev,
@@ -381,6 +411,7 @@ export function useChat() {
           ])
         } finally {
           setIsStreaming(false)
+          currentAssistantId.current = null
         }
         await fetchState()
         return

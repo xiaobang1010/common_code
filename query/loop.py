@@ -334,6 +334,9 @@ async def query_loop(
     # 循环内临时状态
     state = State()
 
+    # skill 列表增量注入追踪（跨轮保持，避免重复注入）
+    sent_skills: set[str] = set()
+
     # eslint-disable-next-line no-constant-condition
     while True:
         # 从引擎读取当前消息
@@ -379,6 +382,23 @@ async def query_loop(
         api_messages = messages
         if user_context:
             api_messages = prepend_user_context(api_messages, user_context)
+
+        # skill 列表增量注入（临时，不写回引擎）
+        try:
+            from tools.skills.bundled import get_model_invocable_skills
+            from tools.skills.listing import get_skill_listing_attachment
+            from startup.utils.model.config import get_effective_context_window
+
+            invocable_skills = get_model_invocable_skills()
+            if invocable_skills:
+                context_window = get_effective_context_window(engine_config.model)
+                skill_listing = get_skill_listing_attachment(
+                    invocable_skills, sent_skills, context_window,
+                )
+                if skill_listing is not None:
+                    api_messages = [skill_listing, *api_messages]
+        except ImportError:
+            pass
 
         request = build_api_request(
             messages=api_messages,
@@ -452,6 +472,15 @@ async def query_loop(
                     tr_msg = tool_result_to_openai_message(completed)
                     yield tr_msg
                     tool_result_messages.append(tr_msg)
+                    # Skill/Agent 工具可能返回 new_messages（如 skill 正文），注入对话
+                    if completed.new_messages:
+                        for nm in completed.new_messages:
+                            yield nm
+                            tool_result_messages.append(nm)
+                    # context_modifier 中的 allowed_tools 注入会话级权限
+                    if completed.context_modifier and completed.context_modifier.get("allowed_tools"):
+                        for t in completed.context_modifier["allowed_tools"]:
+                            engine.always_allowed.add(t)
 
         except Exception as e:
             # 模型调用异常
@@ -469,6 +498,15 @@ async def query_loop(
             tr_msg = tool_result_to_openai_message(result)
             yield tr_msg
             tool_result_messages.append(tr_msg)
+            # Skill/Agent 工具可能返回 new_messages，注入对话
+            if result.new_messages:
+                for nm in result.new_messages:
+                    yield nm
+                    tool_result_messages.append(nm)
+            # context_modifier 中的 allowed_tools 注入会话级权限
+            if result.context_modifier and result.context_modifier.get("allowed_tools"):
+                for t in result.context_modifier["allowed_tools"]:
+                    engine.always_allowed.add(t)
 
         # 更新 token 使用量（写回引擎）
         if usage_info:

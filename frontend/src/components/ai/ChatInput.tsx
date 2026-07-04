@@ -14,8 +14,8 @@ interface Props {
   onResolve: (decision: 'allow' | 'deny' | 'always_allow') => void
 }
 
-// 斜杠命令列表
-const COMMANDS = [
+// 内置斜杠命令列表
+const BUILTIN_COMMANDS = [
   { name: '/help', desc: '显示帮助' },
   { name: '/clear', desc: '清空对话' },
   { name: '/compact', desc: '压缩历史' },
@@ -31,9 +31,28 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
   const [showCommands, setShowCommands] = useState(false)
   const [selectedIdx, setSelectedIdx] = useState(0)
   const [isFocused, setIsFocused] = useState(false)
+  const [commands, setCommands] = useState(BUILTIN_COMMANDS)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
-  const filteredCommands = COMMANDS.filter(c => c.name.startsWith(value))
+  // 挂载时从 /api/skills 拉取可用 skill，合并到命令补全列表
+  useEffect(() => {
+    fetch('/api/skills')
+      .then(r => r.json())
+      .then(data => {
+        if (data.skills && Array.isArray(data.skills)) {
+          const skillCmds = data.skills.map((s: any) => ({
+            name: `/${s.name}`,
+            desc: s.description || s.when_to_use || '',
+          }))
+          setCommands([...BUILTIN_COMMANDS, ...skillCmds])
+        }
+      })
+      .catch(() => {
+        // 接口不可用时只显示内置命令
+      })
+  }, [])
+
+  const filteredCommands = commands.filter(c => c.name.startsWith(value))
 
   useEffect(() => {
     if (value.startsWith('/') && filteredCommands.length > 0) {

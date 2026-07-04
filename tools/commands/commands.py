@@ -151,3 +151,46 @@ def clear_commands() -> None:
     global _initialized
     _registry.clear()
     _initialized = False
+
+
+# ---------------------------------------------------------------------------
+# try_resolve_skill — 尝试将 /name 解析为 skill 触发
+# ---------------------------------------------------------------------------
+
+
+def try_resolve_skill(name: str, args: str) -> dict | None:
+    """尝试将斜杠命令 /name 解析为 skill 触发。
+
+    在 find_command 返回 None 时调用。如果 name 匹配一个
+    user_invocable 的 skill，返回 skill 正文作为 user 消息（system-reminder 包裹）。
+    否则返回 None。
+
+    Args:
+        name: 命令名（不含 /）
+        args: 命令参数字符串
+
+    Returns:
+        skill 正文消息 dict，或 None（不是 skill）
+    """
+    from tools.skills.bundled import find_skill_by_name
+
+    skill = find_skill_by_name(name)
+    if skill is None or not skill.is_user_invocable():
+        return None
+
+    try:
+        prompt = skill.resolve_prompt(args)
+    except Exception:
+        return None
+
+    if not prompt.strip():
+        return None
+
+    return {
+        "role": "user",
+        "content": (
+            "<system-reminder>\n"
+            f"{prompt}\n"
+            "</system-reminder>\n"
+        ),
+    }

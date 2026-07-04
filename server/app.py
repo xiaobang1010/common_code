@@ -3,7 +3,8 @@
 路由：
   GET  /api/state       — 获取会话状态
   POST /api/chat        — SSE 流式对话
-  POST /api/command     — 斜杠命令
+  POST /api/command     — 斜杠命令（含 skill 触发）
+  GET  /api/skills      — 获取可用 skill 列表
   POST /api/permission  — 回传权限决策
 
 根路径 "/" 由 StaticFiles 挂载的前端构建产物（frontend/dist）接管。
@@ -28,7 +29,7 @@ from query.services.api.llm import StreamEvent
 from query.services.pricing import calculate_cost
 from startup.bootstrap.state import add_to_total_cost
 from startup.utils.config import get_global_config, save_global_config
-from tools.commands.commands import find_command
+from tools.commands.commands import find_command, try_resolve_skill
 from tools.commands.commands_context import CommandContext
 
 # 全局变量，由 __main__.py 启动时设置
@@ -245,27 +246,64 @@ async def run_command(body: dict) -> dict:
     """斜杠命令接口。
 
     请求体：{"command": "/cost"}
-    返回：{"output": "..."}
-
-    简化处理：命令只读不写消息历史，传消息副本避免修改引擎消息。
+    返回：
+      普通命令 → {"output": "..."}
+      skill 触发 → {"is_skill": true, "skill_prompt": "...", "skill_name": "..."}
+      未知命令 → {"output": "Unknown command: ..."}
     """
     command = body.get("command", "")
     parts = command.strip().split(None, 1)
     cmd_name = parts[0].lower().lstrip("/")
     cmd_args = parts[1] if len(parts) > 1 else ""
 
+    # 先查内置命令
     cmd = find_command(cmd_name)
-    if cmd is None:
-        return {"output": f"Unknown command: /{cmd_name}. Type /help for available commands."}
+    if cmd is not None:
+        ctx = CommandContext(
+            messages=list(engine.mutable_messages),
+            app_state=app_state,
+            args=cmd_args,
+        )
+        output = await cmd.handler(ctx)
+        return {"output": output}
 
-    # 传消息副本，避免命令修改引擎维护的消息历史
-    ctx = CommandContext(
-        messages=list(engine.mutable_messages),
-        app_state=app_state,
-        args=cmd_args,
-    )
-    output = await cmd.handler(ctx)
-    return {"output": output}
+    # 内置命令没命中 → 尝试 skill 触发
+    skill_msg = try_resolve_skill(cmd_name, cmd_args)
+    if skill_msg is not None:
+        return {
+            "is_skill": True,
+            "skill_prompt": skill_msg["content"],
+            "skill_name": cmd_name,
+        }
+
+    return {"output": f"Unknown command: /{cmd_name}. Type /help for available commands."}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/skills — 获取可用 skill 列表（供前端命令补全）
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/skills")
+async def list_skills() -> dict:
+    """返回所有用户可调用的 skill 列表。
+
+    返回：{"skills": [{"name", "description", "when_to_use"}, ...]}
+    """
+    from tools.skills.bundled import get_all_skills
+
+    skills = get_all_skills()
+    return {
+        "skills": [
+            {
+                "name": s.name,
+                "description": s.description,
+                "when_to_use": s.when_to_use or "",
+            }
+            for s in skills
+            if s.is_user_invocable()
+        ]
+    }
 
 
 # ---------------------------------------------------------------------------

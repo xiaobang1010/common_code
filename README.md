@@ -12,6 +12,15 @@
 - **源代码管理**：Git 暂存、提交、分支状态一览，不用离开应用
 - **流式交互**：AI 回复逐字呈现，工具调用过程实时可见，不用等整段吐完
 - **成本透明**：状态栏实时显示 token 用量和费用花了多少，心里有数
+- **Skills 能力包**：可热插拔的 prompt 能力包，`~/.agent/skills/` 或项目级 `.agent/skills/` 下放 `SKILL.md`，LLM 按需自动调用或用户 `/skill-name` 触发
+- **子代理（Subagent）**：主代理通过 Agent 工具派生隔离上下文的子代理执行子任务，内置 general-purpose（全工具）和 Explore（只读搜索）两种类型
+- **多代理协作（Multi-Agent）**：多个具名 teammate 组成团队，通过文件邮箱双向通信、共享任务列表协调分工，支持任务分配与并行协作
+- **Skills 机制**：可热插拔的 prompt 能力包，LLM 根据描述自动匹配调用，也支持 `/skill-name` 斜杠命令触发
+- **Subagent 机制**：主代理可派生隔离上下文的子代理执行子任务，内置 general-purpose（全工具）和 Explore（只读）两种类型
+- **Multi-Agent 协作**：多个具名 teammate 组成团队，通过文件邮箱双向通信、共享任务列表协调分工，支持任务创建/分配/认领
+- **Skills 能力包**：可热插拔的 prompt 能力包，放 `~/.agent/skills/` 或项目 `.agent/skills/` 下，LLM 根据描述自动调用或用户 `/skill-name` 触发
+- **子代理**：主代理可通过 Agent 工具派生隔离上下文的子代理执行子任务，内置 general-purpose（全工具）和 Explore（只读）两种类型
+- **多代理协作**：多个具名 teammate 组成团队，通过文件邮箱双向通信、共享任务列表协调分工，支持空闲等待和唤醒机制
 
 ## 技术栈
 
@@ -83,7 +92,11 @@ common_code/
 ├── electron/        Electron 主进程壳（子进程管理 + node-pty 终端）
 ├── server/          FastAPI 后端（HTTP + SSE 接口 + 权限桥接）
 ├── query/           AI 引擎核心（agentic 循环、流式调用、压缩管线）
-├── tools/           工具系统（Bash/文件读写/Glob/Grep + 权限 + 命令）
+├── tools/           工具系统（动态工具池 + 权限 + 命令）
+│   ├── implementations/  内置 6 工具（Bash/Read/Edit/Write/Glob/Grep）
+│   ├── skills/           Skills 机制（可热插拔 prompt 能力包）
+│   ├── subagent/         Subagent 机制（隔离上下文子代理）
+│   └── team/             Multi-Agent 机制（团队协作 + 文件邮箱 + 共享任务）
 ├── startup/         启动初始化（配置加载、工作目录、hooks）
 └── ink/             终端 CLI 时代的历史遗留（可忽略）
 ```
