@@ -109,6 +109,13 @@ async def spawn_teammate(
     logger.info("Teammate 派生: %s (team=%s, type=%s)",
                 agent_name, team_name, agent_def.agent_type)
 
+    # 检查是否已有 transcript（resume 场景）
+    from tools.subagent.transcript import get_agent_transcript
+    existing_transcript = get_agent_transcript(ctx.agent_id)
+    if existing_transcript is not None:
+        logger.info("Teammate %s 从 transcript resume", agent_name)
+        ctx.initial_messages = existing_transcript + ctx.initial_messages
+
     # 8. 运行首轮子代理循环
     try:
         from tools.subagent.runner import run_agent
@@ -129,6 +136,19 @@ async def spawn_teammate(
         # 首轮完成，进入空闲
         _active_teammates[agent_name]["status"] = "idle"
         poller.set_busy(False)
+
+        # 发送 idle notification 给 leader
+        from tools.team.mailbox import write_to_mailbox
+        from tools.team.manager import get_current_team
+        team = get_current_team()
+        if team:
+            write_to_mailbox(
+                team, "leader",
+                f"teammate {agent_name} 完成了一轮工作，进入空闲状态",
+                sender=agent_name,
+                summary=f"{agent_name} idle",
+                msg_type="idle_notification",
+            )
 
     except Exception as e:
         logger.exception("Teammate %s 执行异常: %s", agent_name, e)

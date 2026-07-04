@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import uuid
 from dataclasses import dataclass, field
@@ -36,6 +37,8 @@ class SubagentContext:
         max_turns: 最大循环轮数
         is_async: 是否异步执行（后台运行）
         initial_messages: 子代理的初始消息列表（仅含 prompt）
+        abort_event: 中断事件——同步子代理共享父的，异步子代理独立
+        pending_messages: 待投递的消息队列（SendMessage 续接时入队）
     """
 
     agent_id: str
@@ -46,6 +49,8 @@ class SubagentContext:
     max_turns: int | None = None
     is_async: bool = False
     initial_messages: list[dict] = field(default_factory=list)
+    abort_event: asyncio.Event | None = None
+    pending_messages: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -62,14 +67,16 @@ def create_subagent_context(
     depth: int = 1,
     is_async: bool = False,
     prompt: str = "",
+    parent_abort_event: asyncio.Event | None = None,
 ) -> SubagentContext:
     """从父上下文创建隔离的子代理上下文。
 
     隔离策略：
     - messages: 全新列表（仅含 prompt 转换的 user 消息），不继承父对话
     - file_state_cache: 克隆父的缓存（子代理可独立修改不影响父）
-    - abort_controller: 全新（子代理有独立的中断控制）
+    - abort_event: 同步子代理共享父的（parent_abort_event），异步子代理创建独立的
     - model: 按 agent_def 解析（inherit 则用主循环模型）
+    - max_turns: 从 agent_def 取
 
     Args:
         parent_context: 父代理的 ToolUseContext，None 表示无父上下文
@@ -79,6 +86,7 @@ def create_subagent_context(
         depth: 嵌套深度
         is_async: 是否异步执行
         prompt: 子代理的任务指令
+        parent_abort_event: 父代理的中断事件，同步子代理共享此事件
 
     Returns:
         SubagentContext 隔离上下文
@@ -104,6 +112,12 @@ def create_subagent_context(
         tool_use_id=resolved_agent_id,
     )
 
+    # abort 事件：同步共享父的，异步创建独立的
+    if is_async:
+        abort_event = asyncio.Event()
+    else:
+        abort_event = parent_abort_event  # 同步子代理共享父的中断信号
+
     # 构建初始消息（prompt 作为首轮 user 消息）
     initial_messages: list[dict] = []
     if prompt:
@@ -118,4 +132,5 @@ def create_subagent_context(
         max_turns=agent_def.max_turns,
         is_async=is_async,
         initial_messages=initial_messages,
+        abort_event=abort_event,
     )

@@ -360,6 +360,14 @@ async def query_loop(
         messages = engine.mutable_messages
         transition = state.transition
 
+        # ---- 0. maxTurns 检查 ----
+        if engine_config.max_turns is not None:
+            if engine.turn_count >= engine_config.max_turns:
+                yield {"type": "max_turns_reached", "max_turns": engine_config.max_turns}
+                yield StreamEvent(type="done", finish_reason="stop")
+                yield LoopResult(reason="completed")
+                return
+
         # ---- 1. 压缩管线（内联四级）----
         if config.auto_compact_enabled and messages:
             try:

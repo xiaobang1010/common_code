@@ -113,11 +113,22 @@ def get_tools(context_filter: ToolContextFilter | None = None) -> list[Tool]:
         pass
 
     # 5. SendMessage 工具
-    try:
-        from tools.team.send_message_tool import get_send_message_tool
-        tools.append(get_send_message_tool())
-    except ImportError:
-        pass
+    #    主循环注册 subagent 的 SendMessage（续接子代理）
+    #    teammate 上下文注册 team 的 SendMessage（teammate 间通信）
+    if context_filter is not None and context_filter.is_teammate:
+        # teammate 上下文：team 邮箱通信
+        try:
+            from tools.team.send_message_tool import get_send_message_tool
+            tools.append(get_send_message_tool())
+        except ImportError:
+            pass
+    else:
+        # 主循环：subagent 续接
+        try:
+            from tools.subagent.send_message import get_send_message_tool
+            tools.append(get_send_message_tool())
+        except ImportError:
+            pass
 
     # 6. TeamCreate 工具（teammate 上下文跳过，不能建子团队）
     if context_filter is None or not context_filter.is_teammate:
@@ -126,6 +137,13 @@ def get_tools(context_filter: ToolContextFilter | None = None) -> list[Tool]:
             tools.append(get_team_create_tool())
         except ImportError:
             pass
+
+    # 7. SummarizeTeam 工具（leader 用于综合 teammate 结果）
+    try:
+        from tools.team.summarize import get_summarize_team_tool
+        tools.append(get_summarize_team_tool())
+    except ImportError:
+        pass
 
     # 7. 上下文过滤：子代理按代理定义过滤工具
     if context_filter is not None and context_filter.is_subagent:

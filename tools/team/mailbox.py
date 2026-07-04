@@ -31,6 +31,7 @@ STRUCTURED_PROTOCOL_TYPES = {
     "shutdown_request",
     "shutdown_response",
     "plan_approval",
+    "idle_notification",
 }
 
 

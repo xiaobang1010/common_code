@@ -73,6 +73,8 @@ def _create_task_record(
         "owner": owner,
         "status": "pending",
         "priority": priority if priority in TASK_PRIORITIES else "medium",
+        "blocks": [],          # 本任务阻塞哪些任务（id 列表）
+        "blocked_by": [],      # 本任务被哪些任务阻塞（id 列表）
         "created_at": time.time(),
         "updated_at": time.time(),
     }
@@ -115,6 +117,34 @@ def _list_all_tasks(team_name: str) -> list[dict[str, Any]]:
         except (json.JSONDecodeError, ValueError):
             pass
     return tasks
+
+
+# ---------------------------------------------------------------------------
+# find_available_task — 查找可认领的任务（无阻塞）
+# ---------------------------------------------------------------------------
+
+
+def find_available_task(team_name: str) -> dict[str, Any] | None:
+    """查找可认领的任务：pending + 无 owner + 所有 blocked_by 已完成。
+
+    Args:
+        team_name: 团队名
+
+    Returns:
+        第一个可认领的任务，或 None
+    """
+    tasks = _list_all_tasks(team_name)
+    unresolved = {t["id"] for t in tasks if t.get("status") != "completed"}
+
+    for task in tasks:
+        if (
+            task.get("status") == "pending"
+            and task.get("owner") is None
+            and all(bid not in unresolved for bid in task.get("blocked_by", []))
+        ):
+            return task
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +207,8 @@ class TaskUpdateInput(BaseModel):
     title: str | None = None
     description: str | None = None
     priority: str | None = None
+    add_blocks: list[int] | None = None
+    add_blocked_by: list[int] | None = None
 
 
 async def _task_update_execute(inp: TaskUpdateInput, _ctx: ToolUseContext) -> ToolResult:
@@ -203,6 +235,29 @@ async def _task_update_execute(inp: TaskUpdateInput, _ctx: ToolUseContext) -> To
         task["description"] = inp.description
     if inp.priority is not None:
         task["priority"] = inp.priority
+
+    # 任务依赖双向维护
+    if inp.add_blocks is not None:
+        for blocked_id in inp.add_blocks:
+            if blocked_id not in task["blocks"]:
+                task["blocks"].append(blocked_id)
+            # 同步更新被阻塞任务的 blocked_by
+            blocked_task = _read_task(inp.team_name, blocked_id)
+            if blocked_task is not None:
+                if inp.task_id not in blocked_task["blocked_by"]:
+                    blocked_task["blocked_by"].append(inp.task_id)
+                _write_task(inp.team_name, blocked_id, blocked_task)
+
+    if inp.add_blocked_by is not None:
+        for blocker_id in inp.add_blocked_by:
+            if blocker_id not in task["blocked_by"]:
+                task["blocked_by"].append(blocker_id)
+            # 同步更新阻塞任务的 blocks
+            blocker_task = _read_task(inp.team_name, blocker_id)
+            if blocker_task is not None:
+                if inp.task_id not in blocker_task["blocks"]:
+                    blocker_task["blocks"].append(inp.task_id)
+                _write_task(inp.team_name, blocker_id, blocker_task)
 
     _write_task(inp.team_name, inp.task_id, task)
 

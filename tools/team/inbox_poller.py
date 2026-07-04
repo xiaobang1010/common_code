@@ -124,11 +124,27 @@ class InboxPoller:
     def _dispatch(self, msg: dict) -> None:
         """分发消息到对应回调。"""
         if is_structured_protocol_message(msg):
-            # 结构化协议消息
+            msg_type = msg.get("msg_type")
             logger.info(
                 "收到协议消息: %s (from %s)",
-                msg.get("msg_type"), msg.get("from"),
+                msg_type, msg.get("from"),
             )
+
+            # idle_notification 特殊处理：作为 system 消息注入主循环
+            if msg_type == "idle_notification":
+                logger.info(
+                    "Teammate idle: from %s — %s",
+                    msg.get("from"), msg.get("summary", "")[:50],
+                )
+                if self._on_message is not None:
+                    # idle notification 也走 on_message 回调，让 leader 看到并决定下一步
+                    try:
+                        self._on_message(msg)
+                    except Exception as e:
+                        logger.exception("idle notification 处理异常: %s", e)
+                return
+
+            # 其他结构化协议消息
             if self._on_protocol is not None:
                 try:
                     self._on_protocol(msg)

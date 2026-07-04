@@ -183,6 +183,16 @@ async def _execute(inp: AgentInput, context: ToolUseContext) -> ToolResult:
             if content:
                 final_text = content  # 保留最后一条 assistant 消息
 
+    # 结果截断保护：超过阈值时截断并落盘
+    MAX_RESULT_SIZE_CHARS = 100_000
+    if len(final_text) > MAX_RESULT_SIZE_CHARS:
+        from tools.subagent.transcript import save_full_result
+        result_path = save_full_result(subagent_ctx.agent_id, final_text)
+        final_text = (
+            final_text[:MAX_RESULT_SIZE_CHARS]
+            + f"\n\n[Result truncated. Full output saved to: {result_path}]"
+        )
+
     return ToolResult(
         content=final_text or "Subagent completed with no output",
         is_error=False,

@@ -243,3 +243,70 @@ def get_members(team_name: str) -> list[dict[str, str]]:
 def get_member_names(team_name: str) -> list[str]:
     """获取团队成员名字列表。"""
     return [m["name"] for m in get_members(team_name)]
+
+
+# ---------------------------------------------------------------------------
+# recover_crashed_teammates — 崩溃恢复
+# ---------------------------------------------------------------------------
+
+
+def recover_crashed_teammates(team_name: str) -> list[str]:
+    """扫描崩溃的 teammate，释放其任务供重新认领。
+
+    检查团队的 transcript 目录，对于有 transcript 但状态为 stopped 的 teammate，
+    将其名下 in_progress 的任务回退为 pending 并清除 owner。
+
+    Args:
+        team_name: 团队名
+
+    Returns:
+        恢复的 teammate 名字列表
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    recovered: list[str] = []
+    members = get_members(team_name)
+
+    for member in members:
+        agent_id = member.get("agent_id", "")
+        agent_name = member.get("name", "")
+        if not agent_id:
+            continue
+
+        # 检查是否有 transcript
+        try:
+            from tools.subagent.transcript import get_agent_transcript
+            transcript = get_agent_transcript(agent_id)
+            if transcript is None:
+                continue  # 没有 transcript，不是崩溃的
+        except Exception:
+            continue
+
+        # 检查是否在活跃注册表中
+        from tools.team.lifecycle import get_teammate_status
+        status = get_teammate_status(agent_name)
+        if status == "running":
+            continue  # 还在运行，不需要恢复
+
+        # teammate 崩溃了（有 transcript 但不在运行）
+        logger.info("检测到崩溃的 teammate: %s (last status: %s)", agent_name, status)
+        recovered.append(agent_name)
+
+        # 释放其 in_progress 任务
+        try:
+            from tools.team.task_tools import _list_all_tasks, _write_task
+            tasks = _list_all_tasks(team_name)
+            for task in tasks:
+                if (
+                    task.get("owner") == agent_name
+                    and task.get("status") == "in_progress"
+                ):
+                    task["status"] = "pending"
+                    task["owner"] = None
+                    _write_task(team_name, task["id"], task)
+                    logger.info("释放任务 #%d (原 owner: %s)", task["id"], agent_name)
+        except Exception as e:
+            logger.warning("释放崩溃 teammate 任务失败: %s", e)
+
+    return recovered
