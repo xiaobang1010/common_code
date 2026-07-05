@@ -4,6 +4,7 @@ import ChatInput from './ai/ChatInput'
 import ContextPanel from './ai/ContextPanel'
 import ModifiedFilesPanel from './ai/ModifiedFilesPanel'
 import type { ChatMessage as ChatMessageType, PermissionRequest, TokenUsage } from '../hooks/useChat'
+import type { PermissionMode } from '../api/client'
 
 interface AIPanelProps {
   messages: ChatMessageType[]
@@ -13,6 +14,8 @@ interface AIPanelProps {
   tokenUsage: TokenUsage
   permissionRequest: PermissionRequest | null
   resolvePermission: (decision: 'allow' | 'deny' | 'always_allow') => void
+  permissionMode: PermissionMode
+  onPermissionModeChange: (mode: PermissionMode) => void
 }
 
 function AIPanel({
@@ -23,6 +26,8 @@ function AIPanel({
   tokenUsage,
   permissionRequest,
   resolvePermission,
+  permissionMode,
+  onPermissionModeChange,
 }: AIPanelProps) {
   const [infoExpanded, setInfoExpanded] = useState(false)
 
@@ -152,6 +157,8 @@ function AIPanel({
           onStop={abort}
           permissionRequest={permissionRequest}
           onResolve={resolvePermission}
+          permissionMode={permissionMode}
+          onPermissionModeChange={onPermissionModeChange}
         />
       </div>
     </div>

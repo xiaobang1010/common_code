@@ -118,6 +118,8 @@ function App() {
             tokenUsage={chat.tokenUsage}
             permissionRequest={chat.permissionRequest}
             resolvePermission={chat.resolvePermission}
+            permissionMode={chat.permissionMode}
+            onPermissionModeChange={chat.setPermissionMode}
           />
         </div>
 

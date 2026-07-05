@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import type { PermissionRequest } from '../../hooks/useChat'
+import type { PermissionMode } from '../../api/client'
 
 interface Props {
   onSend: (prompt: string) => void
@@ -12,6 +13,10 @@ interface Props {
   permissionRequest: PermissionRequest | null
   // 用户做出权限决策时回调
   onResolve: (decision: 'allow' | 'deny' | 'always_allow') => void
+  // 当前权限模式
+  permissionMode: PermissionMode
+  // 切换权限模式
+  onPermissionModeChange: (mode: PermissionMode) => void
 }
 
 // 内置斜杠命令列表
@@ -26,13 +31,27 @@ const BUILTIN_COMMANDS = [
   { name: '/spec', desc: '查看规格' },
 ]
 
-function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, onResolve }: Props) {
+function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, onResolve, permissionMode, onPermissionModeChange }: Props) {
   const [value, setValue] = useState('')
   const [showCommands, setShowCommands] = useState(false)
   const [selectedIdx, setSelectedIdx] = useState(0)
   const [isFocused, setIsFocused] = useState(false)
   const [commands, setCommands] = useState(BUILTIN_COMMANDS)
+  const [showPermMenu, setShowPermMenu] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const permMenuRef = useRef<HTMLDivElement>(null)
+
+  // 点击下拉外部时关闭权限模式菜单
+  useEffect(() => {
+    if (!showPermMenu) return
+    const handleClick = (e: MouseEvent) => {
+      if (permMenuRef.current && !permMenuRef.current.contains(e.target as Node)) {
+        setShowPermMenu(false)
+      }
+    }
+    document.addEventListener('click', handleClick)
+    return () => document.removeEventListener('click', handleClick)
+  }, [showPermMenu])
 
   // 挂载时从 /api/skills 拉取可用 skill，合并到命令补全列表
   useEffect(() => {
@@ -373,16 +392,128 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
             pointerEvents: 'none',
           }}
         >
-          <span
-            style={{
-              fontSize: '10px',
-              color: 'var(--text-tertiary)',
-              fontFamily: 'var(--font-mono)',
-              letterSpacing: '0.3px',
-            }}
-          >
-            {value.startsWith('/') ? 'Tab 选中命令' : 'Shift+Enter 换行'}
-          </span>
+          <div ref={permMenuRef} style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '6px', pointerEvents: 'auto' }}>
+            {/* 权限模式切换按钮 */}
+            <button
+              onClick={() => setShowPermMenu(!showPermMenu)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '3px',
+                padding: '2px 6px',
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-sm)',
+                background: 'transparent',
+                color: permissionMode === 'full_access' ? 'var(--accent)' : 'var(--text-tertiary)',
+                fontSize: '10px',
+                fontFamily: 'var(--font-ui)',
+                fontWeight: 500,
+                cursor: 'pointer',
+                transition: 'all var(--transition-fast)',
+                whiteSpace: 'nowrap',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.borderColor = 'var(--border-strong)'
+                e.currentTarget.style.color = permissionMode === 'full_access' ? 'var(--accent)' : 'var(--text-secondary)'
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.borderColor = 'var(--border)'
+                e.currentTarget.style.color = permissionMode === 'full_access' ? 'var(--accent)' : 'var(--text-tertiary)'
+              }}
+            >
+              {permissionMode === 'full_access' ? '完全访问' : '自动编辑'}
+              <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="m6 9 6 6 6-6" />
+              </svg>
+            </button>
+            {/* 权限模式下拉菜单 */}
+            {showPermMenu && (
+              <div
+                style={{
+                  position: 'absolute',
+                  bottom: '100%',
+                  left: 0,
+                  marginBottom: '4px',
+                  backgroundColor: 'var(--bg-elevated)',
+                  border: '1px solid var(--border-strong)',
+                  borderRadius: 'var(--radius-md)',
+                  boxShadow: 'var(--shadow-md)',
+                  zIndex: 20,
+                  minWidth: '240px',
+                  overflow: 'hidden',
+                }}
+              >
+                {/* 自动编辑选项 */}
+                <div
+                  onClick={() => { onPermissionModeChange('default'); setShowPermMenu(false) }}
+                  style={{
+                    padding: '8px 10px',
+                    cursor: 'pointer',
+                    backgroundColor: permissionMode === 'default' ? 'var(--accent-soft)' : 'transparent',
+                    transition: 'background var(--transition-fast)',
+                  }}
+                  onMouseEnter={(e) => {
+                    if (permissionMode !== 'default') e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)'
+                  }}
+                  onMouseLeave={(e) => {
+                    if (permissionMode !== 'default') e.currentTarget.style.backgroundColor = 'transparent'
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--text-primary)', fontSize: '12px', fontWeight: 500, fontFamily: 'var(--font-ui)' }}>
+                      自动编辑
+                    </span>
+                    {permissionMode === 'default' && (
+                      <span style={{ color: 'var(--accent)', fontSize: '11px' }}>✓</span>
+                    )}
+                  </div>
+                  <div style={{ color: 'var(--text-tertiary)', fontSize: '10px', marginTop: '2px', fontFamily: 'var(--font-ui)' }}>
+                    只读放行、编辑放行，删文件和敏感操作才确认
+                  </div>
+                </div>
+                {/* 完全访问选项 */}
+                <div
+                  onClick={() => { onPermissionModeChange('full_access'); setShowPermMenu(false) }}
+                  style={{
+                    padding: '8px 10px',
+                    cursor: 'pointer',
+                    backgroundColor: permissionMode === 'full_access' ? 'var(--accent-soft)' : 'transparent',
+                    transition: 'background var(--transition-fast)',
+                    borderTop: '1px solid var(--border-subtle)',
+                  }}
+                  onMouseEnter={(e) => {
+                    if (permissionMode !== 'full_access') e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)'
+                  }}
+                  onMouseLeave={(e) => {
+                    if (permissionMode !== 'full_access') e.currentTarget.style.backgroundColor = 'transparent'
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--text-primary)', fontSize: '12px', fontWeight: 500, fontFamily: 'var(--font-ui)' }}>
+                      完全访问
+                    </span>
+                    {permissionMode === 'full_access' && (
+                      <span style={{ color: 'var(--accent)', fontSize: '11px' }}>✓</span>
+                    )}
+                  </div>
+                  <div style={{ color: 'var(--text-tertiary)', fontSize: '10px', marginTop: '2px', fontFamily: 'var(--font-ui)' }}>
+                    全部放行，除非模型主动询问用户
+                  </div>
+                </div>
+              </div>
+            )}
+            {/* 保留原来的快捷键提示，更小字体 */}
+            <span
+              style={{
+                fontSize: '9px',
+                color: 'var(--text-tertiary)',
+                fontFamily: 'var(--font-mono)',
+                letterSpacing: '0.3px',
+              }}
+            >
+              {value.startsWith('/') ? 'Tab 选中命令' : 'Shift+Enter 换行'}
+            </span>
+          </div>
           {isStreaming ? (
             // 流式输出中：显示停止按钮
             <button

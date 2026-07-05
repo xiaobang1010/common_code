@@ -58,7 +58,9 @@ app.add_middleware(
 
 @app.get("/api/state")
 async def get_state() -> dict:
-    """返回会话状态：消息历史、模型、token 用量、成本。"""
+    """返回会话状态：消息历史、模型、token 用量、成本、权限模式。"""
+    from startup.bootstrap.state import get_permission_mode
+
     state = app_state.get_state()
     usage = state.token_usage
     return {
@@ -75,6 +77,7 @@ async def get_state() -> dict:
             "last_cache_creation": usage.last_cache_creation,
         },
         "total_cost_usd": state.total_cost_usd,
+        "permission_mode": get_permission_mode(),
     }
 
 
@@ -400,6 +403,29 @@ async def resolve_permission(body: dict) -> dict:
     if ok:
         return {"ok": True}
     return {"ok": False, "error": "request not found"}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/permission/mode — 切换权限模式
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/permission/mode")
+async def set_permission_mode(body: dict) -> dict:
+    """切换权限模式。
+
+    请求体：{"mode": "default" | "full_access"}
+    返回：{"ok": true, "mode": ...}
+    """
+    from startup.bootstrap.state import set_permission_mode as _set_mode
+    from tools.utils.permissions.permissions import VALID_MODES
+
+    mode = body.get("mode", "").strip()
+    if mode not in VALID_MODES:
+        return {"ok": False, "error": f"Invalid permission mode: {mode}. Valid: {VALID_MODES}"}
+
+    _set_mode(mode)
+    return {"ok": True, "mode": mode}
 
 
 # ---------------------------------------------------------------------------

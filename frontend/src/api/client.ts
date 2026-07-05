@@ -155,3 +155,12 @@ export const skillsApi = {
   delete: (name: string) =>
     apiPost<{ ok: boolean }>('/api/skills/delete', { name }),
 }
+
+/** 权限模式 */
+export type PermissionMode = 'default' | 'full_access'
+
+/** 权限管理 */
+export const permissionsApi = {
+  setMode: (mode: PermissionMode) =>
+    apiPost<{ ok: boolean; mode: PermissionMode }>('/api/permission/mode', { mode }),
+}

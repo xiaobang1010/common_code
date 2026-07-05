@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { useSettingsStore } from '../stores/useSettingsStore'
+import { permissionsApi, type PermissionMode } from '../api/client'
 
 // 对话消息类型
 export interface ChatMessage {
@@ -101,6 +102,8 @@ export function useChat() {
   const [model, setModel] = useState('')
   const [permissionRequest, setPermissionRequest] = useState<PermissionRequest | null>(null)
   const [loopResult, setLoopResult] = useState<LoopResult | null>(null)
+  // 当前权限模式：default（自动编辑）或 full_access（完全访问）
+  const [permissionMode, setPermissionModeState] = useState<PermissionMode>('default')
 
   // 当前正在流式输出的 assistant 消息 id
   const currentAssistantId = useRef<string | null>(null)
@@ -126,6 +129,9 @@ export function useChat() {
       }
       if (data.model) {
         setModel(data.model)
+      }
+      if (data.permission_mode === 'default' || data.permission_mode === 'full_access') {
+        setPermissionModeState(data.permission_mode)
       }
     } catch {
       // 后端未就绪时静默忽略
@@ -521,6 +527,16 @@ export function useChat() {
     setIsStreaming(false)
   }, [])
 
+  // 切换权限模式：调后端接口，成功后更新本地 state
+  const setPermissionMode = useCallback(async (mode: PermissionMode) => {
+    try {
+      await permissionsApi.setMode(mode)
+      setPermissionModeState(mode)
+    } catch {
+      // 切换失败时静默忽略，保持当前模式
+    }
+  }, [])
+
   return {
     messages,
     isStreaming,
@@ -532,5 +548,7 @@ export function useChat() {
     permissionRequest,
     resolvePermission,
     loopResult,
+    permissionMode,
+    setPermissionMode,
   }
 }
