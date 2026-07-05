@@ -8,13 +8,15 @@ import PluginSettingsSection from './PluginSettingsSection'
 import MemorySettingsSection from './MemorySettingsSection'
 import SubagentSettingsSection from './SubagentSettingsSection'
 import MultiagentPlaceholder from './MultiagentPlaceholder'
+import SkillsSettingsSection from './SkillsSettingsSection'
 
-// 五个分区
-type SettingsSection = 'llm' | 'plugins' | 'memory' | 'subagents' | 'multiagent'
+// 六个分区
+type SettingsSection = 'llm' | 'plugins' | 'memory' | 'subagents' | 'multiagent' | 'skills'
 
 const sections: { id: SettingsSection; label: string; desc: string }[] = [
   { id: 'llm', label: 'LLM 模型', desc: '配置模型供应商与参数' },
   { id: 'plugins', label: '插件管理', desc: '启用/禁用已安装的插件' },
+  { id: 'skills', label: '技能', desc: '管理技能：搜索、新建、导入、删除' },
   { id: 'memory', label: '记忆', desc: '管理记忆后端' },
   { id: 'subagents', label: '子智能体', desc: '查看内置子智能体' },
   { id: 'multiagent', label: '多智能体', desc: '多智能体编排（规划中）' },
@@ -63,6 +65,8 @@ function SettingsModal({ open, onClose }: SettingsModalProps) {
         return <SubagentSettingsSection />
       case 'multiagent':
         return <MultiagentPlaceholder />
+      case 'skills':
+        return <SkillsSettingsSection />
     }
   }
 

@@ -172,6 +172,13 @@ def _parse_fm_lines(lines: list[str]) -> SkillFrontmatter:
             i += 1
             continue
 
+        # YAML 块标量：>- > |- |（折叠/字面多行字符串）
+        if raw_value in (">-", ">", "|-", "|"):
+            block_text, consumed = _parse_block_scalar(lines, i + 1, line, raw_value)
+            _assign_field(fm, field_name, block_text)
+            i += 1 + consumed
+            continue
+
         # 值为空 → 可能是多行列表
         if not raw_value:
             values, consumed = _parse_list_block(lines, i + 1)
@@ -233,6 +240,91 @@ def _parse_list_block(lines: list[str], start: int) -> tuple[list[str], int]:
             break
 
     return values, i - start
+
+
+def _parse_block_scalar(
+    lines: list[str], start: int, key_line: str, indicator: str
+) -> tuple[str, int]:
+    """解析 YAML 块标量（>- > |- |）。
+
+    indicator 含义：
+      >-  折叠，换行替换为空格，去掉末尾换行
+      >   折叠，换行替换为空格，保留末尾换行
+      |-  字面，保留换行，去掉末尾换行
+      |   字面，保留换行，保留末尾换行
+
+    缩进规则：块内容必须比 key 行缩进更深。以第一个非空内容行的缩进
+    作为块缩进，所有内容行剥离该缩进；空行不参与缩进判定。
+    """
+    # key 行的缩进（行首空格数）
+    key_indent = len(key_line) - len(key_line.lstrip(" "))
+
+    # 先收集属于本块的行（缩进比 key 深的行，或空行），并确定块缩进
+    block_indent = -1
+    block_raw: list[str] = []
+    i = start
+    while i < len(lines):
+        line = lines[i]
+        if not line.strip():
+            # 空行属于块内容
+            block_raw.append("")
+            i += 1
+            continue
+        cur_indent = len(line) - len(line.lstrip(" "))
+        if cur_indent > key_indent:
+            block_raw.append(line)
+            if block_indent < 0:
+                # 第一个非空内容行确定块缩进
+                block_indent = cur_indent
+            i += 1
+        else:
+            break
+
+    # 没有内容行
+    if block_indent < 0:
+        return "", i - start
+
+    # 剥离块缩进
+    block_lines = []
+    for bl in block_raw:
+        if bl == "":
+            block_lines.append("")
+        elif len(bl) >= block_indent:
+            block_lines.append(bl[block_indent:])
+        else:
+            # 缩进不足的行保留原文（容错）
+            block_lines.append(bl.lstrip(" "))
+
+    # 去掉末尾连续空行
+    while block_lines and block_lines[-1] == "":
+        block_lines.pop()
+
+    consumed = i - start
+
+    if indicator.startswith(">"):
+        # 折叠：非空行间换行替换为空格；连续空行保留为一个换行
+        result_parts: list[str] = []
+        prev_blank = False
+        for bl in block_lines:
+            if bl == "":
+                if result_parts and not prev_blank:
+                    result_parts.append("\n")
+                prev_blank = True
+            else:
+                if result_parts and not prev_blank:
+                    result_parts.append(" ")
+                result_parts.append(bl)
+                prev_blank = False
+        result = "".join(result_parts)
+        if indicator == ">":
+            result += "\n"
+    else:
+        # 字面：保留换行
+        result = "\n".join(block_lines)
+        if indicator == "|":
+            result += "\n"
+
+    return result, consumed
 
 
 def _parse_inline_list(text: str) -> list[str]:

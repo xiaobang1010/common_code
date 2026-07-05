@@ -217,3 +217,169 @@ def clear_cache() -> None:
     配置变更或目录变更后调用，下次 get_file_skills() 会重新扫描。
     """
     get_file_skills.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# classify_skill_source — 判断技能来源标签（工作区/个人/插件/内置）
+# ---------------------------------------------------------------------------
+
+
+def classify_skill_source(skill) -> str:
+    """根据 skill 的 source 和 skill_root 路径推断来源标签。
+
+    返回值用于前端展示：
+    - "workspace"：项目级 .agent/skills（工作区技能）
+    - "personal"：用户级 ~/.agent/skills（个人技能）
+    - "plugin"：插件提供的技能
+    - "bundled"：内置程序化技能
+    """
+    if skill.source == "plugin":
+        return "plugin"
+    if skill.source == "bundled":
+        return "bundled"
+    # source == "file"，按 skill_root 路径区分用户级/项目级
+    if skill.skill_root:
+        import os
+        home = os.path.expanduser("~")
+        # 在 home 下的 .agent/skills 是用户级（个人）
+        if skill.skill_root.startswith(os.path.join(home, ".agent", "skills")):
+            return "personal"
+        # 其余 .agent/skills 是项目级（工作区）
+        if ".agent" in skill.skill_root and "skills" in skill.skill_root:
+            return "workspace"
+    return "personal"
+
+
+# ---------------------------------------------------------------------------
+# 用户级技能目录 — 获取 ~/.agent/skills 路径
+# ---------------------------------------------------------------------------
+
+
+def _get_user_skills_dir() -> Path:
+    """获取用户级技能目录 ~/.agent/skills/。"""
+    home = Path(os.path.expanduser("~"))
+    return home / AGENT_DIR_NAME / SKILLS_DIR_NAME
+
+
+# ---------------------------------------------------------------------------
+# create_skill_file — 在用户级创建技能文件
+# ---------------------------------------------------------------------------
+
+
+def create_skill_file(
+    name: str,
+    description: str,
+    when_to_use: str = "",
+    allowed_tools: list[str] | None = None,
+) -> Path:
+    """在用户级 ~/.agent/skills/<name>/SKILL.md 创建技能。
+
+    Args:
+        name: 技能名（也是目录名）
+        description: 一句话描述（必填）
+        when_to_use: 使用场景说明
+        allowed_tools: 工具白名单
+
+    Returns:
+        创建的 SKILL.md 路径
+
+    Raises:
+        ValueError: 名称非法或技能已存在
+    """
+    # 名称校验：只允许字母数字连字符下划线
+    import re
+    if not re.match(r"^[a-zA-Z0-9_-]+$", name):
+        raise ValueError(f"技能名只能含字母、数字、连字符、下划线：{name}")
+
+    user_dir = _get_user_skills_dir()
+    skill_dir = user_dir / name
+    if skill_dir.exists():
+        raise ValueError(f"技能已存在：{name}")
+
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_file = skill_dir / SKILL_FILE_NAME
+
+    # 组装 frontmatter
+    fm_lines = ["---", f"name: {name}", f"description: {description}"]
+    if when_to_use:
+        fm_lines.append(f"when-to-use: {when_to_use}")
+    if allowed_tools:
+        fm_lines.append("allowed-tools:")
+        for tool in allowed_tools:
+            fm_lines.append(f"  - {tool}")
+    fm_lines.append("disable-model-invocation: false")
+    fm_lines.append("---")
+    fm_lines.append("")
+    fm_lines.append(f"# {name}")
+    fm_lines.append("")
+    fm_lines.append("<!-- 在这里编写技能正文 -->")
+
+    skill_file.write_text("\n".join(fm_lines), encoding="utf-8")
+    clear_cache()
+    return skill_file
+
+
+# ---------------------------------------------------------------------------
+# import_skill_file — 从文本导入技能到用户级
+# ---------------------------------------------------------------------------
+
+
+def import_skill_file(name: str, content: str) -> Path:
+    """把一段 SKILL.md 文本写入用户级 ~/.agent/skills/<name>/SKILL.md。
+
+    Args:
+        name: 技能名
+        content: SKILL.md 完整文本（含 frontmatter）
+
+    Returns:
+        写入的 SKILL.md 路径
+
+    Raises:
+        ValueError: 名称非法
+    """
+    import re
+    if not re.match(r"^[a-zA-Z0-9_-]+$", name):
+        raise ValueError(f"技能名只能含字母、数字、连字符、下划线：{name}")
+
+    user_dir = _get_user_skills_dir()
+    skill_dir = user_dir / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_file = skill_dir / SKILL_FILE_NAME
+    skill_file.write_text(content, encoding="utf-8")
+    clear_cache()
+    return skill_file
+
+
+# ---------------------------------------------------------------------------
+# delete_skill_file — 删除用户级技能
+# ---------------------------------------------------------------------------
+
+
+def delete_skill_file(name: str) -> None:
+    """删除用户级技能目录 ~/.agent/skills/<name>/。
+
+    Args:
+        name: 技能名
+
+    Raises:
+        ValueError: 技能不存在、或不在用户级目录（拒绝删除项目级/插件技能）
+    """
+    import re
+    if not re.match(r"^[a-zA-Z0-9_-]+$", name):
+        raise ValueError(f"技能名非法：{name}")
+
+    user_dir = _get_user_skills_dir()
+    skill_dir = user_dir / name
+
+    # 安全检查：确保要删的目录在用户级 skills 目录下（防止路径穿越）
+    try:
+        skill_dir.resolve().relative_to(user_dir.resolve())
+    except ValueError:
+        raise ValueError(f"技能不在用户级目录，拒绝删除：{name}")
+
+    if not skill_dir.exists():
+        raise ValueError(f"技能不存在：{name}")
+
+    import shutil
+    shutil.rmtree(skill_dir)
+    clear_cache()

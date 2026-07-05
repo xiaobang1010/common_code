@@ -8,11 +8,13 @@ import {
   pluginsApi,
   memoryApi,
   agentsApi,
+  skillsApi,
   type LLMConfig,
   type PluginInfo,
   type LLMProviderInfo,
   type MemoryProviderInfo,
   type AgentInfo,
+  type SkillInfo,
 } from '../api/client'
 
 interface SettingsState {
@@ -31,6 +33,9 @@ interface SettingsState {
   // 子智能体
   agents: AgentInfo[]
 
+  // 技能
+  skills: SkillInfo[]
+
   // 加载态
   loading: boolean
   error: string
@@ -45,6 +50,7 @@ interface SettingsState {
   refreshPlugins: () => Promise<void>
   refreshMemoryProviders: () => Promise<void>
   refreshAgents: () => Promise<void>
+  refreshSkills: () => Promise<void>
   refreshAll: () => Promise<void>
 
   // 设置变更后调用，触发 modelVersion +1
@@ -62,6 +68,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   memoryProviders: [],
   activeMemory: null,
   agents: [],
+  skills: [],
 
   loading: false,
   error: '',
@@ -116,6 +123,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     }
   },
 
+  refreshSkills: async () => {
+    try {
+      const data = await skillsApi.list()
+      set({ skills: data.skills })
+    } catch (e) {
+      set({ error: `加载技能失败：${e instanceof Error ? e.message : String(e)}` })
+    }
+  },
+
   refreshAll: async () => {
     set({ loading: true, error: '' })
     await Promise.all([
@@ -123,6 +139,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       get().refreshPlugins(),
       get().refreshMemoryProviders(),
       get().refreshAgents(),
+      get().refreshSkills(),
     ])
     set({ loading: false })
   },

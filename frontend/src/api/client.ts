@@ -53,6 +53,19 @@ export interface AgentInfo {
   source: string
 }
 
+/** 技能信息（GET /api/skills 返回的完整字段） */
+export interface SkillInfo {
+  name: string
+  description: string
+  when_to_use: string
+  source: string                  // file / plugin / bundled
+  source_label: string            // workspace / personal / plugin / bundled
+  allowed_tools: string[] | null
+  disable_model_invocation: boolean
+  user_invocable: boolean
+  skill_root: string | null
+}
+
 // ---------------------------------------------------------------------------
 // 通用请求方法
 // ---------------------------------------------------------------------------
@@ -125,4 +138,20 @@ export const memoryApi = {
 /** 子智能体 */
 export const agentsApi = {
   list: () => apiGet<{ agents: AgentInfo[] }>('/api/agents'),
+}
+
+/** 技能管理 */
+export const skillsApi = {
+  list: () => apiGet<{ skills: SkillInfo[] }>('/api/skills'),
+  create: (data: {
+    name: string
+    description: string
+    when_to_use?: string
+    allowed_tools?: string[] | null
+  }) => apiPost<{ ok: boolean; name: string }>('/api/skills/create', data),
+  import: (name: string, content: string) =>
+    apiPost<{ ok: boolean; name: string }>('/api/skills/import', { name, content }),
+  refresh: () => apiPost<{ ok: boolean }>('/api/skills/refresh'),
+  delete: (name: string) =>
+    apiPost<{ ok: boolean }>('/api/skills/delete', { name }),
 }
