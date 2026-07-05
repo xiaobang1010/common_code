@@ -3,7 +3,8 @@
 路由：
   GET  /api/state       — 获取会话状态
   POST /api/chat        — SSE 流式对话
-  POST /api/command     — 斜杠命令
+  POST /api/command     — 斜杠命令（含 skill 触发）
+  GET  /api/skills      — 获取可用 skill 列表
   POST /api/permission  — 回传权限决策
 
 根路径 "/" 由 StaticFiles 挂载的前端构建产物（frontend/dist）接管。
@@ -28,7 +29,7 @@ from query.services.api.llm import StreamEvent
 from query.services.pricing import calculate_cost
 from startup.bootstrap.state import add_to_total_cost
 from startup.utils.config import get_global_config, save_global_config
-from tools.commands.commands import find_command
+from tools.commands.commands import find_command, try_resolve_skill
 from tools.commands.commands_context import CommandContext
 
 # 全局变量，由 __main__.py 启动时设置
@@ -57,7 +58,9 @@ app.add_middleware(
 
 @app.get("/api/state")
 async def get_state() -> dict:
-    """返回会话状态：消息历史、模型、token 用量、成本。"""
+    """返回会话状态：消息历史、模型、token 用量、成本、权限模式。"""
+    from startup.bootstrap.state import get_permission_mode
+
     state = app_state.get_state()
     usage = state.token_usage
     return {
@@ -74,6 +77,7 @@ async def get_state() -> dict:
             "last_cache_creation": usage.last_cache_creation,
         },
         "total_cost_usd": state.total_cost_usd,
+        "permission_mode": get_permission_mode(),
     }
 
 
@@ -245,27 +249,140 @@ async def run_command(body: dict) -> dict:
     """斜杠命令接口。
 
     请求体：{"command": "/cost"}
-    返回：{"output": "..."}
-
-    简化处理：命令只读不写消息历史，传消息副本避免修改引擎消息。
+    返回：
+      普通命令 → {"output": "..."}
+      skill 触发 → {"is_skill": true, "skill_prompt": "...", "skill_name": "..."}
+      未知命令 → {"output": "Unknown command: ..."}
     """
     command = body.get("command", "")
     parts = command.strip().split(None, 1)
     cmd_name = parts[0].lower().lstrip("/")
     cmd_args = parts[1] if len(parts) > 1 else ""
 
+    # 先查内置命令
     cmd = find_command(cmd_name)
-    if cmd is None:
-        return {"output": f"Unknown command: /{cmd_name}. Type /help for available commands."}
+    if cmd is not None:
+        ctx = CommandContext(
+            messages=list(engine.mutable_messages),
+            app_state=app_state,
+            args=cmd_args,
+        )
+        output = await cmd.handler(ctx)
+        return {"output": output}
 
-    # 传消息副本，避免命令修改引擎维护的消息历史
-    ctx = CommandContext(
-        messages=list(engine.mutable_messages),
-        app_state=app_state,
-        args=cmd_args,
-    )
-    output = await cmd.handler(ctx)
-    return {"output": output}
+    # 内置命令没命中 → 尝试 skill 触发
+    skill_msg = try_resolve_skill(cmd_name, cmd_args)
+    if skill_msg is not None:
+        return {
+            "is_skill": True,
+            "skill_prompt": skill_msg["content"],
+            "skill_name": cmd_name,
+        }
+
+    return {"output": f"Unknown command: /{cmd_name}. Type /help for available commands."}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/skills — 获取可用 skill 列表（供前端命令补全）
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/skills")
+async def list_skills() -> dict:
+    """返回所有用户可调用的 skill 列表（含来源与完整元数据）。
+
+    返回：{"skills": [{"name", "description", "when_to_use", "source",
+                        "source_label", "allowed_tools", "disable_model_invocation",
+                        "user_invocable", "skill_root"}, ...]}
+    """
+    from tools.skills.bundled import get_all_skills
+    from tools.skills.loader import classify_skill_source
+
+    skills = get_all_skills()
+    return {
+        "skills": [
+            {
+                "name": s.name,
+                "description": s.description,
+                "when_to_use": s.when_to_use or "",
+                "source": s.source,
+                "source_label": classify_skill_source(s),
+                "allowed_tools": s.allowed_tools,
+                "disable_model_invocation": s.disable_model_invocation,
+                "user_invocable": s.user_invocable,
+                "skill_root": s.skill_root,
+            }
+            for s in skills
+            if s.is_user_invocable()
+        ]
+    }
+
+
+# ---------------------------------------------------------------------------
+# POST /api/permission — 回传权限决策
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/skills/create")
+async def create_skill(body: dict) -> dict:
+    """新建技能。请求体：{"name", "description", "when_to_use", "allowed_tools"}"""
+    from tools.skills.loader import create_skill_file
+
+    name = body.get("name", "").strip()
+    description = body.get("description", "").strip()
+    when_to_use = body.get("when_to_use", "").strip()
+    allowed_tools = body.get("allowed_tools") or None
+
+    if not name or not description:
+        return {"ok": False, "error": "name 和 description 必填"}
+
+    try:
+        create_skill_file(name, description, when_to_use, allowed_tools)
+        return {"ok": True, "name": name}
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/api/skills/import")
+async def import_skill(body: dict) -> dict:
+    """导入技能。请求体：{"name", "content"}"""
+    from tools.skills.loader import import_skill_file
+
+    name = body.get("name", "").strip()
+    content = body.get("content", "")
+
+    if not name or not content:
+        return {"ok": False, "error": "name 和 content 必填"}
+
+    try:
+        import_skill_file(name, content)
+        return {"ok": True, "name": name}
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/api/skills/refresh")
+async def refresh_skills() -> dict:
+    """刷新技能缓存，重新扫描文件系统。"""
+    from tools.skills.loader import clear_cache
+    clear_cache()
+    return {"ok": True}
+
+
+@app.post("/api/skills/delete")
+async def delete_skill(body: dict) -> dict:
+    """删除用户级技能。请求体：{"name"}"""
+    from tools.skills.loader import delete_skill_file
+
+    name = body.get("name", "").strip()
+    if not name:
+        return {"ok": False, "error": "name 必填"}
+
+    try:
+        delete_skill_file(name)
+        return {"ok": True}
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +403,29 @@ async def resolve_permission(body: dict) -> dict:
     if ok:
         return {"ok": True}
     return {"ok": False, "error": "request not found"}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/permission/mode — 切换权限模式
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/permission/mode")
+async def set_permission_mode(body: dict) -> dict:
+    """切换权限模式。
+
+    请求体：{"mode": "default" | "full_access"}
+    返回：{"ok": true, "mode": ...}
+    """
+    from startup.bootstrap.state import set_permission_mode as _set_mode
+    from tools.utils.permissions.permissions import VALID_MODES
+
+    mode = body.get("mode", "").strip()
+    if mode not in VALID_MODES:
+        return {"ok": False, "error": f"Invalid permission mode: {mode}. Valid: {VALID_MODES}"}
+
+    _set_mode(mode)
+    return {"ok": True, "mode": mode}
 
 
 # ---------------------------------------------------------------------------
@@ -718,21 +858,37 @@ async def git_diff(path: str = "") -> dict:
 async def get_config() -> dict:
     """读取 LLM 配置接口。
 
-    返回 {"llm_base_url", "llm_api_key", "llm_model"}。
+    返回 {"llm_base_url", "llm_api_key", "llm_model", "llm_providers", "active_provider"}。
     配置系统未初始化等异常情况下返回空值和 error 字段。
     """
     try:
         config = get_global_config()
+
+        # 获取 LLM 供应商信息
+        llm_providers = []
+        active_provider = None
+        try:
+            from query.services.api.providers import get_registry
+            registry = get_registry()
+            llm_providers = registry.list_providers()
+            active_provider = registry.get_active_name()
+        except ImportError:
+            pass
+
         return {
             "llm_base_url": config.llm_base_url or "",
             "llm_api_key": config.llm_api_key or "",
             "llm_model": config.llm_model or "",
+            "llm_providers": llm_providers,
+            "active_provider": active_provider,
         }
     except Exception as e:
         return {
             "llm_base_url": "",
             "llm_api_key": "",
             "llm_model": "",
+            "llm_providers": [],
+            "active_provider": None,
             "error": str(e),
         }
 
@@ -770,6 +926,199 @@ async def set_config(body: dict) -> dict:
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/plugins — 获取已安装插件列表
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/plugins")
+async def list_plugins() -> dict:
+    """返回已安装插件列表。
+
+    返回：{"plugins": [{"name", "version", "kind", "enabled", "description",
+                        "source", "skills_count", "hooks_count",
+                        "commands_count", "mcp_servers_count"}]}
+    """
+    from startup.plugins.manager import PluginManager
+
+    plugins = PluginManager.get_all_plugins()
+    return {
+        "plugins": [
+            {
+                "name": p.manifest.name,
+                "version": p.manifest.version,
+                "kind": p.manifest.kind,
+                "enabled": p.enabled,
+                "description": p.manifest.description,
+                "source": p.manifest.source,
+                "skills_count": len(p.skills_registered),
+                "hooks_count": len(p.hooks_registered),
+                "commands_count": len(p.commands_registered),
+                "mcp_servers_count": len(p.mcp_servers_registered),
+            }
+            for p in plugins
+        ]
+    }
+
+
+# ---------------------------------------------------------------------------
+# POST /api/plugins/enable — 启用插件
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/plugins/enable")
+async def enable_plugin(body: dict) -> dict:
+    """启用插件。请求体：{"name": "..."}"""
+    from startup.plugins.manager import PluginManager
+
+    name = body.get("name", "")
+    ok = PluginManager.enable_plugin(name)
+    if not ok:
+        return {"ok": False, "error": f"Plugin not found: {name}"}
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/plugins/disable — 禁用插件
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/plugins/disable")
+async def disable_plugin(body: dict) -> dict:
+    """禁用插件。请求体：{"name": "..."}"""
+    from startup.plugins.manager import PluginManager
+
+    name = body.get("name", "")
+    ok = PluginManager.disable_plugin(name)
+    if not ok:
+        return {"ok": False, "error": f"Plugin not found: {name}"}
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/plugins/llm-provider/switch — 切换 LLM 供应商
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/plugins/llm-provider/switch")
+async def switch_llm_provider(body: dict) -> dict:
+    """切换 LLM 供应商。请求体：{"provider": "..."}"""
+    from query.services.api.providers import get_registry
+
+    provider_name = body.get("provider", "")
+    registry = get_registry()
+    ok = registry.set_active(provider_name)
+    if not ok:
+        return {"ok": False, "error": f"LLM provider not found: {provider_name}"}
+
+    # 更新 AppState model
+    provider = registry.get_active_provider()
+    if provider and app_state:
+        state = app_state.get_state()
+        state.model = provider.model
+
+    return {"ok": True, "active_provider": provider_name}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/plugins/llm-providers — 获取可用 LLM 供应商列表
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/plugins/llm-providers")
+async def list_llm_providers() -> dict:
+    """返回可用 LLM 供应商列表和当前激活的供应商。"""
+    from query.services.api.providers import get_registry
+
+    registry = get_registry()
+    return {
+        "providers": registry.list_providers(),
+        "active": registry.get_active_name(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET /api/memory/providers — 列出记忆后端 + 当前激活
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/memory/providers")
+async def list_memory_providers() -> dict:
+    """返回已注册的记忆后端列表和当前激活的后端名。"""
+    from query.services.memory.registry import get_registry
+
+    registry = get_registry()
+    return {
+        "providers": [{"name": name} for name in registry.list_providers()],
+        "active": registry.get_active_name(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# POST /api/memory/switch — 切换激活记忆后端（持久化）
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/memory/switch")
+async def switch_memory_provider(body: dict) -> dict:
+    """切换激活记忆后端。请求体：{"name": "..."}"""
+    from query.services.memory.registry import get_registry
+
+    name = body.get("name", "")
+    registry = get_registry()
+    ok = registry.set_active(name)
+    if not ok:
+        return {"ok": False, "error": f"Memory provider not found: {name}"}
+    return {"ok": True, "active": name}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/memory/clear — 清空指定会话记忆
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/memory/clear")
+async def clear_memory(body: dict) -> dict:
+    """清空指定会话的记忆。请求体：{"session_id": "..."}"""
+    from query.services.memory.registry import get_registry
+
+    session_id = body.get("session_id", "default")
+    registry = get_registry()
+    provider = registry.get_active()
+    if provider is None:
+        return {"ok": False, "error": "无激活的记忆后端"}
+    try:
+        await provider.clear(session_id)
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": f"清空记忆失败: {e}"}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/agents — 列出内置子智能体（只读）
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/agents")
+async def list_agents() -> dict:
+    """返回内置子智能体定义的只读字段。"""
+    from tools.subagent.built_in_agents import get_built_in_agents
+
+    agents = []
+    for a in get_built_in_agents():
+        agents.append({
+            "agent_type": a.agent_type,
+            "when_to_use": a.when_to_use,
+            "tools": a.tools,
+            "disallowed_tools": a.disallowed_tools,
+            "model": a.model,
+            "max_turns": a.max_turns,
+            "background": a.background,
+            "source": a.source,
+        })
+    return {"agents": agents}
 
 
 # ---------------------------------------------------------------------------

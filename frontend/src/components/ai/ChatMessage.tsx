@@ -3,11 +3,96 @@ import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 // @ts-ignore
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import type { ChatMessage as ChatMessageType } from '../../hooks/useChat'
 
 interface Props {
   message: ChatMessageType
+}
+
+// 推理过程（思维链）展示块：可折叠，暗色背景，和正式回复区分开
+function ReasoningBlock({ reasoning, isStreaming }: { reasoning: string; isStreaming?: boolean }) {
+  // 流式输出时默认展开，结束后默认折叠
+  const [expanded, setExpanded] = useState(isStreaming ?? false)
+
+  // 流式状态变化时同步展开状态：开始流式 → 自动展开，结束 → 自动折叠
+  useEffect(() => {
+    if (isStreaming) {
+      setExpanded(true)
+    } else {
+      setExpanded(false)
+    }
+  }, [isStreaming])
+
+  return (
+    <div
+      style={{
+        marginBottom: '8px',
+        borderRadius: 'var(--radius-md)',
+        backgroundColor: 'var(--bg-base)',
+        border: '1px solid var(--border-subtle)',
+        borderLeft: '2px solid var(--text-tertiary)',
+        overflow: 'hidden',
+      }}
+    >
+      {/* 头部：点击展开/折叠 */}
+      <div
+        onClick={() => setExpanded(!expanded)}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px',
+          padding: '6px 12px',
+          cursor: 'pointer',
+          fontSize: '12px',
+          fontFamily: 'var(--font-ui)',
+          color: 'var(--text-tertiary)',
+          userSelect: 'none',
+          transition: 'background var(--transition-fast)',
+        }}
+        onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)')}
+        onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+      >
+        {/* 流式时转圈，结束时静态图标 */}
+        {isStreaming ? (
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }}>
+            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+          </svg>
+        ) : (
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+            <path d="M9.663 17h4.673M12 3v1M12 20v1M5.6 5.6l.7.7M17.7 17.7l.7.7M3 12h1M20 12h1M5.6 18.4l.7-.7M17.7 6.3l.7-.7" />
+            <path d="M12 16a4 4 0 1 0-4-4" />
+          </svg>
+        )}
+        <span style={{ fontWeight: 500 }}>
+          {isStreaming ? '思考中…' : '思考过程'}
+        </span>
+        <span style={{ marginLeft: 'auto', fontSize: '10px' }}>
+          {expanded ? '▾' : '▸'}
+        </span>
+      </div>
+
+      {/* 展开后的推理内容 */}
+      {expanded && (
+        <div
+          style={{
+            borderTop: '1px solid var(--border-subtle)',
+            padding: '10px 12px',
+            fontSize: '12px',
+            fontFamily: 'var(--font-ui)',
+            color: 'var(--text-secondary)',
+            lineHeight: 1.6,
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            maxHeight: '400px',
+            overflow: 'auto',
+          }}
+        >
+          {reasoning}
+        </div>
+      )}
+    </div>
+  )
 }
 
 // 可展开的工具执行步骤卡片，对齐 ZCode 的执行过程展示
@@ -64,9 +149,33 @@ function ToolStepCard({ message }: { message: ChatMessageType }) {
         </span>
       </div>
 
-      {/* 展开后的详情：参数 + 结果 */}
+      {/* 展开后的详情：推理过程 + 参数 + 结果 */}
       {expanded && (
         <div style={{ borderTop: '1px solid var(--border-subtle)', padding: '10px 12px' }}>
+          {/* 推理过程（该轮的思维链） */}
+          {step.reasoning && (
+            <div style={{ marginBottom: '10px' }}>
+              <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '4px', letterSpacing: '1px', textTransform: 'uppercase' }}>
+                思考过程
+              </div>
+              <div style={{
+                fontSize: '11px',
+                fontFamily: 'var(--font-ui)',
+                color: 'var(--text-tertiary)',
+                lineHeight: 1.6,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                padding: '8px 10px',
+                backgroundColor: 'var(--bg-tertiary)',
+                borderRadius: 'var(--radius-sm)',
+                borderLeft: '2px solid var(--text-tertiary)',
+                maxHeight: '300px',
+                overflow: 'auto',
+              }}>
+                {step.reasoning}
+              </div>
+            </div>
+          )}
           {/* 参数 */}
           {step.args && (
             <div style={{ marginBottom: '8px' }}>
@@ -242,6 +351,11 @@ function ChatMessage({ message }: Props) {
         fontWeight: isUser ? 500 : 400,
       }}
     >
+      {/* 推理过程（思维链）—— 只有 assistant 消息且有推理内容时才显示 */}
+      {isAssistant && message.reasoning && (
+        <ReasoningBlock reasoning={message.reasoning} isStreaming={message.isReasoningStreaming} />
+      )}
+
       {/* 工具调用摘要（assistant 消息带工具调用时） */}
       {message.toolCalls?.map(tc => (
         <div

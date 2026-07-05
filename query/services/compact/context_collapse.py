@@ -121,14 +121,19 @@ async def context_collapse_messages(
     if not messages:
         return messages
 
-    # 分离 system 消息
+    # 分离 system 消息和 skill 正文消息（skill 正文不参与折叠）
     system_messages: list[dict] = []
+    skill_messages: list[dict] = []
     non_system_messages: list[dict] = []
     for msg in messages:
         if msg.get("role") == "system":
             system_messages.append(msg)
         else:
-            non_system_messages.append(msg)
+            from query.utils.messages import is_skill_message
+            if is_skill_message(msg):
+                skill_messages.append(msg)
+            else:
+                non_system_messages.append(msg)
 
     if not non_system_messages:
         return messages
@@ -170,7 +175,7 @@ async def context_collapse_messages(
 
     kept_messages = [msg for group in groups_to_keep for msg in group]
 
-    return system_messages + [boundary_marker, summary_message] + kept_messages
+    return system_messages + [boundary_marker, summary_message] + skill_messages + kept_messages
 
 
 async def _generate_collapse_summary(

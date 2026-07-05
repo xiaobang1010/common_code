@@ -5,10 +5,11 @@ import EditorArea, { type EditorAreaHandle } from './components/EditorArea'
 import AIPanel from './components/AIPanel'
 import StatusBar from './components/StatusBar'
 import Resizer from './components/Resizer'
+import SettingsModal from './components/settings/SettingsModal'
 import { useChat } from './hooks/useChat'
 
-// 活动栏可选的视图类型
-export type ViewType = 'files' | 'search' | 'git' | 'settings'
+// 活动栏可选的视图类型（设置已升级为独立 Modal，不再走侧边栏视图）
+export type ViewType = 'files' | 'search' | 'git'
 
 // 面板宽度范围约束
 const SIDEBAR_MIN = 180
@@ -20,6 +21,9 @@ function App() {
   const [activeView, setActiveView] = useState<ViewType>('files')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [editorCollapsed, setEditorCollapsed] = useState(false)
+
+  // 设置 Modal 开关
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   // 侧边栏和编辑器的像素宽度（折叠时不起作用，恢复时用得上）
   const [sidebarWidth, setSidebarWidth] = useState(240)
@@ -75,7 +79,11 @@ function App() {
     >
       {/* 主体行：活动栏 + 侧边栏 + AI面板 + 编辑器 */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-        <ActivityBar activeView={activeView} onViewChange={setActiveView} />
+        <ActivityBar
+          activeView={activeView}
+          onViewChange={setActiveView}
+          onOpenSettings={() => setSettingsOpen(true)}
+        />
 
         {/* 侧边栏：折叠时不占位，展开时固定宽度 + 可拖拽 */}
         {!sidebarCollapsed && (
@@ -110,6 +118,8 @@ function App() {
             tokenUsage={chat.tokenUsage}
             permissionRequest={chat.permissionRequest}
             resolvePermission={chat.resolvePermission}
+            permissionMode={chat.permissionMode}
+            onPermissionModeChange={chat.setPermissionMode}
           />
         </div>
 
@@ -147,6 +157,9 @@ function App() {
         isStreaming={chat.isStreaming}
         model={chat.model}
       />
+
+      {/* 设置 Modal */}
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   )
 }

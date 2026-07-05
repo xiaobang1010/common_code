@@ -14,11 +14,23 @@ from pydantic import BaseModel
 
 @dataclass
 class ToolResult:
-    """工具执行结果。"""
+    """工具执行结果。
+
+    Attributes:
+        content: 结果文本
+        is_error: 是否为错误
+        metadata: 元数据
+        new_messages: 需要注入对话的额外消息（如 Skill 正文、Agent 子代理中间结果）。
+            为 None 时不注入。非 None 时，这些消息会在 tool_result 之后追加到对话。
+        context_modifier: 上下文修改指令（如 allowed_tools 权限注入、model 覆盖）。
+            为 None 时不修改。
+    """
 
     content: str
     is_error: bool = False
     metadata: dict = field(default_factory=dict)
+    new_messages: list[dict] | None = None
+    context_modifier: dict | None = None
 
 
 # ---------------------------------------------------------------------------

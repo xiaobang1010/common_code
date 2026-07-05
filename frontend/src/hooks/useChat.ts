@@ -1,22 +1,30 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
+import { useSettingsStore } from '../stores/useSettingsStore'
+import { permissionsApi, type PermissionMode } from '../api/client'
 
 // 对话消息类型
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'tool' | 'system'
   content: string
+  // 推理过程（思维链），和正式回复分开存储
+  reasoning?: string
   toolCalls?: Array<{
     id: string
     name: string
     args: unknown
   }>
   isStreaming?: boolean
+  // 推理过程是否仍在流式输出中
+  isReasoningStreaming?: boolean
   // 工具执行步骤：工具名 + 参数 + 结果，用于可展开的执行过程展示
   toolStep?: {
     toolName: string
     args: string
     result?: string
     isRunning?: boolean
+    // 该轮的推理过程（思维链），嵌在工具步骤里展示
+    reasoning?: string
   }
 }
 
@@ -94,11 +102,19 @@ export function useChat() {
   const [model, setModel] = useState('')
   const [permissionRequest, setPermissionRequest] = useState<PermissionRequest | null>(null)
   const [loopResult, setLoopResult] = useState<LoopResult | null>(null)
+  // 当前权限模式：default（自动编辑）或 full_access（完全访问）
+  const [permissionMode, setPermissionModeState] = useState<PermissionMode>('default')
 
   // 当前正在流式输出的 assistant 消息 id
   const currentAssistantId = useRef<string | null>(null)
   // 累积流式文本的缓冲区
   const assistantContentRef = useRef<string>('')
+  // 累积第一轮推理过程（思维链）的缓冲区
+  const reasoningContentRef = useRef<string>('')
+  // 是否已经有工具调用开始过（用于区分第一轮和后续轮 reasoning）
+  const hasToolCallStartedRef = useRef<boolean>(false)
+  // 暂存后续轮的推理过程，等 tool_call_delta 到来时绑定到工具步骤
+  const pendingToolReasoningRef = useRef<string>('')
 
   // 从后端拉取汇总状态（模型、token、成本）
   const fetchState = useCallback(async () => {
@@ -114,6 +130,9 @@ export function useChat() {
       if (data.model) {
         setModel(data.model)
       }
+      if (data.permission_mode === 'default' || data.permission_mode === 'full_access') {
+        setPermissionModeState(data.permission_mode)
+      }
     } catch {
       // 后端未就绪时静默忽略
     }
@@ -123,6 +142,14 @@ export function useChat() {
   useEffect(() => {
     fetchState()
   }, [fetchState])
+
+  // 订阅设置 store 的 modelVersion：设置面板改了 LLM 配置/供应商后，自动刷新 model 显示
+  const modelVersion = useSettingsStore((s) => s.modelVersion)
+  useEffect(() => {
+    if (modelVersion > 0) {
+      fetchState()
+    }
+  }, [modelVersion, fetchState])
 
   // 处理单个 SSE 事件，根据事件类型更新对应状态
   const handleSSEEvent = useCallback((evt: SSEEvent) => {
@@ -136,10 +163,34 @@ export function useChat() {
             prev.map(m => (m.id === id ? { ...m, content: assistantContentRef.current } : m))
           )
         }
+      } else if (evt.event_type === 'reasoning' && evt.content) {
+        if (!hasToolCallStartedRef.current) {
+          // 第一轮推理：放在 assistant 消息上，实时展示
+          reasoningContentRef.current += evt.content
+          const id = currentAssistantId.current
+          if (id) {
+            setMessages(prev =>
+              prev.map(m => (m.id === id ? {
+                ...m,
+                reasoning: reasoningContentRef.current,
+                isReasoningStreaming: true,
+              } : m))
+            )
+          }
+        } else {
+          // 后续轮推理：暂存，等对应工具步骤创建时绑定
+          pendingToolReasoningRef.current += evt.content
+        }
       } else if (evt.event_type === 'tool_call_delta' && evt.tool_call_name) {
         // 工具调用开始：创建一个"正在执行工具"的步骤消息
         // 只在第一次收到工具名时创建，后续的 arguments 增量忽略（避免消息爆炸）
         const toolName = evt.tool_call_name
+        // 后续轮的推理绑定到这个工具步骤
+        const toolReasoning = pendingToolReasoningRef.current
+        pendingToolReasoningRef.current = ''
+        hasToolCallStartedRef.current = true
+        // 重置第一轮推理 buffer，为下一轮准备
+        reasoningContentRef.current = ''
         setMessages(prev => {
           // 已有同名工具步骤且在运行中，不重复创建
           const last = prev[prev.length - 1]
@@ -156,6 +207,7 @@ export function useChat() {
                 toolName,
                 args: evt.tool_call_arguments || '',
                 isRunning: true,
+                reasoning: toolReasoning || undefined,
               },
             },
           ]
@@ -173,7 +225,7 @@ export function useChat() {
         // 只有 loop_result(completed) 才是真正结束
         const id = currentAssistantId.current
         if (id) {
-          setMessages(prev => prev.map(m => (m.id === id ? { ...m, isStreaming: false } : m)))
+          setMessages(prev => prev.map(m => (m.id === id ? { ...m, isStreaming: false, isReasoningStreaming: false } : m)))
         }
       }
     } else if (evt.type === 'message' && evt.message) {
@@ -209,6 +261,7 @@ export function useChat() {
                     ...m,
                     content: msg.content || m.content,
                     isStreaming: false,
+                    isReasoningStreaming: false,
                     toolCalls: msg.tool_calls!.map(tc => ({
                       id: tc.id,
                       name: tc.function.name,
@@ -243,7 +296,7 @@ export function useChat() {
             const newContent = msg.content || lastAssistant.content
             return prev.map(m =>
               m.id === lastAssistant.id
-                ? { ...m, content: newContent, isStreaming: false }
+                ? { ...m, content: newContent, isStreaming: false, isReasoningStreaming: false }
                 : m
             )
           }
@@ -268,6 +321,9 @@ export function useChat() {
       // 循环真正结束，清空状态
       currentAssistantId.current = null
       assistantContentRef.current = ''
+      reasoningContentRef.current = ''
+      hasToolCallStartedRef.current = false
+      pendingToolReasoningRef.current = ''
       setLoopResult({ reason: evt.reason || '' })
     }
   }, [])
@@ -325,10 +381,40 @@ export function useChat() {
             body: JSON.stringify({ command: prompt }),
           })
           const data = await resp.json()
-          setMessages(prev => [
-            ...prev,
-            { id: genId(), role: 'system', content: data.output || '' },
-          ])
+
+          // skill 触发：把 skill 正文作为 prompt 走 /api/chat SSE 流
+          if (data.is_skill) {
+            // 显示 skill 激活提示
+            setMessages(prev => [
+              ...prev,
+              { id: genId(), role: 'system', content: `Launching skill: ${data.skill_name}` },
+            ])
+            // 预创建 assistant 占位消息
+            const assistantId = genId()
+            currentAssistantId.current = assistantId
+            assistantContentRef.current = ''
+            reasoningContentRef.current = ''
+            hasToolCallStartedRef.current = false
+            pendingToolReasoningRef.current = ''
+            setMessages(prev => [
+              ...prev,
+              { id: assistantId, role: 'assistant', content: '', isStreaming: true },
+            ])
+            // skill 正文作为 prompt 发到 /api/chat
+            const chatResp = await fetch('/api/chat', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ prompt: data.skill_prompt }),
+            })
+            if (!chatResp.ok) throw new Error(`HTTP ${chatResp.status}`)
+            await parseSSEStream(chatResp)
+          } else {
+            // 普通命令：展示输出
+            setMessages(prev => [
+              ...prev,
+              { id: genId(), role: 'system', content: data.output || '' },
+            ])
+          }
         } catch (e) {
           setMessages(prev => [
             ...prev,
@@ -340,6 +426,7 @@ export function useChat() {
           ])
         } finally {
           setIsStreaming(false)
+          currentAssistantId.current = null
         }
         await fetchState()
         return
@@ -351,6 +438,9 @@ export function useChat() {
       const assistantId = genId()
       currentAssistantId.current = assistantId
       assistantContentRef.current = ''
+      reasoningContentRef.current = ''
+      hasToolCallStartedRef.current = false
+      pendingToolReasoningRef.current = ''
       setMessages(prev => [
         ...prev,
         { id: assistantId, role: 'assistant', content: '', isStreaming: true },
@@ -431,7 +521,20 @@ export function useChat() {
     ))
     currentAssistantId.current = null
     assistantContentRef.current = ''
+    reasoningContentRef.current = ''
+    hasToolCallStartedRef.current = false
+    pendingToolReasoningRef.current = ''
     setIsStreaming(false)
+  }, [])
+
+  // 切换权限模式：调后端接口，成功后更新本地 state
+  const setPermissionMode = useCallback(async (mode: PermissionMode) => {
+    try {
+      await permissionsApi.setMode(mode)
+      setPermissionModeState(mode)
+    } catch {
+      // 切换失败时静默忽略，保持当前模式
+    }
   }, [])
 
   return {
@@ -445,5 +548,7 @@ export function useChat() {
     permissionRequest,
     resolvePermission,
     loopResult,
+    permissionMode,
+    setPermissionMode,
   }
 }

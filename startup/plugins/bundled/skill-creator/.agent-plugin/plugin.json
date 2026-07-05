@@ -1,0 +1,7 @@
+{
+  "name": "skill-creator",
+  "version": "0.1.0",
+  "description": "创建、编辑和迭代本地技能。用于从头编写 SKILL.md、改进现有技能、把重复工作流变成可复用技能。",
+  "author": { "name": "Z.ai" },
+  "kind": "standard"
+}

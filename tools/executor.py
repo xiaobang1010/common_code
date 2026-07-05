@@ -36,6 +36,8 @@ class ToolExecutionResult:
     content: str
     is_error: bool = False
     metadata: dict = field(default_factory=dict)
+    new_messages: list[dict] | None = None
+    context_modifier: dict | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +284,8 @@ async def execute_tool_call(
         content=result.content,
         is_error=result.is_error,
         metadata=result.metadata,
+        new_messages=result.new_messages,
+        context_modifier=result.context_modifier,
     )
 
 

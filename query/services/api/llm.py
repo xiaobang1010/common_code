@@ -29,13 +29,14 @@ class StreamEvent:
 
     Attributes:
         type: 事件类型
-            - "content": 文本内容增量
+            - "content": 文本内容增量（模型的正式回复）
+            - "reasoning": 推理过程增量（DeepSeek 等模型的思维链，和正式回复区分开）
             - "tool_call": 完整工具调用
             - "tool_call_delta": 工具调用增量
             - "usage": token 使用量
             - "error": 错误
             - "done": 流结束
-        content: 文本内容（type="content" 时）
+        content: 文本内容（type="content" 或 type="reasoning" 时）
         tool_call_id: 工具调用 ID
         tool_call_name: 工具名
         tool_call_arguments: 工具参数（JSON 字符串）
@@ -149,6 +150,7 @@ def parse_stream_chunk(chunk: Any) -> list[StreamEvent]:
 
     解析规则：
       - delta.content → StreamEvent(type="content", content=...)
+      - delta.reasoning_content → StreamEvent(type="reasoning", content=...)
       - delta.tool_calls → StreamEvent(type="tool_call_delta", ...)
       - finish_reason → StreamEvent(type="done", finish_reason=...)
       - usage → StreamEvent(type="usage", usage=...)
@@ -184,13 +186,13 @@ def parse_stream_chunk(chunk: Any) -> list[StreamEvent]:
                     content=content,
                 ))
 
-            # delta.reasoning_content → 思考过程（DeepSeek R1/V3/V4 的思维链）
-            # DeepSeek 模型把思考放在 reasoning_content，实际回复放在 content
-            # 都要输出给用户看
+            # delta.reasoning_content → 推理过程（DeepSeek R1/V3/V4 的思维链）
+            # 和正式回复(content)分开，用独立的 type="reasoning" 事件，
+            # 前端可以区分展示（折叠、暗色等）
             reasoning = getattr(delta, "reasoning_content", None)
             if reasoning is not None and reasoning:
                 events.append(StreamEvent(
-                    type="content",
+                    type="reasoning",
                     content=reasoning,
                 ))
 

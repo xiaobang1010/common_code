@@ -56,6 +56,46 @@ _STATIC_SECTIONS = """# Core Behavior
 - Only take risky actions carefully; when in doubt, ask before acting."""
 
 
+# Skill 使用指导段（当有可用 skill 时注入）
+_SKILL_GUIDANCE = """\
+# Skill Usage
+- Skills are available via the Skill tool. A listing of available skills is provided in the conversation.
+- Each skill has a name, description, and when_to_use field. Use these to determine if a skill matches the user's request.
+- When a skill matches the user's request, this is a BLOCKING REQUIREMENT: invoke the relevant Skill tool BEFORE generating any other response.
+- Skills can also be triggered by the user via /skill-name. When the user types a slash command that matches a skill, expand it.
+- Do not invoke a skill that is not in the listing."""
+
+
+# Subagent 使用指导段（当 Agent 工具启用时注入）
+_SUBAGENT_GUIDANCE = """\
+# Subagent Usage
+- Use the Agent tool to delegate tasks to subagents with isolated context.
+- Available agent types:
+  - general-purpose: Full tool access, for complex research and multi-step tasks
+  - Explore: Read-only, for fast codebase search and information location
+- When to use subagents:
+  - Complex research tasks that need many tool calls (saves main context)
+  - Independent tasks that can run in parallel
+  - Read-only exploration where you don't want to clutter main context
+- The subagent's result is NOT visible to the user. You must relay key findings.
+- For parallel independent tasks, issue multiple Agent tool calls in a single message.
+- Subagents do NOT inherit your conversation history — give them complete instructions."""
+
+
+# Team 协作指导段（当团队模式启用时注入）
+_TEAM_GUIDANCE = """\
+# Team Collaboration
+- You are the leader of a team. Use TeamCreate to create a team, then spawn teammates.
+- Spawn teammates with the Agent tool using team_name + name parameters.
+- Create tasks with TaskCreate and assign them to teammates with TaskUpdate (set owner).
+- Communicate with teammates using SendMessage. Messages are delivered as new conversation turns.
+- Broadcast with to="*" to reach all team members.
+- Teammates are flat — they cannot spawn their own teammates.
+- When a teammate is done, it enters idle state. Send a message to wake it for more work.
+- To shut down a teammate, send a message containing "[shutdown_request]".
+- Use TaskList to monitor overall progress across the team."""
+
+
 # ---------------------------------------------------------------------------
 # get_system_prompt_sections
 # ---------------------------------------------------------------------------
@@ -70,7 +110,8 @@ def get_system_prompt_sections(
     ① 归因头（不缓存）：标识 CLI 版本信息
     ② CLI 前缀（静态缓存）：CLI 工具说明
     ③ 静态 sections（静态缓存）：核心行为规则、工具使用规范、安全规则
-    ④ 动态 sections（不缓存）：当前项目信息、用户自定义指令
+    ④ Skill 使用指导（不缓存）：当有可用 skill 时注入
+    ⑤ 动态 sections（不缓存）：当前项目信息、用户自定义指令
     """
     sections: list[SystemPromptSection] = [
         # ① 归因头
@@ -93,7 +134,51 @@ def get_system_prompt_sections(
         ),
     ]
 
-    # ④ 动态 sections
+    # ④ Skill 使用指导（当有可用 skill 时）
+    try:
+        from tools.skills.bundled import get_model_invocable_skills
+        skills = get_model_invocable_skills()
+        if skills:
+            sections.append(
+                SystemPromptSection(
+                    content=_SKILL_GUIDANCE,
+                    cache_scope=None,
+                    name="skill_guidance",
+                )
+            )
+    except ImportError:
+        pass
+
+    # ⑤ Subagent 使用指导（当 Agent 工具启用时）
+    try:
+        from tools.subagent.built_in_agents import get_built_in_agents
+        agents = get_built_in_agents()
+        if agents:
+            sections.append(
+                SystemPromptSection(
+                    content=_SUBAGENT_GUIDANCE,
+                    cache_scope=None,
+                    name="subagent_guidance",
+                )
+            )
+    except ImportError:
+        pass
+
+    # ⑥ Team 协作指导（当团队模式启用时）
+    try:
+        from tools.team.manager import get_current_team
+        if get_current_team() is not None:
+            sections.append(
+                SystemPromptSection(
+                    content=_TEAM_GUIDANCE,
+                    cache_scope=None,
+                    name="team_guidance",
+                )
+            )
+    except ImportError:
+        pass
+
+    # ⑦ 动态 sections
     if project_info is not None:
         sections.append(
             SystemPromptSection(

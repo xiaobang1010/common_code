@@ -135,4 +135,19 @@ def get_mcp_server_configs() -> dict[str, MCPServerConfig]:
 
     # 合并：项目配置覆盖全局
     merged = {**global_configs, **project_configs}
+
+    # 合并插件提供的 MCP 服务器（standard kind 插件的 .mcp.json）
+    try:
+        from startup.plugins.standard_loader import get_all_plugin_mcp
+        plugin_mcp = get_all_plugin_mcp()
+        plugin_servers = plugin_mcp.get("mcpServers", {})
+        for name, config in plugin_servers.items():
+            if not isinstance(name, str):
+                continue
+            validated = validate_mcp_config(name, config)
+            if validated is not None:
+                merged[name] = validated
+    except ImportError:
+        pass
+
     return merged

@@ -66,3 +66,56 @@ def get_messages_after_compact_boundary(messages: list[dict]) -> list[dict]:
     if boundary_idx == -1:
         return messages
     return messages[boundary_idx:]
+
+
+# ---------------------------------------------------------------------------
+# skill 正文消息识别
+# ---------------------------------------------------------------------------
+
+# skill 正文消息的 content 前缀（通过 SkillTool 注入，system-reminder 格式）
+_SKILL_MESSAGE_PREFIX = "<system-reminder>"
+
+
+def is_skill_message(message: dict) -> bool:
+    """判断消息是否为 skill 正文（SkillTool 注入的 system-reminder user 消息）。
+
+    skill 正文消息是 role=user、content 以 <system-reminder> 开头的消息。
+    压缩时应跳过此类消息，避免丢失已激活的 skill 能力定义。
+
+    注意：user_context 也用 <system-reminder> 格式，但 user_context 是临时注入
+    （不写回引擎消息），所以引擎持久化消息中的 <system-reminder> user 消息
+    只有 skill 正文。
+    """
+    if not isinstance(message, dict):
+        return False
+    if message.get("role") != "user":
+        return False
+    content = message.get("content", "")
+    if not isinstance(content, str):
+        return False
+    return content.strip().startswith(_SKILL_MESSAGE_PREFIX)
+
+
+# ---------------------------------------------------------------------------
+# skill 正文消息识别
+# ---------------------------------------------------------------------------
+
+# skill 正文消息用 <system-reminder> 包裹
+_SYSTEM_REMINDER_PREFIX = "<system-reminder>"
+
+
+def is_skill_message(message: dict) -> bool:
+    """判断消息是否为 skill 正文（不参与压缩，需原样保留）。
+
+    skill 正文由 SkillTool 注入，格式为 role=user、content 以
+    <system-reminder> 开头。user_context 虽然也用此格式，但它是临时
+    注入不写回引擎，因此引擎持久化消息中的此类消息只有 skill 正文。
+    """
+    if not isinstance(message, dict):
+        return False
+    if message.get("role") != "user":
+        return False
+    content = message.get("content", "")
+    if not isinstance(content, str):
+        return False
+    return content.strip().startswith(_SYSTEM_REMINDER_PREFIX)

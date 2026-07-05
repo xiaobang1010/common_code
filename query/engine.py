@@ -62,17 +62,34 @@ class QueryEngineConfig:
 async def _default_permission_check(tool, input_args, context):
     """默认权限检查 — 调用 has_permissions_to_use_tool。
 
+    从 bootstrap state 读取 permission_mode 和权限规则，构建 context 传入。
     返回值：
         {"decision": "allow"} — 允许执行
         {"decision": "deny", "reason": ...} — 拒绝
         {"decision": "ask", "reason": ...} — 需要用户确认，由上层调弹窗回调处理
     """
     from tools.utils.permissions.permissions import has_permissions_to_use_tool
+    from startup.bootstrap.state import get_permission_mode
+
+    # 从合并后的设置读取权限规则
+    perm_context: dict = {
+        "permission_mode": get_permission_mode(),
+    }
+    try:
+        from startup.utils.config import get_initial_settings
+        settings = get_initial_settings()
+        perms = settings.permissions
+        perm_context["deny_rules"] = perms.deny
+        perm_context["ask_rules"] = perms.ask
+        perm_context["allow_rules"] = perms.allow
+    except Exception:
+        # 设置系统未初始化时用空规则（仅靠模式分流）
+        pass
 
     result = has_permissions_to_use_tool(
         tool_name=tool.name,
         tool_input=input_args.model_dump() if hasattr(input_args, "model_dump") else input_args,
-        context=None,
+        context=perm_context,
     )
     if result.decision.value == "deny":
         return {"decision": "deny", "reason": result.reason}

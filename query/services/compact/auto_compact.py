@@ -191,14 +191,19 @@ async def compact_conversation(
 
     context_window = get_effective_context_window(model)
 
-    # 分离 system 消息
+    # 分离 system 消息和 skill 正文消息（skill 正文不参与压缩）
     system_messages: list[dict] = []
+    skill_messages: list[dict] = []
     non_system_messages: list[dict] = []
     for msg in messages:
         if msg.get("role") == "system":
             system_messages.append(msg)
         else:
-            non_system_messages.append(msg)
+            from query.utils.messages import is_skill_message
+            if is_skill_message(msg):
+                skill_messages.append(msg)
+            else:
+                non_system_messages.append(msg)
 
     if not non_system_messages:
         raise RuntimeError("Not enough messages to compact.")
@@ -240,7 +245,17 @@ async def compact_conversation(
         "content": summary_content,
     }
 
-    return system_messages + [boundary_marker, summary_message] + messages_to_keep
+    # 若有启用的记忆插件，存储摘要
+    try:
+        from query.services.memory.registry import get_active_memory
+        memory = get_active_memory()
+        if memory is not None:
+            import asyncio
+            asyncio.ensure_future(memory.store("default", "compact_summary", summary))
+    except Exception:
+        pass  # 记忆存储失败不中断压缩
+
+    return system_messages + [boundary_marker, summary_message] + skill_messages + messages_to_keep
 
 
 async def _generate_compact_summary(
