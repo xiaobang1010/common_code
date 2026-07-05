@@ -120,11 +120,53 @@ class MemoryRegistry:
         return list(self._providers.keys())
 
     def set_active(self, name: str) -> bool:
-        """切换激活记忆后端。"""
+        """切换激活记忆后端，并持久化到 config.json。
+
+        Returns:
+            True 切换成功，False 后端不存在
+        """
         if name not in self._providers:
             return False
         self._active = name
+        # 持久化到 config.json，重启后可恢复
+        self._persist_active(name)
         return True
+
+    def _persist_active(self, name: str | None) -> None:
+        """把激活的记忆后端名写入 config.json 的 memory.active 字段。"""
+        try:
+            import json
+            from startup.utils.config import get_global_config_path, _config_lock
+            path = get_global_config_path()
+            with _config_lock:
+                data = {}
+                if path.exists():
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                data.setdefault("memory", {})["active"] = name
+                path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception as e:
+            logger.warning("持久化记忆后端激活状态失败: %s", e)
+
+    def restore_active_from_config(self, name: str) -> None:
+        """从配置文件恢复激活记忆后端（启动时调用）。
+
+        仅当 name 对应的后端已注册时才生效，不触发持久化写入。
+        若 name 不在已注册列表中，保持当前 active 不变。
+        """
+        if name in self._providers:
+            self._active = name
+            logger.info("从配置恢复记忆后端激活状态: %s", name)
+
+    def restore_active_after_load(self) -> None:
+        """所有记忆插件加载完成后，从 config.json 恢复激活状态。"""
+        try:
+            from startup.utils.config import get_global_config
+            config = get_global_config()
+            active_name = config.memory.get("active") if config.memory else None
+            if active_name:
+                self.restore_active_from_config(active_name)
+        except Exception as e:
+            logger.debug("恢复记忆后端激活状态时出错（可能配置未初始化）: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -188,3 +230,6 @@ def load_memory_plugins() -> None:
 
         except Exception as e:
             logger.exception("加载 memory 插件 %s 失败: %s", plugin.manifest.name, e)
+
+    # 所有记忆后端加载完成后，从 config.json 恢复激活状态
+    registry.restore_active_after_load()

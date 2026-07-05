@@ -2,14 +2,12 @@ import type { ViewType } from '../App'
 import FileTree from './sidebar/FileTree'
 import GitStatus from './sidebar/GitStatus'
 import SearchPanel from './sidebar/SearchPanel'
-import SettingsPanel from './sidebar/SettingsPanel'
 
 // 各视图对应的标题
 const viewTitles: Record<ViewType, string> = {
   files: '文件资源管理器',
   search: '搜索',
   git: '源代码管理',
-  settings: '设置',
 }
 
 interface SidebarProps {
@@ -65,8 +63,6 @@ function Sidebar({ activeView, collapsed, onToggleCollapse, onFileOpen }: Sideba
         return <SearchPanel onFileOpen={onFileOpen} />
       case 'git':
         return <GitStatus />
-      case 'settings':
-        return <SettingsPanel />
     }
   }
 

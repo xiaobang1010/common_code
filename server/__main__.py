@@ -37,6 +37,21 @@ async def main() -> None:
     # 1. 基础设施初始化
     init()
 
+    # 1.5 插件系统初始化 — 扫描插件、加载 LLM 供应商和记忆后端
+    # 这一步让设置面板能看到已安装的插件、可切换的供应商和记忆后端
+    from startup.plugins import init_plugins
+    init_plugins()
+    try:
+        from query.services.api.providers import load_llm_provider_plugins
+        load_llm_provider_plugins()
+    except Exception as e:
+        print(f"加载 LLM 供应商插件失败: {e}", file=sys.stderr)
+    try:
+        from query.services.memory.registry import load_memory_plugins
+        load_memory_plugins()
+    except Exception as e:
+        print(f"加载记忆插件失败: {e}", file=sys.stderr)
+
     # 2. 会话状态搭建
     app_state = await setup()
 

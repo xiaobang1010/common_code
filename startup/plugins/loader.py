@@ -1,10 +1,11 @@
 """插件加载器 — 扫描目录、解析 manifest、按 kind 分类、去重。
 
-扫描两个来源：
-- 用户级：~/.agent/plugins/<name>/
+扫描三个来源：
 - 项目级：.agent/plugins/<name>/（从 cwd 向上到 home 每一级）
+- 用户级：~/.agent/plugins/<name>/
+- 内置：startup/plugins/bundled/<name>/（随项目分发，最低优先级）
 
-同名插件项目级覆盖用户级（深路径优先）。
+同名插件高优先级覆盖低优先级（项目级 > 用户级 > 内置，深路径优先）。
 """
 
 from __future__ import annotations
@@ -103,18 +104,20 @@ def discover_plugins() -> tuple[LoadedPlugin, ...]:
     plugins: list[LoadedPlugin] = []
     seen_names: set[str] = set()
 
+    # 用户级插件目录，用于区分 user / project 来源
+    user_dir = Path(os.path.expanduser("~")).resolve() / AGENT_DIR_NAME / PLUGINS_DIR_NAME
+
     for plugin_dir in _get_plugin_dirs():
         if not plugin_dir.is_dir():
             continue
 
-        # 判断当前来源
+        # 判断当前来源：bundled / user（~/.agent/plugins）/ project（其他 .agent/plugins）
         if plugin_dir == _get_bundled_plugins_dir():
             current_source = "bundled"
-        elif ".agent" in plugin_dir.parts:
-            # 含 .agent 的路径是用户级或项目级
+        elif plugin_dir == user_dir:
             current_source = "user"
         else:
-            current_source = "user"
+            current_source = "project"
 
         # 遍历目录下的子目录（每个子目录是一个插件）
         for entry in sorted(plugin_dir.iterdir()):

@@ -1,7 +1,7 @@
 """插件系统 — 约定优先的插件容器，管理三类插件：standard/llm-provider/memory。
 
 公共接口：
-    PluginLoader: 扫描目录、解析 manifest、按 kind 分类
+    discover_plugins() 等 loader 模块函数: 扫描目录、解析 manifest、按 kind 分类
     PluginManager: 启用/禁用管理
     PluginContext: 插件注册门面
     PluginManifest: 插件清单数据结构

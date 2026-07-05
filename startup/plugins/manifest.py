@@ -224,11 +224,7 @@ def _build_manifest(data: dict[str, Any], plugin_path: str, source: str = "user"
             models=provider_data.get("models", []),
         )
 
-    # 判断来源：优先用传入的 source，否则按路径推断
-    if source == "user":
-        # 未显式传入，按路径推断
-        source = "project" if ".agent" in Path(plugin_path).parts else "user"
-
+    # 来源标记由 loader 传入（user / project / bundled），直接信任，不做二次推断
     return PluginManifest(
         name=data["name"],
         version=data["version"],

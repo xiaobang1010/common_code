@@ -77,8 +77,8 @@ def load_standard_plugin(plugin: LoadedPlugin) -> dict[str, Any]:
         "standard 插件 %s 加载完成: %d skills, %d hooks, %d mcp, %d commands",
         plugin.manifest.name,
         len(result["skills"]),
-        len(result["hooks"]) if result["hooks_config"] else 0,
-        len(result["mcp_servers"]) if result["mcp_config"] else 0,
+        len(result["hooks_config"]) if result["hooks_config"] else 0,
+        len(result["mcp_config"].get("mcpServers", {})) if result["mcp_config"] else 0,
         len(result["commands"]),
     )
 

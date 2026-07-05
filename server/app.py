@@ -835,7 +835,9 @@ async def set_config(body: dict) -> dict:
 async def list_plugins() -> dict:
     """返回已安装插件列表。
 
-    返回：{"plugins": [{"name", "version", "kind", "enabled", "description"}]}
+    返回：{"plugins": [{"name", "version", "kind", "enabled", "description",
+                        "source", "skills_count", "hooks_count",
+                        "commands_count", "mcp_servers_count"}]}
     """
     from startup.plugins.manager import PluginManager
 
@@ -848,6 +850,11 @@ async def list_plugins() -> dict:
                 "kind": p.manifest.kind,
                 "enabled": p.enabled,
                 "description": p.manifest.description,
+                "source": p.manifest.source,
+                "skills_count": len(p.skills_registered),
+                "hooks_count": len(p.hooks_registered),
+                "commands_count": len(p.commands_registered),
+                "mcp_servers_count": len(p.mcp_servers_registered),
             }
             for p in plugins
         ]
@@ -928,6 +935,88 @@ async def list_llm_providers() -> dict:
         "providers": registry.list_providers(),
         "active": registry.get_active_name(),
     }
+
+
+# ---------------------------------------------------------------------------
+# GET /api/memory/providers — 列出记忆后端 + 当前激活
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/memory/providers")
+async def list_memory_providers() -> dict:
+    """返回已注册的记忆后端列表和当前激活的后端名。"""
+    from query.services.memory.registry import get_registry
+
+    registry = get_registry()
+    return {
+        "providers": [{"name": name} for name in registry.list_providers()],
+        "active": registry.get_active_name(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# POST /api/memory/switch — 切换激活记忆后端（持久化）
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/memory/switch")
+async def switch_memory_provider(body: dict) -> dict:
+    """切换激活记忆后端。请求体：{"name": "..."}"""
+    from query.services.memory.registry import get_registry
+
+    name = body.get("name", "")
+    registry = get_registry()
+    ok = registry.set_active(name)
+    if not ok:
+        return {"ok": False, "error": f"Memory provider not found: {name}"}
+    return {"ok": True, "active": name}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/memory/clear — 清空指定会话记忆
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/memory/clear")
+async def clear_memory(body: dict) -> dict:
+    """清空指定会话的记忆。请求体：{"session_id": "..."}"""
+    from query.services.memory.registry import get_registry
+
+    session_id = body.get("session_id", "default")
+    registry = get_registry()
+    provider = registry.get_active()
+    if provider is None:
+        return {"ok": False, "error": "无激活的记忆后端"}
+    try:
+        await provider.clear(session_id)
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": f"清空记忆失败: {e}"}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/agents — 列出内置子智能体（只读）
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/agents")
+async def list_agents() -> dict:
+    """返回内置子智能体定义的只读字段。"""
+    from tools.subagent.built_in_agents import get_built_in_agents
+
+    agents = []
+    for a in get_built_in_agents():
+        agents.append({
+            "agent_type": a.agent_type,
+            "when_to_use": a.when_to_use,
+            "tools": a.tools,
+            "disallowed_tools": a.disallowed_tools,
+            "model": a.model,
+            "max_turns": a.max_turns,
+            "background": a.background,
+            "source": a.source,
+        })
+    return {"agents": agents}
 
 
 # ---------------------------------------------------------------------------

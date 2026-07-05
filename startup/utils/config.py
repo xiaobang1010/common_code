@@ -112,6 +112,9 @@ class GlobalConfig:
     llm_base_url: str | None = None
     llm_api_key: str | None = None
     llm_model: str | None = None
+    # 记忆插件配置：记录激活的记忆后端名，重启后恢复
+    # 结构 {"active": "memory-backend-name" | None}
+    memory: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """转换为 JSON 友好的字典，使用 camelCase 键名。"""
@@ -166,6 +169,7 @@ class GlobalConfig:
             llm_base_url=data.get("llm_base_url"),
             llm_api_key=data.get("llm_api_key"),
             llm_model=data.get("llm_model"),
+            memory=data.get("memory", {}),
         )
 
 

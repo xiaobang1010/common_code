@@ -214,9 +214,11 @@ def get_llm_client() -> openai.OpenAI:
     单例模式，线程安全。首次调用时创建实例并缓存。
     后续调用直接返回缓存实例。
 
-    配置来源：
-      - base_url: LLM_BASE_URL > 配置文件 > 默认值
-      - api_key:  LLM_API_KEY  > 配置文件 > 默认值
+    配置来源（优先级从高到低）：
+      - LLMProviderRegistry 激活供应商（llm-provider 插件提供）
+      - 环境变量（LLM_BASE_URL / LLM_API_KEY）
+      - 配置文件（~/.agent/config.json）
+      - 默认值
     """
     global _client_instance
 

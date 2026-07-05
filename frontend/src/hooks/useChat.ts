@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
+import { useSettingsStore } from '../stores/useSettingsStore'
 
 // 对话消息类型
 export interface ChatMessage {
@@ -135,6 +136,14 @@ export function useChat() {
   useEffect(() => {
     fetchState()
   }, [fetchState])
+
+  // 订阅设置 store 的 modelVersion：设置面板改了 LLM 配置/供应商后，自动刷新 model 显示
+  const modelVersion = useSettingsStore((s) => s.modelVersion)
+  useEffect(() => {
+    if (modelVersion > 0) {
+      fetchState()
+    }
+  }, [modelVersion, fetchState])
 
   // 处理单个 SSE 事件，根据事件类型更新对应状态
   const handleSSEEvent = useCallback((evt: SSEEvent) => {
