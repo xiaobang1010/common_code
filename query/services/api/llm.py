@@ -1,7 +1,10 @@
 """LLM 流式调用核心模块。
 
-使用 OpenAI 兼容 SDK 进行流式聊天补全调用，
-解析 SSE 事件流并生成结构化的 StreamEvent。
+根据当前激活供应商的 API 格式自动分发到不同路径：
+- OpenAI 格式：使用 OpenAI 兼容 SDK 进行流式聊天补全调用
+- Anthropic 格式：分发到 anthropic_llm.py 走 httpx 直接请求
+
+两条路径都解析 SSE 事件流并生成统一的 StreamEvent。
 """
 
 from __future__ import annotations
@@ -12,7 +15,7 @@ from typing import Any, AsyncGenerator
 
 import openai
 
-from query.services.api.client import get_llm_client
+from query.services.api.client import get_active_api_format, get_llm_client
 from query.services.api.errors import classify_error
 from query.services.api.message_format import to_openai_messages, to_openai_tools
 from query.services.api.with_retry import RetryConfig, with_retry_stream
@@ -66,12 +69,11 @@ async def query_model_with_streaming(
     model: str | None = None,
     **kwargs: Any,
 ) -> AsyncGenerator[StreamEvent, None]:
-    """使用 OpenAI SDK 流式调用 LLM。
+    """流式调用 LLM。
 
-    通过 client.chat.completions.create(stream=True) 进行流式调用，
-    解析 SSE 事件流并 yield StreamEvent。
-
-    支持同步和异步两种 OpenAI 客户端。
+    根据当前激活供应商的 API 格式自动分发：
+    - "anthropic" -> 走 httpx 直接请求 Anthropic Messages API
+    - "openai"（默认）-> 走 OpenAI SDK
 
     Args:
         messages: 消息列表（ChatMessage 或 OpenAI 格式）
@@ -82,6 +84,17 @@ async def query_model_with_streaming(
     Yields:
         StreamEvent: 流式事件
     """
+    # 检查 API 格式，分发到不同路径
+    api_format = get_active_api_format()
+    if api_format == "anthropic":
+        from query.services.api.anthropic_llm import query_model_with_streaming_anthropic
+
+        async for event in query_model_with_streaming_anthropic(
+            messages, tools, model, **kwargs
+        ):
+            yield event
+        return
+
     from query.services.api.client import get_default_model
 
     if model is None:

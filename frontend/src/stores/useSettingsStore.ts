@@ -11,6 +11,7 @@ import {
   skillsApi,
   type LLMConfig,
   type PluginInfo,
+  type CustomLLMProviderInfo,
   type LLMProviderInfo,
   type MemoryProviderInfo,
   type AgentInfo,
@@ -20,8 +21,11 @@ import {
 interface SettingsState {
   // LLM 配置
   llmConfig: LLMConfig | null
-  providers: LLMProviderInfo[]
+  customProviders: CustomLLMProviderInfo[]
   activeProvider: string | null
+  activeModel: string | null
+  // 旧版插件供应商（保留兼容）
+  providers: LLMProviderInfo[]
 
   // 插件
   plugins: PluginInfo[]
@@ -46,6 +50,7 @@ interface SettingsState {
 
   // 刷新各分区
   refreshLlmConfig: () => Promise<void>
+  refreshCustomProviders: () => Promise<void>
   refreshProviders: () => Promise<void>
   refreshPlugins: () => Promise<void>
   refreshMemoryProviders: () => Promise<void>
@@ -62,8 +67,10 @@ interface SettingsState {
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   llmConfig: null,
-  providers: [],
+  customProviders: [],
   activeProvider: null,
+  activeModel: null,
+  providers: [],
   plugins: [],
   memoryProviders: [],
   activeMemory: null,
@@ -79,11 +86,25 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       const config = await llmApi.getConfig()
       set({
         llmConfig: config,
-        providers: config.llm_providers || [],
+        customProviders: config.llm_providers || [],
         activeProvider: config.active_provider || null,
+        activeModel: config.active_model || null,
       })
     } catch (e) {
       set({ error: `加载 LLM 配置失败：${e instanceof Error ? e.message : String(e)}` })
+    }
+  },
+
+  refreshCustomProviders: async () => {
+    try {
+      const data = await llmApi.listCustomProviders()
+      set({
+        customProviders: data.providers,
+        activeProvider: data.active_provider,
+        activeModel: data.active_model,
+      })
+    } catch (e) {
+      set({ error: `加载供应商失败：${e instanceof Error ? e.message : String(e)}` })
     }
   },
 

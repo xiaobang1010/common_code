@@ -1,12 +1,13 @@
 """OpenAI 兼容 LLM 客户端模块。
 
 提供线程安全的单例客户端实例、自定义 HTTP 客户端构建、
-以及配置优先级解析（环境变量 > 配置文件 > 默认值）。
+以及配置优先级解析。
 
-环境变量优先级：
-  - base_url: LLM_BASE_URL > 配置文件 > 默认值
-  - api_key:  LLM_API_KEY  > 配置文件 > 默认值
-  - model:    LLM_MODEL    > 配置文件 > 默认值
+配置优先级（从高到低）：
+  - base_url: 自定义供应商 > 插件供应商 > LLM_BASE_URL 环境变量 > 配置文件 > 默认值
+  - api_key:  自定义供应商 > 插件供应商 > LLM_API_KEY 环境变量 > 配置文件 > 默认值
+  - model:    自定义供应商 > 插件供应商 > LLM_MODEL 环境变量 > 配置文件 > 默认值
+  - api_format: 自定义供应商 > 插件供应商 > 默认值 "openai"
 """
 
 from __future__ import annotations
@@ -120,13 +121,16 @@ def build_http_client() -> httpx.Client:
 
 
 def _resolve_base_url() -> str:
-    """解析 base_url，优先级：LLM 供应商插件 > LLM_BASE_URL > 配置文件 > 默认值。"""
-    # 优先从 LLM 供应商注册表取
+    """解析 base_url。
+
+    优先级：自定义供应商 > 插件供应商 > LLM_BASE_URL 环境变量 > 配置文件 > 默认值。
+    """
+    # 优先从 LLM 供应商注册表取（注册表内部自定义优先于插件）
     try:
         from query.services.api.providers import get_registry
         provider = get_registry().get_active_provider()
-        if provider is not None:
-            return provider.base_url
+        if provider is not None and provider.get("base_url"):
+            return provider["base_url"]
     except ImportError:
         pass
 
@@ -138,13 +142,16 @@ def _resolve_base_url() -> str:
 
 
 def _resolve_api_key() -> str | None:
-    """解析 api_key，优先级：LLM 供应商插件 > LLM_API_KEY > 配置文件 > 默认值。"""
+    """解析 api_key。
+
+    优先级：自定义供应商 > 插件供应商 > LLM_API_KEY 环境变量 > 配置文件 > 默认值。
+    """
     # 优先从 LLM 供应商注册表取
     try:
         from query.services.api.providers import get_registry
         provider = get_registry().get_active_provider()
-        if provider is not None and provider.api_key:
-            return provider.api_key
+        if provider is not None and provider.get("api_key"):
+            return provider["api_key"]
     except ImportError:
         pass
 
@@ -156,13 +163,16 @@ def _resolve_api_key() -> str | None:
 
 
 def _resolve_model() -> str:
-    """解析默认模型名，优先级：LLM 供应商插件 > LLM_MODEL > 配置文件 > 默认值。"""
+    """解析默认模型名。
+
+    优先级：自定义供应商 > 插件供应商 > LLM_MODEL 环境变量 > 配置文件 > 默认值。
+    """
     # 优先从 LLM 供应商注册表取
     try:
         from query.services.api.providers import get_registry
         provider = get_registry().get_active_provider()
-        if provider is not None and provider.model:
-            return provider.model
+        if provider is not None and provider.get("model"):
+            return provider["model"]
     except ImportError:
         pass
 
@@ -172,6 +182,21 @@ def _resolve_model() -> str:
         or DEFAULT_LLM_MODEL
         or _FALLBACK_MODEL
     )
+
+
+def _resolve_api_format() -> str:
+    """解析 API 格式。
+
+    优先级：自定义供应商 > 插件供应商 > 默认值 "openai"。
+    """
+    try:
+        from query.services.api.providers import get_registry
+        provider = get_registry().get_active_provider()
+        if provider is not None:
+            return provider.get("api_format", "openai")
+    except ImportError:
+        pass
+    return "openai"
 
 
 def _get_config_field(field: str) -> str | None:
@@ -204,6 +229,28 @@ def get_default_model() -> str:
 
 
 # ---------------------------------------------------------------------------
+# get_active_api_format - 获取当前激活供应商的 API 格式
+# ---------------------------------------------------------------------------
+
+
+def get_active_api_format() -> str:
+    """获取当前激活供应商的 API 格式。
+
+    返回 "openai" 或 "anthropic"，默认 "openai"。
+    优先从自定义供应商取，然后是插件供应商。
+    """
+    # 优先从自定义供应商取
+    try:
+        from query.services.api.providers import get_registry
+        provider = get_registry().get_active_provider()
+        if provider is not None:
+            return provider.get("api_format", "openai")
+    except ImportError:
+        pass
+    return "openai"
+
+
+# ---------------------------------------------------------------------------
 # get_llm_client — 获取 LLM 客户端实例（单例，缓存）
 # ---------------------------------------------------------------------------
 
@@ -215,7 +262,7 @@ def get_llm_client() -> openai.OpenAI:
     后续调用直接返回缓存实例。
 
     配置来源（优先级从高到低）：
-      - LLMProviderRegistry 激活供应商（llm-provider 插件提供）
+      - LLMProviderRegistry 激活供应商（自定义供应商优先，然后是 llm-provider 插件）
       - 环境变量（LLM_BASE_URL / LLM_API_KEY）
       - 配置文件（~/.agent/config.json）
       - 默认值

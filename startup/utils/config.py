@@ -88,6 +88,55 @@ class ProjectConfig:
 
 
 @dataclass
+class CustomLLMModel:
+    """自定义 LLM 模型配置。"""
+    model_id: str
+    context_window: int = 200000
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"model_id": self.model_id, "context_window": self.context_window}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CustomLLMModel:
+        return cls(
+            model_id=data.get("model_id", ""),
+            context_window=data.get("context_window", 200000),
+        )
+
+
+@dataclass
+class CustomLLMProvider:
+    """自定义 LLM 供应商配置。"""
+    id: str
+    name: str
+    base_url: str
+    api_key: str = ""
+    api_format: str = "openai"  # "openai" 或 "anthropic"
+    models: list[CustomLLMModel] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "base_url": self.base_url,
+            "api_key": self.api_key,
+            "api_format": self.api_format,
+            "models": [m.to_dict() for m in self.models],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CustomLLMProvider:
+        return cls(
+            id=data.get("id", ""),
+            name=data.get("name", ""),
+            base_url=data.get("base_url", ""),
+            api_key=data.get("api_key", ""),
+            api_format=data.get("api_format", "openai"),
+            models=[CustomLLMModel.from_dict(m) for m in data.get("models", [])],
+        )
+
+
+@dataclass
 class GlobalConfig:
     """全局配置，存储在 ~/.agent.json。"""
 
@@ -112,6 +161,12 @@ class GlobalConfig:
     llm_base_url: str | None = None
     llm_api_key: str | None = None
     llm_model: str | None = None
+    # 自定义 LLM 供应商列表（用户在设置面板配置的供应商）
+    llm_providers: list[dict[str, Any]] = field(default_factory=list)
+    # 当前激活的供应商 ID（自定义供应商的 id 或插件供应商的 name）
+    active_provider: str | None = None
+    # 当前激活的模型 ID
+    active_model: str | None = None
     # 记忆插件配置：记录激活的记忆后端名，重启后恢复
     # 结构 {"active": "memory-backend-name" | None}
     memory: dict[str, Any] = field(default_factory=dict)
@@ -137,6 +192,9 @@ class GlobalConfig:
             "llm_base_url": "llm_base_url",
             "llm_api_key": "llm_api_key",
             "llm_model": "llm_model",
+            "llm_providers": "llm_providers",
+            "active_provider": "active_provider",
+            "active_model": "active_model",
         }
         for k, v in d.items():
             result[key_map.get(k, k)] = v
@@ -169,6 +227,9 @@ class GlobalConfig:
             llm_base_url=data.get("llm_base_url"),
             llm_api_key=data.get("llm_api_key"),
             llm_model=data.get("llm_model"),
+            llm_providers=data.get("llm_providers", []),
+            active_provider=data.get("active_provider"),
+            active_model=data.get("active_model"),
             memory=data.get("memory", {}),
         )
 
