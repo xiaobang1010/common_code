@@ -10,8 +10,9 @@ import hashlib
 import logging
 from datetime import datetime, timezone
 
-from memory.models import KGTriple, generate_triple_id
-from memory.storage import PalaceStorage
+from memory.palace.models import KGTriple
+from memory.palace.ids import generate_triple_id
+from memory.sqlite_store import PalaceStorage
 
 logger = logging.getLogger(__name__)
 

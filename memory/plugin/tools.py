@@ -73,6 +73,18 @@ class MemorySearchInput(BaseModel):
     source_file: str | None = Field(None, description="限定来源文件路径")
     limit: int = Field(5, description="最多返回条数", ge=1, le=20)
 
+class MemoryRecallInput(BaseModel):
+    query: str = Field(..., description="搜索查询文本")
+    wing: str | None = Field(None, description="限定 Wing（项目/领域）")
+    room: str | None = Field(None, description="限定 Room（主题）")
+    n_results: int = Field(5, description="最多返回条数", ge=1, le=20)
+
+class MemoryRethinkInput(BaseModel):
+    drawer_id: str = Field(..., description="要修改的抽屉 ID")
+    content: str | None = Field(None, description="新内容（不填则不修改内容）")
+    wing: str | None = Field(None, description="新 Wing 名称（不填则不改）")
+    room: str | None = Field(None, description="新 Room 名称（不填则不改）")
+
 class MemoryAddInput(BaseModel):
     wing: str = Field(..., description="Wing 名称（项目/人/领域）")
     room: str = Field(..., description="Room 名称（主题/子分类）")
@@ -133,10 +145,6 @@ class MemoryKGSupersedeInput(BaseModel):
     at: str | None = Field(None, description="边界时间（ISO 8601），默认当前时间")
 
 
-class MemoryRepairInput(BaseModel):
-    action: str = Field("repair_fts", description="操作类型：repair_fts / cleanup_closets / cleanup_triples / all")
-
-
 # ---------------------------------------------------------------------------
 # Tool execute functions
 # ---------------------------------------------------------------------------
@@ -157,6 +165,53 @@ async def _execute_memory_search(input_model: MemorySearchInput, context: ToolUs
         return ToolResult(content=_format_results(results))
     except Exception as e:
         return ToolResult(content=f"搜索失败: {e}", is_error=True)
+
+
+async def _execute_memory_recall(input_model: MemoryRecallInput, context: ToolUseContext) -> ToolResult:
+    """语义搜索记忆 - 向量搜索 + BM25 重排。"""
+    memory = _get_memory_provider()
+    if memory is None:
+        return ToolResult(content="错误：无激活的记忆后端", is_error=True)
+    try:
+        results = memory.recall(
+            query=input_model.query,
+            wing=input_model.wing,
+            room=input_model.room,
+            n_results=input_model.n_results,
+        )
+        return ToolResult(content=_format_results(results))
+    except Exception as e:
+        return ToolResult(content=f"搜索失败: {e}", is_error=True)
+
+
+async def _execute_memory_rethink(input_model: MemoryRethinkInput, context: ToolUseContext) -> ToolResult:
+    """修改记忆 - 支持改内容或改元数据。"""
+    memory = _get_memory_provider()
+    if memory is None:
+        return ToolResult(content="错误：无激活的记忆后端", is_error=True)
+    if not hasattr(memory, 'rethink'):
+        return ToolResult(content="错误：当前记忆后端不支持修改操作", is_error=True)
+    try:
+        new_id = memory.rethink(
+            drawer_id=input_model.drawer_id,
+            content=input_model.content,
+            wing=input_model.wing,
+            room=input_model.room,
+        )
+        changes = []
+        if input_model.content is not None:
+            changes.append("内容已更新")
+        if input_model.wing is not None:
+            changes.append(f"Wing -> {input_model.wing}")
+        if input_model.room is not None:
+            changes.append(f"Room -> {input_model.room}")
+        if not changes:
+            return ToolResult(content=f"无变化，抽屉 [{input_model.drawer_id}] 保持原样")
+        return ToolResult(
+            content=f"已修改抽屉 [{input_model.drawer_id}] -> [{new_id}]，{'，'.join(changes)}"
+        )
+    except Exception as e:
+        return ToolResult(content=f"修改失败: {e}", is_error=True)
 
 
 async def _execute_memory_add(input_model: MemoryAddInput, context: ToolUseContext) -> ToolResult:
@@ -410,40 +465,6 @@ async def _execute_memory_kg_supersede(input_model: MemoryKGSupersedeInput, cont
         return ToolResult(content=f"事实替换失败: {e}", is_error=True)
 
 
-async def _execute_memory_repair(input_model: MemoryRepairInput, context: ToolUseContext) -> ToolResult:
-    """修复索引或清理孤立记录。"""
-    memory = _get_memory_provider()
-    if memory is None:
-        return ToolResult(content="错误：无激活的记忆后端", is_error=True)
-    if not hasattr(memory, 'repair_index'):
-        return ToolResult(content="错误：当前记忆后端不支持索引修复", is_error=True)
-    try:
-        action = input_model.action
-        if action == "repair_fts":
-            result = memory.repair_index()
-            return ToolResult(content=json.dumps(result, ensure_ascii=False, indent=2))
-        elif action == "cleanup_closets":
-            result = memory.cleanup_orphans()
-            closets = result.get("closets", {})
-            return ToolResult(content=json.dumps(closets, ensure_ascii=False, indent=2))
-        elif action == "cleanup_triples":
-            result = memory.cleanup_orphans()
-            triples = result.get("triples", {})
-            return ToolResult(content=json.dumps(triples, ensure_ascii=False, indent=2))
-        elif action == "all":
-            repair = memory.repair_index()
-            cleanup = memory.cleanup_orphans()
-            result = {"repair": repair, "cleanup": cleanup}
-            return ToolResult(content=json.dumps(result, ensure_ascii=False, indent=2))
-        else:
-            return ToolResult(
-                content=f"未知操作: {action}。支持: repair_fts / cleanup_closets / cleanup_triples / all",
-                is_error=True,
-            )
-    except Exception as e:
-        return ToolResult(content=f"修复失败: {e}", is_error=True)
-
-
 # ---------------------------------------------------------------------------
 # Build all tools
 # ---------------------------------------------------------------------------
@@ -451,7 +472,7 @@ async def _execute_memory_repair(input_model: MemoryRepairInput, context: ToolUs
 def get_memory_tools() -> list[Tool]:
     """获取所有记忆工具。
 
-    当 memory-palace 插件激活时调用此函数，返回 16 个记忆工具。
+    当 memory-palace 插件激活时调用此函数，返回 17 个记忆工具。
     插件未激活时返回空列表。
     """
     memory = _get_memory_provider()
@@ -465,7 +486,7 @@ def get_memory_tools() -> list[Tool]:
     tools = [
         build_tool(
             name="memory_search",
-            description="搜索记忆宫殿中的内容。支持语义搜索和关键词过滤。",
+            description="按元数据过滤查找记忆（Wing/Room/来源文件）。如需语义搜索请用 memory_recall。",
             input_schema=MemorySearchInput,
             execute=_execute_memory_search,
             prompt="搜索记忆：按含义或关键词查找存储的记忆片段",
@@ -474,8 +495,28 @@ def get_memory_tools() -> list[Tool]:
             can_be_replaced_by_mcp=False,
         ),
         build_tool(
+            name="memory_recall",
+            description="语义搜索记忆 - 向量搜索 + BM25 关键词重排，按相关性排序。",
+            input_schema=MemoryRecallInput,
+            execute=_execute_memory_recall,
+            prompt="语义搜索：按含义查找记忆，支持向量相似度 + 关键词混合搜索",
+            is_read_only=True,
+            requires_permission=False,
+            can_be_replaced_by_mcp=False,
+        ),
+        build_tool(
+            name="memory_rethink",
+            description="修改记忆 - 支持更新内容（重新嵌入）或仅改元数据（Wing/Room）。",
+            input_schema=MemoryRethinkInput,
+            execute=_execute_memory_rethink,
+            prompt="修改记忆：更新抽屉内容或分类",
+            is_read_only=False,
+            requires_permission=True,
+            can_be_replaced_by_mcp=False,
+        ),
+        build_tool(
             name="memory_add",
-            description="写入一条记忆到记忆宫殿的抽屉中。",
+            description="写入一条记忆到记忆宫殿的抽屉中（remember 类操作）。",
             input_schema=MemoryAddInput,
             execute=_execute_memory_add,
             prompt="写入记忆：将内容存入指定 Wing/Room",
@@ -535,7 +576,7 @@ def get_memory_tools() -> list[Tool]:
         ),
         build_tool(
             name="memory_delete",
-            description="按 ID 删除单个抽屉。",
+            description="按 ID 删除单个抽屉（forget 类操作，自动处理分块）。",
             input_schema=MemoryDeleteInput,
             execute=_execute_memory_delete,
             prompt="删除抽屉：按 ID 删除单条记忆",
@@ -545,7 +586,7 @@ def get_memory_tools() -> list[Tool]:
         ),
         build_tool(
             name="memory_delete_by_source",
-            description="按来源文件删除所有相关抽屉。",
+            description="按来源文件删除所有相关抽屉（forget 类操作）。",
             input_schema=MemoryDeleteBySourceInput,
             execute=_execute_memory_delete_by_source,
             prompt="按来源删除：删除某文件的所有记忆片段",
@@ -609,16 +650,6 @@ def get_memory_tools() -> list[Tool]:
             input_schema=MemoryKGSupersedeInput,
             execute=_execute_memory_kg_supersede,
             prompt="替换事实：原子性地更新实体关系",
-            is_read_only=False,
-            requires_permission=True,
-            can_be_replaced_by_mcp=False,
-        ),
-        build_tool(
-            name="memory_repair",
-            description="修复 FTS5 索引或清理孤立记录（Closet/KG 三元组）。",
-            input_schema=MemoryRepairInput,
-            execute=_execute_memory_repair,
-            prompt="修复索引：重建搜索索引或清理孤立记录",
             is_read_only=False,
             requires_permission=True,
             can_be_replaced_by_mcp=False,

@@ -15,10 +15,11 @@ import logging
 import re
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
 from memory.embedding import EmbeddingProvider, bytes_to_vector, vector_to_bytes
-from memory.models import ClosetEntry, Drawer, content_hash
-from memory.storage import PalaceStorage
+from memory.palace.ids import content_hash
+from memory.palace.models import ClosetEntry, Drawer
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +114,7 @@ class ClosetExtractor:
 
     def _load_known_systems(self) -> list[str]:
         """加载已知系统名列表。"""
+        # data 目录在 memory/palace/data/ 下
         path = Path(__file__).parent / "data" / "known_systems.json"
         try:
             return json.loads(path.read_text(encoding="utf-8"))
@@ -137,7 +139,7 @@ class ClosetExtractor:
         for system in self._known_systems:
             if system in masked:
                 entities.append(system)
-                # Replace with placeholder to prevent word-level extraction
+                # 用空格替换，防止单词级提取时被拆分
                 masked = masked.replace(system, " " * len(system))
         return entities, masked
 
@@ -209,10 +211,10 @@ class ClosetExtractor:
         - 已知系统名原子检测（不被拆分）
         - 只保留出现 >= 2 次的实体（已知系统名始终保留）
         """
-        # 1. Known systems prepass
+        # 1. 已知系统名预扫描
         known_entities, masked_content = self._apply_known_systems_prepass(content)
 
-        # 2. Word-level extraction on masked content
+        # 2. 对屏蔽后的内容进行单词级提取
         candidates: list[str] = []
         for m in self._EN_ENTITY_RE.finditer(masked_content):
             word = m.group(0)
@@ -224,7 +226,7 @@ class ClosetExtractor:
                 continue
             candidates.append(word)
 
-        # 3. Chinese entity extraction (on original content)
+        # 3. 中文实体提取（对原始内容）
         for m in self._ZH_BRACKET_RE.finditer(content):
             candidates.append(m.group(1))
 
@@ -234,13 +236,13 @@ class ClosetExtractor:
         for m in self._ZH_SQUOTE_RE.finditer(content):
             candidates.append(m.group(1))
 
-        # 4. Add known entities
+        # 4. 添加已知实体
         candidates.extend(known_entities)
 
-        # 5. Keep entities appearing >= 2 times (known systems always kept)
+        # 5. 保留出现 >= 2 次的实体（已知系统名始终保留）
         counter = Counter(candidates)
         result = [e for e, c in counter.items() if c >= 2]
-        # Known systems are always included even if count < 2
+        # 已知系统名即使出现次数不足也保留
         for ke in known_entities:
             if ke not in result:
                 result.append(ke)
@@ -274,10 +276,10 @@ class ClosetExtractor:
     def extract_quotes(self, content: str) -> list[str]:
         """提取 15-150 字符的双引号内容作为引用。"""
         quotes: list[str] = []
-        # English double quotes
+        # 英文双引号
         for m in re.finditer(r'"([^"]{15,150})"', content):
             quotes.append(m.group(1))
-        # Chinese double quotes
+        # 中文双引号
         for m in re.finditer(r'\u201c([^\u201d]{15,150})\u201d', content):
             quotes.append(m.group(1))
         return quotes
@@ -383,7 +385,7 @@ class ClosetIndexer:
 
     def __init__(
         self,
-        storage: PalaceStorage,
+        storage: Any,
         embedding_provider: EmbeddingProvider | None = None,
     ):
         self.storage = storage

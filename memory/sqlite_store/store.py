@@ -17,7 +17,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from memory.models import ClosetEntry, Drawer, KGTriple
+from memory.palace.models import ClosetEntry, Drawer, KGTriple
 
 logger = logging.getLogger(__name__)
 

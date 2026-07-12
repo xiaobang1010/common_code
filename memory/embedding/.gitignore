@@ -1,0 +1,20 @@
+# 忽略 Jasper 模型文件（git clone 下载的）
+jasper-model/
+
+# 忽略 HuggingFace 缓存
+models--*/
+blobs/
+snapshots/
+refs/
+CACHEDIR.TAG
+
+# 模型文件
+*.bin
+*.safetensors
+*.onnx
+*.gguf
+
+# 确保 Python 代码文件不被忽略
+!__init__.py
+!.gitignore
+!download.py

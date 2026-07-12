@@ -147,7 +147,7 @@ def get_tools(context_filter: ToolContextFilter | None = None) -> list[Tool]:
 
     # 8. 记忆工具（memory-palace 插件激活时注册）
     try:
-        from memory.tools import get_memory_tools
+        from memory.plugin.tools import get_memory_tools
         memory_tools = get_memory_tools()
         tools.extend(memory_tools)
     except ImportError:

@@ -18,6 +18,6 @@ def create_memory_provider(config: dict[str, Any]):
     Returns:
         MemoryPalaceProvider 实例
     """
-    from memory.provider import MemoryPalaceProvider
+    from memory.plugin.provider import MemoryPalaceProvider
 
     return MemoryPalaceProvider()
