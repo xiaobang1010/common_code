@@ -95,8 +95,22 @@ function createWindow(port) {
 // 创建一个伪终端，返回终端 id
 function createTerminal(cwd) {
   const id = `term-${++terminalIdCounter}`
-  // Windows 用 pwsh，其他平台用 bash
-  const shell = process.platform === 'win32' ? 'pwsh.exe' : 'bash'
+  // Windows 优先 PowerShell 7，未安装则回退到 Windows PowerShell 5
+  // 其他平台默认 bash
+  let shell
+  if (process.platform === 'win32') {
+    // 先检查 pwsh.exe（PowerShell 7）是否存在
+    const { execSync } = require('child_process')
+    try {
+      execSync('where pwsh.exe', { stdio: 'ignore' })
+      shell = 'pwsh.exe'
+    } catch {
+      // 兜底：使用系统自带的 Windows PowerShell
+      shell = 'powershell.exe'
+    }
+  } else {
+    shell = 'bash'
+  }
   const ptyProcess = pty.spawn(shell, [], {
     name: 'xterm-color',
     cols: 80,

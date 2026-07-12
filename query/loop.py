@@ -338,7 +338,7 @@ async def query_loop(
     sent_skills: set[str] = set()
 
     # 首轮记忆检索：若有启用的记忆插件，检索相关历史记忆注入上下文
-    if not messages and user_context is None:
+    if not engine.mutable_messages and user_context is None:
         try:
             from query.services.memory.registry import get_active_memory
             memory = get_active_memory()

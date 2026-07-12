@@ -317,6 +317,12 @@ export function useChat() {
         tool_input: evt.tool_input,
         reason: evt.reason || '',
       })
+    } else if (evt.type === 'error') {
+      // 后端引擎级错误（如异常、UnboundLocalError 等），非流式 error 事件
+      setMessages(prev => [
+        ...prev,
+        { id: genId(), role: 'system', content: `错误: ${evt.error || '未知错误'}` },
+      ])
     } else if (evt.type === 'loop_result') {
       // 循环真正结束，清空状态
       currentAssistantId.current = null
