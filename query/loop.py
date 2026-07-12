@@ -158,6 +158,34 @@ def _build_assistant_message(
 
 
 # ---------------------------------------------------------------------------
+# _mine_conversation_to_palace - 会话结束自动摄取入 Palace
+# ---------------------------------------------------------------------------
+
+
+def _mine_conversation_to_palace(engine: QueryEngine) -> None:
+    """会话结束自动摄取入 Palace。"""
+    try:
+        from query.services.memory.registry import get_active_memory
+        memory = get_active_memory()
+        if memory is not None and hasattr(memory, 'mine_conversation'):
+            import os
+            project_name = os.path.basename(os.getcwd())
+            # Convert messages to the format ConversationMiner expects
+            convo_messages = []
+            for msg in engine.mutable_messages:
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                if role in ("user", "assistant") and content:
+                    if isinstance(content, list):
+                        content = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
+                    convo_messages.append({"role": role, "content": content})
+            if convo_messages:
+                memory.mine_conversation(convo_messages, wing=project_name, session_id="loop_session")
+    except Exception:
+        pass  # 摄取失败不中断
+
+
+# ---------------------------------------------------------------------------
 # _run_inline_compression — 内联四级压缩管线
 # ---------------------------------------------------------------------------
 
@@ -337,20 +365,28 @@ async def query_loop(
     # skill 列表增量注入追踪（跨轮保持，避免重复注入）
     sent_skills: set[str] = set()
 
-    # 首轮记忆检索：若有启用的记忆插件，检索相关历史记忆注入上下文
-    if not messages and user_context is None:
+    # 首轮记忆注入：若有启用的记忆插件，注入 L0+L1 上下文或历史记忆
+    if not engine.mutable_messages and user_context is None:
         try:
             from query.services.memory.registry import get_active_memory
             memory = get_active_memory()
             if memory is not None:
-                import asyncio
-                results = await memory.search("", limit=3)
-                if results:
-                    mem_text = "\n".join(
-                        f"- {r.get('content', '')[:200]}" for r in results if r.get("content")
-                    )
-                    if mem_text:
-                        user_context = {"历史记忆": mem_text}
+                # 优先使用 MemoryPalaceProvider 的 wake_up（L0+L1 上下文）
+                if hasattr(memory, 'wake_up'):
+                    import os
+                    project_name = os.path.basename(os.getcwd())
+                    wake_up_text = memory.wake_up(wing=project_name)
+                    if wake_up_text and wake_up_text.strip():
+                        user_context = {"记忆上下文": wake_up_text}
+                else:
+                    # 降级：使用通用 search 接口
+                    results = await memory.search("", limit=3)
+                    if results:
+                        mem_text = "\n".join(
+                            f"- {r.get('content', '')[:200]}" for r in results if r.get("content")
+                        )
+                        if mem_text:
+                            user_context = {"历史记忆": mem_text}
         except Exception:
             pass  # 记忆检索失败不中断循环
 
@@ -365,6 +401,7 @@ async def query_loop(
             if engine.turn_count >= engine_config.max_turns:
                 yield {"type": "max_turns_reached", "max_turns": engine_config.max_turns}
                 yield StreamEvent(type="done", finish_reason="stop")
+                _mine_conversation_to_palace(engine)
                 yield LoopResult(reason="completed")
                 return
 
@@ -640,6 +677,7 @@ async def query_loop(
         # 8a. finish_reason=stop → yield done → return
         if finish_reason == "stop":
             yield StreamEvent(type="done", finish_reason="stop")
+            _mine_conversation_to_palace(engine)
             yield LoopResult(reason="completed")
             return
 
@@ -649,10 +687,12 @@ async def query_loop(
             stop_result = await run_stop_hooks(messages)
             if stop_result.should_stop:
                 yield StreamEvent(type="done", finish_reason="stop")
+                _mine_conversation_to_palace(engine)
                 yield LoopResult(reason="completed")
                 return
 
             yield StreamEvent(type="done", finish_reason="stop")
+            _mine_conversation_to_palace(engine)
             yield LoopResult(reason="completed")
             return
 

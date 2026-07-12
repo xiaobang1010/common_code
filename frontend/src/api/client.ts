@@ -10,11 +10,31 @@ export interface LLMConfig {
   llm_base_url: string
   llm_api_key: string
   llm_model: string
-  llm_providers?: LLMProviderInfo[]
+  llm_providers?: CustomLLMProviderInfo[]
   active_provider?: string | null
+  active_model?: string | null
 }
 
-/** LLM 供应商信息 */
+/** API 格式 */
+export type ApiFormat = 'openai' | 'anthropic'
+
+/** 自定义 LLM 模型 */
+export interface CustomLLMModelInfo {
+  model_id: string
+  context_window: number
+}
+
+/** 自定义 LLM 供应商 */
+export interface CustomLLMProviderInfo {
+  id: string
+  name: string
+  base_url: string
+  api_key: string
+  api_format: ApiFormat
+  models: CustomLLMModelInfo[]
+}
+
+/** LLM 供应商信息（旧的插件供应商格式，保留兼容） */
 export interface LLMProviderInfo {
   name: string
   base_url: string
@@ -94,15 +114,61 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   return json as T
 }
 
+/** PUT 请求，发送 JSON body，返回 JSON 并带类型 */
+export async function apiPut<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  })
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok || json.ok === false) {
+    throw new Error(json.error || `PUT ${path} 失败：${res.status}`)
+  }
+  return json as T
+}
+
+/** DELETE 请求，返回 JSON 并带类型 */
+export async function apiDelete<T>(path: string): Promise<T> {
+  const res = await fetch(path, { method: 'DELETE' })
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok || json.ok === false) {
+    throw new Error(json.error || `DELETE ${path} 失败：${res.status}`)
+  }
+  return json as T
+}
+
 // ---------------------------------------------------------------------------
 // 具体 endpoint 封装
 // ---------------------------------------------------------------------------
 
-/** LLM 配置 */
+/** LLM 配置和供应商管理 */
 export const llmApi = {
+  // 基础配置
   getConfig: () => apiGet<LLMConfig>('/api/config'),
   saveConfig: (config: Partial<LLMConfig>) =>
     apiPost<{ ok: boolean }>('/api/config', config),
+
+  // 自定义供应商 CRUD
+  listCustomProviders: () =>
+    apiGet<{ providers: CustomLLMProviderInfo[]; active_provider: string | null; active_model: string | null }>(
+      '/api/llm-providers'
+    ),
+  createProvider: (data: Omit<CustomLLMProviderInfo, 'id'>) =>
+    apiPost<{ ok: boolean; provider: CustomLLMProviderInfo }>('/api/llm-providers', data),
+  updateProvider: (id: string, data: Omit<CustomLLMProviderInfo, 'id'>) =>
+    apiPut<{ ok: boolean; provider: CustomLLMProviderInfo }>(`/api/llm-providers/${id}`, data),
+  deleteProvider: (id: string) =>
+    apiDelete<{ ok: boolean }>(`/api/llm-providers/${id}`),
+  testProvider: (id: string) =>
+    apiPost<{ ok: boolean; message?: string; error?: string }>(`/api/llm-providers/${id}/test`),
+  activateProvider: (provider_id: string, model_id: string) =>
+    apiPost<{ ok: boolean; provider_id: string; model_id: string }>(
+      '/api/llm-providers/activate',
+      { provider_id, model_id }
+    ),
+
+  // 旧版插件供应商（保留兼容）
   listProviders: () =>
     apiGet<{ providers: LLMProviderInfo[]; active: string | null }>(
       '/api/plugins/llm-providers'
@@ -133,6 +199,70 @@ export const memoryApi = {
     apiPost<{ ok: boolean }>('/api/memory/switch', { name }),
   clear: (session_id: string) =>
     apiPost<{ ok: boolean }>('/api/memory/clear', { session_id }),
+  search: (query: string, wing?: string, room?: string, limit?: number) =>
+    apiPost<{ ok: boolean; results: any[] }>('/api/memory/search', {
+      query,
+      wing,
+      room,
+      limit,
+    }),
+  add: (
+    wing: string,
+    room: string,
+    content: string,
+    source_file?: string,
+    importance?: number
+  ) =>
+    apiPost<{ ok: boolean; id: string }>('/api/memory/add', {
+      wing,
+      room,
+      content,
+      source_file,
+      importance,
+    }),
+  status: () =>
+    apiGet<{ ok: boolean; status: any }>('/api/memory/status'),
+  wings: () =>
+    apiGet<{ ok: boolean; wings: any[] }>('/api/memory/wings'),
+  rooms: (wing: string) =>
+    apiPost<{ ok: boolean; rooms: any[] }>('/api/memory/rooms', { wing }),
+  kgAdd: (
+    subject: string,
+    predicate: string,
+    object: string,
+    valid_from?: string,
+    drawer_refs?: any[]
+  ) =>
+    apiPost<{ ok: boolean; id: string }>('/api/memory/kg/add', {
+      subject,
+      predicate,
+      object,
+      valid_from,
+      drawer_refs,
+    }),
+  kgQuery: (entity: string, as_of?: string) =>
+    apiPost<{ ok: boolean; triples: any[] }>('/api/memory/kg/query', {
+      entity,
+      as_of,
+    }),
+  kgTimeline: (entity: string) =>
+    apiPost<{ ok: boolean; timeline: any[] }>('/api/memory/kg/timeline', {
+      entity,
+    }),
+  kgInvalidate: (
+    subject: string,
+    predicate: string,
+    object: string,
+    ended?: string
+  ) =>
+    apiPost<{ ok: boolean }>('/api/memory/kg/invalidate', {
+      subject,
+      predicate,
+      object,
+      ended,
+    }),
+  kgEntities: () =>
+    apiGet<{ ok: boolean; entities: string[] }>('/api/memory/kg/entities'),
 }
 
 /** 子智能体 */

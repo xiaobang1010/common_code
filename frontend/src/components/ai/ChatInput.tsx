@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import type { PermissionRequest } from '../../hooks/useChat'
-import type { PermissionMode } from '../../api/client'
+import { llmApi, type PermissionMode, type CustomLLMProviderInfo } from '../../api/client'
+import { useSettingsStore } from '../../stores/useSettingsStore'
 
 interface Props {
   onSend: (prompt: string) => void
@@ -41,6 +42,18 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const permMenuRef = useRef<HTMLDivElement>(null)
 
+  // ---- 模型快速切换相关状态 ----
+  // modelVersion 来自 store，外部（如设置面板）切换模型时会变化，触发重新拉取供应商列表
+  const modelVersion = useSettingsStore(s => s.modelVersion)
+  const notifyModelChanged = useSettingsStore(s => s.notifyModelChanged)
+  // 供应商列表和当前激活的供应商/模型
+  const [providers, setProviders] = useState<CustomLLMProviderInfo[]>([])
+  const [activeProvider, setActiveProvider] = useState<string | null>(null)
+  const [activeModel, setActiveModel] = useState<string | null>(null)
+  const [showModelMenu, setShowModelMenu] = useState(false)
+  const [switching, setSwitching] = useState(false)
+  const modelMenuRef = useRef<HTMLDivElement>(null)
+
   // 点击下拉外部时关闭权限模式菜单
   useEffect(() => {
     if (!showPermMenu) return
@@ -52,6 +65,32 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
     document.addEventListener('click', handleClick)
     return () => document.removeEventListener('click', handleClick)
   }, [showPermMenu])
+
+  // 点击下拉外部时关闭模型选择菜单
+  useEffect(() => {
+    if (!showModelMenu) return
+    const handleClick = (e: MouseEvent) => {
+      if (modelMenuRef.current && !modelMenuRef.current.contains(e.target as Node)) {
+        setShowModelMenu(false)
+      }
+    }
+    document.addEventListener('click', handleClick)
+    return () => document.removeEventListener('click', handleClick)
+  }, [showModelMenu])
+
+  // 挂载时和模型变更时拉取供应商列表
+  // modelVersion 变化说明外部（设置面板或本组件）切换了模型，需要重新拉取
+  useEffect(() => {
+    llmApi.listCustomProviders()
+      .then(data => {
+        setProviders(data.providers)
+        setActiveProvider(data.active_provider)
+        setActiveModel(data.active_model)
+      })
+      .catch(() => {
+        // 接口不可用时保持空列表
+      })
+  }, [modelVersion])
 
   // 挂载时从 /api/skills 拉取可用 skill，合并到命令补全列表
   useEffect(() => {
@@ -122,6 +161,45 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
       }
     }
   }
+
+  // 切换模型：调用激活接口 -> 刷新本地状态 -> 广播变更让 StatusBar 更新
+  const handleModelSelect = async (providerId: string, modelId: string) => {
+    // 点的就是当前激活项，直接关闭菜单
+    if (providerId === activeProvider && modelId === activeModel) {
+      setShowModelMenu(false)
+      return
+    }
+    setShowModelMenu(false)
+    setSwitching(true)
+    try {
+      await llmApi.activateProvider(providerId, modelId)
+      // 刷新本地状态
+      const data = await llmApi.listCustomProviders()
+      setProviders(data.providers)
+      setActiveProvider(data.active_provider)
+      setActiveModel(data.active_model)
+      // 广播变更，让 StatusBar 等组件更新显示
+      notifyModelChanged()
+    } catch {
+      // 切换失败，重新拉取恢复正确状态
+      try {
+        const data = await llmApi.listCustomProviders()
+        setProviders(data.providers)
+        setActiveProvider(data.active_provider)
+        setActiveModel(data.active_model)
+      } catch {
+        // 拉取也失败就算了
+      }
+    } finally {
+      setSwitching(false)
+    }
+  }
+
+  // 计算模型按钮显示文本：供应商名 / 模型名
+  const activeProviderInfo = providers.find(p => p.id === activeProvider)
+  const modelDisplayText = activeProviderInfo && activeModel
+    ? `${activeProviderInfo.name} / ${activeModel}`
+    : '未配置模型'
 
   return (
     <div style={{ position: 'relative' }}>
@@ -393,9 +471,138 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
           }}
         >
           <div ref={permMenuRef} style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '6px', pointerEvents: 'auto' }}>
+            {/* 模型快速切换控件 */}
+            <div ref={modelMenuRef} style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+              <button
+                onClick={() => {
+                  if (providers.length === 0) return
+                  setShowModelMenu(!showModelMenu)
+                  setShowPermMenu(false)
+                }}
+                disabled={switching}
+                title={switching ? '切换中...' : '切换模型'}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '3px',
+                  padding: '2px 6px',
+                  border: '1px solid var(--border)',
+                  borderRadius: 'var(--radius-sm)',
+                  background: 'transparent',
+                  color: providers.length > 0 ? 'var(--text-secondary)' : 'var(--text-tertiary)',
+                  fontSize: '10px',
+                  fontFamily: 'var(--font-ui)',
+                  fontWeight: 500,
+                  cursor: switching ? 'wait' : 'pointer',
+                  transition: 'all var(--transition-fast)',
+                  whiteSpace: 'nowrap',
+                  maxWidth: '200px',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  opacity: switching ? 0.6 : 1,
+                }}
+                onMouseEnter={(e) => {
+                  if (!switching) {
+                    e.currentTarget.style.borderColor = 'var(--border-strong)'
+                    e.currentTarget.style.color = 'var(--text-primary)'
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = 'var(--border)'
+                  e.currentTarget.style.color = providers.length > 0 ? 'var(--text-secondary)' : 'var(--text-tertiary)'
+                }}
+              >
+                {switching ? '切换中...' : modelDisplayText}
+                {providers.length > 0 && !switching && (
+                  <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                    <path d="m6 9 6 6 6-6" />
+                  </svg>
+                )}
+              </button>
+              {/* 模型选择下拉列表 - 按供应商分组 */}
+              {showModelMenu && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    bottom: '100%',
+                    left: 0,
+                    marginBottom: '4px',
+                    backgroundColor: 'var(--bg-elevated)',
+                    border: '1px solid var(--border-strong)',
+                    borderRadius: 'var(--radius-md)',
+                    boxShadow: 'var(--shadow-md)',
+                    backdropFilter: 'blur(8px)',
+                    zIndex: 20,
+                    minWidth: '260px',
+                    maxHeight: '300px',
+                    overflowY: 'auto',
+                  }}
+                >
+                  {providers.map((provider, pIdx) => (
+                    <div key={provider.id}>
+                      {/* 供应商分组标题 */}
+                      <div
+                        style={{
+                          padding: '6px 10px 4px',
+                          fontSize: '10px',
+                          fontWeight: 600,
+                          color: 'var(--text-tertiary)',
+                          fontFamily: 'var(--font-ui)',
+                          backgroundColor: 'var(--bg-base)',
+                          borderTop: pIdx > 0 ? '1px solid var(--border-subtle)' : 'none',
+                        }}
+                      >
+                        {provider.name}
+                      </div>
+                      {/* 该供应商下的模型列表 */}
+                      {provider.models.map(model => {
+                        const isActive = provider.id === activeProvider && model.model_id === activeModel
+                        return (
+                          <div
+                            key={model.model_id}
+                            onClick={() => handleModelSelect(provider.id, model.model_id)}
+                            style={{
+                              padding: '6px 10px',
+                              cursor: 'pointer',
+                              backgroundColor: isActive ? 'var(--accent-soft)' : 'transparent',
+                              transition: 'background var(--transition-fast)',
+                            }}
+                            onMouseEnter={(e) => {
+                              if (!isActive) e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)'
+                            }}
+                            onMouseLeave={(e) => {
+                              if (!isActive) e.currentTarget.style.backgroundColor = 'transparent'
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                              <span style={{
+                                color: isActive ? 'var(--accent)' : 'var(--text-primary)',
+                                fontSize: '12px',
+                                fontFamily: 'var(--font-mono)',
+                                fontWeight: 500,
+                              }}>
+                                {model.model_id}
+                              </span>
+                              {isActive && (
+                                <span style={{ color: 'var(--accent)', fontSize: '11px' }}>✓</span>
+                              )}
+                            </div>
+                            {model.context_window > 0 && (
+                              <div style={{ color: 'var(--text-tertiary)', fontSize: '10px', marginTop: '2px', fontFamily: 'var(--font-ui)' }}>
+                                上下文窗口 {model.context_window.toLocaleString()}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
             {/* 权限模式切换按钮 */}
             <button
-              onClick={() => setShowPermMenu(!showPermMenu)}
+              onClick={() => { setShowPermMenu(!showPermMenu); setShowModelMenu(false) }}
               style={{
                 display: 'flex',
                 alignItems: 'center',
