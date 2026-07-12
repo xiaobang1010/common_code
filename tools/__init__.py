@@ -145,6 +145,14 @@ def get_tools(context_filter: ToolContextFilter | None = None) -> list[Tool]:
     except ImportError:
         pass
 
+    # 8. 记忆工具（memory-palace 插件激活时注册）
+    try:
+        from memory.plugin.tools import get_memory_tools
+        memory_tools = get_memory_tools()
+        tools.extend(memory_tools)
+    except ImportError:
+        pass
+
     # 7. 上下文过滤：子代理按代理定义过滤工具
     if context_filter is not None and context_filter.is_subagent:
         tools = _filter_for_subagent(tools, context_filter)

@@ -1,0 +1,14 @@
+[
+  "Code", "Line", "Note", "Phase", "Step", "Section",
+  "Time", "Date", "Year", "Month", "Week", "Day",
+  "First", "Second", "Third", "Last", "Next", "Previous",
+  "Here", "There", "Where", "When", "What", "Which",
+  "Some", "Many", "More", "Most", "Both", "Each",
+  "Other", "Another", "Same", "Different", "New", "Old",
+  "Good", "Bad", "Big", "Small", "High", "Low",
+  "Yes", "No", "True", "False", "None", "Null",
+  "Type", "Value", "Name", "Key", "Data", "Info",
+  "File", "Folder", "Path", "Root", "Base", "Core",
+  "Main", "Test", "User", "List", "Item", "Entry",
+  "Version", "Status", "Mode", "State", "Level", "Layer"
+]

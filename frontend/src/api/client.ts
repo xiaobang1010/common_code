@@ -199,6 +199,70 @@ export const memoryApi = {
     apiPost<{ ok: boolean }>('/api/memory/switch', { name }),
   clear: (session_id: string) =>
     apiPost<{ ok: boolean }>('/api/memory/clear', { session_id }),
+  search: (query: string, wing?: string, room?: string, limit?: number) =>
+    apiPost<{ ok: boolean; results: any[] }>('/api/memory/search', {
+      query,
+      wing,
+      room,
+      limit,
+    }),
+  add: (
+    wing: string,
+    room: string,
+    content: string,
+    source_file?: string,
+    importance?: number
+  ) =>
+    apiPost<{ ok: boolean; id: string }>('/api/memory/add', {
+      wing,
+      room,
+      content,
+      source_file,
+      importance,
+    }),
+  status: () =>
+    apiGet<{ ok: boolean; status: any }>('/api/memory/status'),
+  wings: () =>
+    apiGet<{ ok: boolean; wings: any[] }>('/api/memory/wings'),
+  rooms: (wing: string) =>
+    apiPost<{ ok: boolean; rooms: any[] }>('/api/memory/rooms', { wing }),
+  kgAdd: (
+    subject: string,
+    predicate: string,
+    object: string,
+    valid_from?: string,
+    drawer_refs?: any[]
+  ) =>
+    apiPost<{ ok: boolean; id: string }>('/api/memory/kg/add', {
+      subject,
+      predicate,
+      object,
+      valid_from,
+      drawer_refs,
+    }),
+  kgQuery: (entity: string, as_of?: string) =>
+    apiPost<{ ok: boolean; triples: any[] }>('/api/memory/kg/query', {
+      entity,
+      as_of,
+    }),
+  kgTimeline: (entity: string) =>
+    apiPost<{ ok: boolean; timeline: any[] }>('/api/memory/kg/timeline', {
+      entity,
+    }),
+  kgInvalidate: (
+    subject: string,
+    predicate: string,
+    object: string,
+    ended?: string
+  ) =>
+    apiPost<{ ok: boolean }>('/api/memory/kg/invalidate', {
+      subject,
+      predicate,
+      object,
+      ended,
+    }),
+  kgEntities: () =>
+    apiGet<{ ok: boolean; entities: string[] }>('/api/memory/kg/entities'),
 }
 
 /** 子智能体 */

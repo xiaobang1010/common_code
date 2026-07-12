@@ -251,7 +251,18 @@ async def compact_conversation(
         memory = get_active_memory()
         if memory is not None:
             import asyncio
+            import os
             asyncio.ensure_future(memory.store("default", "compact_summary", summary))
+            # MemoryPalaceProvider 扩展：同时写入 Drawer 到 Palace
+            if hasattr(memory, 'add_drawer'):
+                project_name = os.path.basename(os.getcwd())
+                memory.add_drawer(
+                    wing=project_name,
+                    room="session_summary",
+                    content=summary,
+                    source_file="auto_compact",
+                    importance=0.8,
+                )
     except Exception:
         pass  # 记忆存储失败不中断压缩
 

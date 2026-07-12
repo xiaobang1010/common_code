@@ -60,8 +60,10 @@ def init() -> None:
     for key, value in env_vars.items():
         os.environ.setdefault(key, value)
 
-    # 3. LLM 客户端 — 延迟，不在此处构建
-    # 4. 遥测 — 可选，暂不实现
+    # 3. LLM 客户端 - 延迟，不在此处构建
+    # 4. 遥测 - 可选，暂不实现
+    # 5. 检查 Jasper embedding 模型是否已下载，未下载则自动下载
+    _ensure_embedding_model()
 
 
 def _load_env() -> None:
@@ -88,6 +90,29 @@ def _load_env() -> None:
 def is_initialized() -> bool:
     """检查是否已初始化。"""
     return _init_done
+
+
+def _ensure_embedding_model() -> None:
+    """检查 Jasper embedding 模型是否已下载，未下载则自动下载。
+
+    在 init() 中调用，安装后首次启动时自动下载模型。
+    后续启动时模型已存在，直接跳过。
+    """
+    try:
+        from memory.embedding.download import is_model_downloaded, download_model
+
+        if is_model_downloaded():
+            return
+
+        logger.info("Jasper embedding 模型未下载，开始自动下载...")
+        success = download_model()
+        if not success:
+            logger.warning(
+                "Jasper 模型自动下载失败，embedding 将降级为纯 BM25 模式。"
+                "可稍后运行 download-embedding-model 命令手动下载。"
+            )
+    except Exception as e:
+        logger.warning("embedding 模型检查失败: %s", e)
 
 
 def reset_init_for_tests() -> None:

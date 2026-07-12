@@ -1,10 +1,125 @@
-// 记忆管理区 — 列出后端 + 切换激活 + 清空会话记忆
+// 记忆管理区 - 列出后端 + 切换激活 + 清空会话记忆
 // 接 GET /api/memory/providers、POST /api/memory/switch、POST /api/memory/clear
 
 import { useEffect, useState } from 'react'
 import { memoryApi } from '../../api/client'
 import { useSettingsStore } from '../../stores/useSettingsStore'
 import { Select, SettingSection, SettingRow, StatusMessage } from '../ui'
+
+function KGEntities() {
+  const [entities, setEntities] = useState<string[]>([])
+  const [loading, setLoading] = useState(false)
+  const [collapsed, setCollapsed] = useState(true)
+  const [error, setError] = useState('')
+
+  const fetchEntities = async () => {
+    setLoading(true)
+    setError('')
+    try {
+      const res = await memoryApi.kgEntities()
+      setEntities(res.entities || [])
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '获取实体失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!collapsed && entities.length === 0 && !loading) {
+      fetchEntities()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [collapsed])
+
+  return (
+    <div style={{ padding: '8px 0' }}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          cursor: 'pointer',
+          userSelect: 'none',
+        }}
+        onClick={() => setCollapsed(!collapsed)}
+      >
+        <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+          {collapsed ? '▶' : '▼'}
+        </span>
+        <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+          实体列表 ({entities.length})
+        </span>
+        {!collapsed && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              fetchEntities()
+            }}
+            style={{
+              marginLeft: 'auto',
+              padding: '2px 8px',
+              fontSize: '11px',
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-sm)',
+              backgroundColor: 'transparent',
+              color: 'var(--text-secondary)',
+              cursor: 'pointer',
+              fontFamily: 'var(--font-ui)',
+            }}
+          >
+            刷新
+          </button>
+        )}
+      </div>
+      {!collapsed && (
+        <div style={{ marginTop: '8px', marginLeft: '20px' }}>
+          {loading && (
+            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+              加载中...
+            </div>
+          )}
+          {error && (
+            <div style={{ fontSize: '12px', color: 'var(--error)' }}>
+              {error}
+            </div>
+          )}
+          {!loading && !error && entities.length === 0 && (
+            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+              暂无实体
+            </div>
+          )}
+          {entities.length > 0 && (
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: '6px',
+              }}
+            >
+              {entities.map((entity) => (
+                <span
+                  key={entity}
+                  style={{
+                    padding: '2px 8px',
+                    fontSize: '12px',
+                    fontFamily: 'var(--font-mono)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 'var(--radius-sm)',
+                    color: 'var(--text-secondary)',
+                    backgroundColor: 'var(--bg-primary)',
+                  }}
+                >
+                  {entity}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
 
 function MemorySettingsSection() {
   const { memoryProviders, activeMemory, refreshMemoryProviders } = useSettingsStore()
@@ -13,10 +128,19 @@ function MemorySettingsSection() {
   const [sessionId, setSessionId] = useState('default')
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
+  const [palaceStatus, setPalaceStatus] = useState<any>(null)
 
   useEffect(() => {
     refreshMemoryProviders()
   }, [refreshMemoryProviders])
+
+  useEffect(() => {
+    if (activeMemory === 'memory-palace') {
+      memoryApi.status().then(setPalaceStatus).catch(() => setPalaceStatus(null))
+    } else {
+      setPalaceStatus(null)
+    }
+  }, [activeMemory, memoryProviders])
 
   // 切换激活记忆后端
   const handleSwitch = async (name: string) => {
@@ -92,6 +216,63 @@ function MemorySettingsSection() {
           />
         </SettingRow>
       </SettingSection>
+
+      {/* Palace 状态 */}
+      {palaceStatus && palaceStatus.ok && (
+        <SettingSection
+          title="Palace 状态"
+          description="记忆宫殿的当前状态和分布"
+        >
+          <div style={{ padding: '8px 0' }}>
+            <div style={{ display: 'flex', gap: '24px', marginBottom: '16px' }}>
+              <div>
+                <div style={{ fontSize: '24px', fontWeight: 600, color: 'var(--accent)' }}>
+                  {palaceStatus.status.total_drawers}
+                </div>
+                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>总抽屉数</div>
+              </div>
+              <div>
+                <div style={{ fontSize: '24px', fontWeight: 600, color: 'var(--accent)' }}>
+                  {palaceStatus.status.total_wings}
+                </div>
+                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>Wing 数</div>
+              </div>
+            </div>
+            {palaceStatus.status.wings && palaceStatus.status.wings.length > 0 && (
+              <div style={{ fontSize: '12px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
+                {palaceStatus.status.wings.map((w: any) => (
+                  <div key={w.name} style={{ marginBottom: '4px' }}>
+                    <span style={{ color: 'var(--accent)' }}>{w.name}</span>
+                    {' '}
+                    <span style={{ color: 'var(--text-tertiary)' }}>({w.drawer_count})</span>
+                    {w.rooms && w.rooms.length > 0 && (
+                      <div style={{ marginLeft: '16px', marginTop: '2px' }}>
+                        {w.rooms.map((r: any) => (
+                          <div key={r.name}>
+                            <span style={{ color: 'var(--text-secondary)' }}>{r.name}</span>
+                            {' '}
+                            <span style={{ color: 'var(--text-tertiary)' }}>({r.drawer_count})</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </SettingSection>
+      )}
+
+      {/* 知识图谱实体 */}
+      {activeMemory === 'memory-palace' && (
+        <SettingSection
+          title="知识图谱"
+          description="记忆宫殿中的实体关系图谱"
+        >
+          <KGEntities />
+        </SettingSection>
+      )}
 
       <SettingSection
         title="清空记忆"
