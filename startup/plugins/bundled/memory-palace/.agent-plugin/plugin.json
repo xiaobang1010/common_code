@@ -1,0 +1,7 @@
+{
+  "name": "memory-palace",
+  "version": "0.1.0",
+  "description": "Memory Palace 记忆后端 - Palace 隐喻、四层记忆栈、混合检索、时序知识图谱",
+  "author": { "name": "Memory Palace" },
+  "kind": "memory"
+}
