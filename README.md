@@ -109,30 +109,3 @@ uv run python -m server            # Python 后端（8000 端口）
 cd electron && npm run dev          # Electron
 ```
 
-## 项目结构
-
-```
-common_code/
-├── frontend/        React 前端（三栏布局 + 终端）
-├── electron/        Electron 主进程壳
-├── server/          FastAPI 后端（HTTP + SSE + 权限桥接）
-├── query/           循环引擎（agentic 循环、流式、压缩管线）
-├── tools/           工具系统（动态工具池 + 权限 + 命令）
-│   ├── implementations/  内置 6 工具
-│   ├── skills/           技能机制
-│   ├── subagent/         子代理机制
-│   └── team/             多代理协作
-├── memory/          记忆宫殿（存/查/改/删 + ChromaDB 向量库 + Jasper embedding）
-│   ├── embedding/        Jasper 向量模型
-│   ├── vector_db/        ChromaDB 向量存储
-│   ├── palace/           宫殿特性（数据模型、索引、知识图谱）
-│   ├── remember/         存类操作
-│   ├── recall/           查类操作
-│   ├── rethink/          改类操作
-│   ├── forget/           删类操作
-│   ├── memory_context_prompt/  四层记忆 prompt
-│   └── plugin/           插件接入
-├── startup/         启动初始化（配置 + 工作目录 + 钩子）
-│   └── plugins/         插件系统
-└── ink/             历史 CLI 遗留（可忽略）
-```
