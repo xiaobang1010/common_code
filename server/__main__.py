@@ -65,6 +65,10 @@ async def main() -> None:
     app_module.engine = engine
     app_module.permission_bridge = bridge
 
+    # 初始化会话存储层
+    from session.store import SessionStore
+    app_module.session_store = SessionStore()
+
     # 5. 分配端口
     port = find_free_port()
 

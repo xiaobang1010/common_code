@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import ActivityBar from './components/ActivityBar'
 import Sidebar from './components/Sidebar'
 import EditorArea, { type EditorAreaHandle } from './components/EditorArea'
@@ -6,10 +6,14 @@ import AIPanel from './components/AIPanel'
 import StatusBar from './components/StatusBar'
 import Resizer from './components/Resizer'
 import SettingsModal from './components/settings/SettingsModal'
+import WorkspaceSelector from './components/ai/WorkspaceSelector'
+import BranchSelector from './components/ai/BranchSelector'
 import { useChat } from './hooks/useChat'
+import { useSessions } from './hooks/useSessions'
+import { gitApi } from './api/client'
 
 // 活动栏可选的视图类型（设置已升级为独立 Modal，不再走侧边栏视图）
-export type ViewType = 'files' | 'search' | 'git'
+export type ViewType = 'files' | 'search' | 'git' | 'sessions'
 
 // 面板宽度范围约束
 const SIDEBAR_MIN = 180
@@ -18,7 +22,7 @@ const EDITOR_MIN = 200
 const EDITOR_MAX_RATIO = 0.85 // 编辑器最多占窗口 85%
 
 function App() {
-  const [activeView, setActiveView] = useState<ViewType>('files')
+  const [activeView, setActiveView] = useState<ViewType>('sessions')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [editorCollapsed, setEditorCollapsed] = useState(false)
 
@@ -30,7 +34,41 @@ function App() {
   const [editorWidth, setEditorWidth] = useState(0) // 0 表示用 flex 比例
 
   const chat = useChat()
+  const sessions = useSessions()
   const editorRef = useRef<EditorAreaHandle>(null)
+
+  // 当前 Git 分支和分支列表
+  const [currentBranch, setCurrentBranch] = useState('')
+  const [branches, setBranches] = useState<string[]>([])
+
+  // 标记初始会话是否已加载，避免重复加载
+  const initialSessionLoaded = useRef(false)
+
+  // 工作区变化时加载分支列表
+  useEffect(() => {
+    if (!sessions.currentWorkspace) return
+    gitApi.branches(sessions.currentWorkspace.path)
+      .then(data => {
+        setBranches(data.branches)
+        setCurrentBranch(data.current)
+      })
+      .catch(() => {
+        setBranches([])
+        setCurrentBranch('')
+      })
+  }, [sessions.currentWorkspace?.path]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 初始会话加载：第一次有会话时加载消息
+  useEffect(() => {
+    if (initialSessionLoaded.current) return
+    if (!sessions.currentSessionId) return
+    initialSessionLoaded.current = true
+    const id = sessions.currentSessionId
+    sessions.switchSession(id).then(messages => {
+      chat.setSessionId(id)
+      if (messages) chat.loadMessages(messages)
+    })
+  }, [sessions.currentSessionId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // 侧边栏拖拽：向右拖增加宽度，向左拖减少
   const handleSidebarResize = useCallback((delta: number) => {
@@ -67,6 +105,129 @@ function App() {
     })
   }, [editorWidth])
 
+  // ---- 会话管理相关回调 ----
+
+  // 新建会话：创建后设为当前，清空消息
+  const handleCreateSession = useCallback(async () => {
+    const id = await sessions.createSession()
+    if (id) {
+      chat.setSessionId(id)
+      chat.clearMessages()
+    }
+  }, [sessions, chat])
+
+  // 切换会话：加载消息到聊天面板
+  const handleSwitchSession = useCallback(async (sessionId: string) => {
+    const messages = await sessions.switchSession(sessionId)
+    chat.setSessionId(sessionId)
+    if (messages) {
+      chat.loadMessages(messages)
+    } else {
+      chat.clearMessages()
+    }
+  }, [sessions, chat])
+
+  // 删除会话：如果删的是当前会话，加载新的当前会话
+  const handleDeleteSession = useCallback(async (sessionId: string) => {
+    const wasCurrent = sessionId === chat.sessionId
+    const newSessionId = await sessions.deleteSession(sessionId)
+    if (wasCurrent) {
+      chat.setSessionId(newSessionId)
+      if (newSessionId) {
+        // 加载新当前会话的消息
+        const messages = await sessions.switchSession(newSessionId)
+        if (messages) chat.loadMessages(messages)
+        else chat.clearMessages()
+      } else {
+        chat.clearMessages()
+      }
+    }
+  }, [sessions, chat])
+
+  // 跨工作区切换会话：可能需要先切换工作区
+  const handleSwitchInWorkspace = useCallback(async (sessionId: string, workspacePath: string) => {
+    const result = await sessions.switchToSessionInWorkspace(sessionId, workspacePath)
+    if (result) {
+      chat.setSessionId(sessionId)
+      if (result.messages) {
+        chat.loadMessages(result.messages)
+      } else {
+        chat.clearMessages()
+      }
+      // 更新分支信息
+      if (result.branch !== undefined) {
+        setCurrentBranch(result.branch)
+      }
+      // 刷新分支列表（工作区可能变了）
+      if (sessions.currentWorkspace) {
+        gitApi.branches(sessions.currentWorkspace.path)
+          .then(data => {
+            setBranches(data.branches)
+            setCurrentBranch(data.current)
+          })
+          .catch(() => {})
+      }
+    }
+  }, [sessions, chat])
+
+  // 切换工作区：更新分支，加载新当前会话
+  const handleSwitchWorkspace = useCallback(async (path: string) => {
+    const result = await sessions.switchWorkspace(path)
+    if (result) {
+      setCurrentBranch(result.branch)
+      // 加载新当前会话的消息
+      if (result.sessionId) {
+        const messages = await sessions.switchSession(result.sessionId)
+        chat.setSessionId(result.sessionId)
+        if (messages) chat.loadMessages(messages)
+      } else {
+        chat.setSessionId(null)
+        chat.clearMessages()
+      }
+    }
+  }, [sessions, chat])
+
+  // 浏览选择目录
+  const handleBrowse = useCallback(async () => {
+    const w = window as unknown as { electronAPI?: { selectDirectory?: () => Promise<string | null> } }
+    const path = await w.electronAPI?.selectDirectory?.()
+    if (path) {
+      handleSwitchWorkspace(path)
+    }
+  }, [handleSwitchWorkspace])
+
+  // 切换 Git 分支
+  const handleCheckout = useCallback(async (branch: string) => {
+    try {
+      await gitApi.checkout(branch)
+      setCurrentBranch(branch)
+    } catch {
+      // 切换失败静默忽略
+    }
+  }, [])
+
+  // 移除工作区：删除后刷新列表，如果删的是当前工作区则清空聊天状态
+  const handleRemoveWorkspace = useCallback(async (workspacePath: string) => {
+    const isCurrent = workspacePath === sessions.currentWorkspace?.path
+    await sessions.deleteWorkspace(workspacePath)
+    if (isCurrent) {
+      // 删的是当前工作区，清空聊天和会话状态
+      chat.setSessionId(null)
+      chat.clearMessages()
+      setCurrentBranch('')
+      setBranches([])
+    }
+  }, [sessions, chat])
+
+  // 打开工作区：弹出目录选择对话框
+  const handleOpenWorkspace = useCallback(async () => {
+    const w = window as unknown as { electronAPI?: { selectDirectory?: () => Promise<string | null> } }
+    const path = await w.electronAPI?.selectDirectory?.()
+    if (path) {
+      handleSwitchWorkspace(path)
+    }
+  }, [handleSwitchWorkspace])
+
   return (
     <div
       style={{
@@ -94,6 +255,15 @@ function App() {
                 collapsed={false}
                 onToggleCollapse={toggleSidebar}
                 onFileOpen={(path) => editorRef.current?.openFile(path)}
+                groups={sessions.allGroups}
+                currentWorkspacePath={sessions.currentWorkspace?.path ?? null}
+                currentSessionId={sessions.currentSessionId}
+                onCreateSession={handleCreateSession}
+                onSwitchSession={handleSwitchSession}
+                onSwitchInWorkspace={handleSwitchInWorkspace}
+                onDeleteSession={handleDeleteSession}
+                onRemoveWorkspace={handleRemoveWorkspace}
+                onOpenWorkspace={handleOpenWorkspace}
               />
             </div>
             <Resizer direction="horizontal" onResize={handleSidebarResize} />
@@ -105,6 +275,15 @@ function App() {
             collapsed={true}
             onToggleCollapse={toggleSidebar}
             onFileOpen={(path) => editorRef.current?.openFile(path)}
+            groups={sessions.allGroups}
+            currentWorkspacePath={sessions.currentWorkspace?.path ?? null}
+            currentSessionId={sessions.currentSessionId}
+            onCreateSession={handleCreateSession}
+            onSwitchSession={handleSwitchSession}
+            onSwitchInWorkspace={handleSwitchInWorkspace}
+            onDeleteSession={handleDeleteSession}
+            onRemoveWorkspace={handleRemoveWorkspace}
+            onOpenWorkspace={handleOpenWorkspace}
           />
         )}
 
@@ -120,6 +299,22 @@ function App() {
             resolvePermission={chat.resolvePermission}
             permissionMode={chat.permissionMode}
             onPermissionModeChange={chat.setPermissionMode}
+            workspaceSelector={
+              <WorkspaceSelector
+                currentWorkspace={sessions.currentWorkspace}
+                workspaces={sessions.workspaces}
+                onSwitch={handleSwitchWorkspace}
+                onBrowse={handleBrowse}
+              />
+            }
+            branchSelector={
+              <BranchSelector
+                currentBranch={currentBranch}
+                branches={branches}
+                onCheckout={handleCheckout}
+              />
+            }
+            onNewSession={handleCreateSession}
           />
         </div>
 

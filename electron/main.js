@@ -150,6 +150,17 @@ app.whenReady().then(() => {
     const t = terminals.get(id)
     if (t) { t.kill(); terminals.delete(id) }
   })
+
+  // 目录选择对话框，返回用户选中的目录路径，取消则返回 null
+  ipcMain.handle('dialog:selectDirectory', async () => {
+    const result = await dialog.showOpenDialog(win, {
+      properties: ['openDirectory']
+    })
+    if (result.canceled || result.filePaths.length === 0) {
+      return null
+    }
+    return result.filePaths[0]
+  })
 })
 
 // 所有窗口关闭时的处理

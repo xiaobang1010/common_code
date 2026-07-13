@@ -43,6 +43,8 @@ from tools.commands.commands_context import CommandContext
 app_state: Any = None
 engine: Any = None
 permission_bridge: Any = None
+# 会话存储层，由 __main__.py 启动时设置
+session_store: Any = None
 # 当前对话任务，用于 abort 接口取消
 current_task: Any = None
 
@@ -140,7 +142,7 @@ def serialize_event(event: Any) -> dict:
 # ---------------------------------------------------------------------------
 
 
-async def chat_event_stream(prompt: str):
+async def chat_event_stream(prompt: str, session_id: str = ""):
     """SSE 事件生成器。
 
     引擎的 submitMessage 是 async generator，当它挂起在 permission_prompt 回调时
@@ -230,18 +232,35 @@ async def chat_event_stream(prompt: str):
                 pass
         # 清理全局引用
         current_task = None
+        # 会话持久化：把完整消息列表存到 SQLite
+        if session_id and session_store is not None:
+            try:
+                session_store.save_messages(session_id, engine.mutable_messages)
+                # 自动生成标题：标题为空且存在用户消息时，取首条用户消息前 40 字符
+                session = session_store.get_session(session_id)
+                if session and not session.title:
+                    for msg in engine.mutable_messages:
+                        if msg.get("role") == "user":
+                            content = msg.get("content", "")
+                            if isinstance(content, str) and content.strip():
+                                title = content.strip()[:40]
+                                session_store.update_session_title(session_id, title)
+                                break
+            except Exception:
+                pass
 
 
 @app.post("/api/chat")
 async def chat(body: dict) -> StreamingResponse:
     """SSE 流式对话接口。
 
-    请求体：{"prompt": "..."}
+    请求体：{"prompt": "...", "session_id": "..."}
     返回：text/event-stream，每行 data: {JSON}\n\n
     """
     prompt = body.get("prompt", "")
+    session_id = body.get("session_id", "")
     return StreamingResponse(
-        chat_event_stream(prompt),
+        chat_event_stream(prompt, session_id),
         media_type="text/event-stream",
     )
 
@@ -443,9 +462,19 @@ async def set_permission_mode(body: dict) -> dict:
 _EXCLUDED_DIRS = {"__pycache__", "node_modules", "dist", ".git"}
 
 
+# 可变的项目根目录，支持工作区切换
+_project_root_value: str = os.path.dirname(os.path.dirname(__file__))
+
+
 def _project_root() -> str:
-    """返回项目根目录（server 的上级目录）。"""
-    return os.path.dirname(os.path.dirname(__file__))
+    """返回当前工作区根目录。"""
+    return _project_root_value
+
+
+def set_project_root(path: str) -> None:
+    """切换工作区根目录。"""
+    global _project_root_value
+    _project_root_value = path
 
 
 def _is_within_root(target: str, root: str) -> bool:
@@ -924,6 +953,12 @@ async def set_config(body: dict) -> dict:
         from query.services.api.client import get_default_model
         state.model = get_default_model()
 
+        # 同步更新引擎的模型名
+        from dataclasses import replace as _replace
+        new_model = get_default_model()
+        if new_model and engine.config.model != new_model:
+            engine._config = _replace(engine.config, model=new_model)
+
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -997,8 +1032,14 @@ async def add_custom_llm_provider(body: dict) -> dict:
         registry.set_active(provider_id)
         if models:
             registry.set_active_model(models[0].model_id)
+        reset_client()
         state = app_state.get_state()
         state.model = get_default_model()
+        # 同步更新引擎的模型名
+        from dataclasses import replace as _replace
+        new_model = get_default_model()
+        if new_model and engine.config.model != new_model:
+            engine._config = _replace(engine.config, model=new_model)
 
     return {"provider": provider.to_dict()}
 
@@ -1049,10 +1090,15 @@ async def update_custom_llm_provider(provider_id: str, body: dict) -> dict:
     # 重置 LLM 客户端缓存
     reset_client()
 
-    # 如果更新的是当前激活的供应商，更新 AppState
+    # 如果更新的是当前激活的供应商，更新 AppState 和引擎模型
     if config.active_provider == provider_id:
         state = app_state.get_state()
         state.model = get_default_model()
+        # 同步更新引擎的模型名
+        from dataclasses import replace as _replace
+        new_model = get_default_model()
+        if new_model and engine.config.model != new_model:
+            engine._config = _replace(engine.config, model=new_model)
 
     return {"provider": old_provider.to_dict()}
 
@@ -1232,6 +1278,12 @@ async def activate_llm_provider(body: dict) -> dict:
     # 更新 AppState
     state = app_state.get_state()
     state.model = get_default_model()
+
+    # 同步更新引擎的模型名（config 是 frozen dataclass，需要用 replace 创建新配置）
+    from dataclasses import replace as _replace
+    new_model = get_default_model()
+    if new_model and engine.config.model != new_model:
+        engine._config = _replace(engine.config, model=new_model)
 
     return {"ok": True, "provider_id": provider_id, "model_id": model_id}
 
@@ -1667,7 +1719,419 @@ async def list_agents() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 静态文件 — 挂载前端构建产物
+# 会话管理 API
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/sessions")
+async def create_session(body: dict) -> dict:
+    """创建会话。
+
+    请求体：{"workspace_path": "...", "title": "可选"}
+    返回：{"session_id": "...", "workspace_path": "...", "title": "..."}
+    """
+    workspace_path = body.get("workspace_path", "")
+    title = body.get("title", "")
+
+    if not workspace_path:
+        return {"ok": False, "error": "workspace_path is required"}
+
+    # 创建会话时记录当前 git 分支
+    branch = ""
+    try:
+        proc = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=workspace_path,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if proc.returncode == 0:
+            branch = proc.stdout.strip()
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    session = session_store.create_session(workspace_path, title=title, branch=branch)
+    return {
+        "session_id": session.id,
+        "workspace_path": session.workspace_path,
+        "title": session.title,
+    }
+
+
+@app.get("/api/sessions")
+async def list_sessions(workspace_path: str = "") -> dict:
+    """列出指定工作区的会话。
+
+    参数 workspace_path：工作区路径。
+    返回 {"sessions": [{id, title, workspace_path, branch, created_at, updated_at, message_count}]}
+    不返回 messages（太大）。
+    """
+    if not workspace_path:
+        return {"sessions": []}
+    sessions = session_store.list_sessions(workspace_path)
+    return {
+        "sessions": [
+            {
+                "id": s.id,
+                "title": s.title,
+                "workspace_path": s.workspace_path,
+                "branch": s.branch,
+                "created_at": s.created_at,
+                "updated_at": s.updated_at,
+                "message_count": s.message_count,
+            }
+            for s in sessions
+        ]
+    }
+
+
+@app.get("/api/sessions/grouped")
+async def list_sessions_grouped() -> dict:
+    """按工作区分组返回所有会话。
+
+    返回 {"groups": [{"workspace": {path, name, last_used_at},
+                       "sessions": [{id, title, workspace_path, branch,
+                                     created_at, updated_at, message_count}]}]}
+    """
+    try:
+        grouped = session_store.list_all_sessions_grouped()
+        groups = []
+        for workspace, sessions in grouped:
+            groups.append({
+                "workspace": {
+                    "path": workspace.path,
+                    "name": workspace.name,
+                    "last_used_at": workspace.last_used_at,
+                },
+                "sessions": [
+                    {
+                        "id": s.id,
+                        "title": s.title,
+                        "workspace_path": s.workspace_path,
+                        "branch": s.branch,
+                        "created_at": s.created_at,
+                        "updated_at": s.updated_at,
+                        "message_count": s.message_count,
+                    }
+                    for s in sessions
+                ],
+            })
+        return {"groups": groups}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/sessions/{session_id}")
+async def get_session(session_id: str) -> dict:
+    """获取单个会话详情（含完整 messages）。
+
+    返回 {"session": {...}, "messages": [...]}。
+    不存在返回 404。
+    """
+    session = session_store.get_session(session_id)
+    if session is None:
+        return JSONResponse(status_code=404, content={"error": "session not found"})
+    return {
+        "session": {
+            "id": session.id,
+            "title": session.title,
+            "workspace_path": session.workspace_path,
+            "branch": session.branch,
+            "created_at": session.created_at,
+            "updated_at": session.updated_at,
+            "message_count": session.message_count,
+        },
+        "messages": session.messages,
+    }
+
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: str) -> dict:
+    """删除会话。"""
+    session_store.delete_session(session_id)
+    return {"ok": True}
+
+
+@app.patch("/api/sessions/{session_id}")
+async def update_session(session_id: str, body: dict) -> dict:
+    """更新会话标题。
+
+    请求体：{"title": "..."}
+    """
+    title = body.get("title", "")
+    session_store.update_session_title(session_id, title)
+    return {"ok": True}
+
+
+@app.post("/api/sessions/{session_id}/switch")
+async def switch_session(session_id: str) -> dict:
+    """切换会话：加载消息到引擎，必要时切换工作区。
+
+    如果会话的 workspace_path 与当前工作区不同，先切换工作区（更新 _project_root + 重建引擎）。
+    返回 {"ok": true, "messages": [...], "workspace_path": "..."}
+    """
+    session = session_store.get_session(session_id)
+    if session is None:
+        return JSONResponse(status_code=404, content={"error": "session not found"})
+
+    # 如果工作区不同，切换工作区
+    if session.workspace_path != _project_root():
+        set_project_root(session.workspace_path)
+        # 重建引擎
+        from dataclasses import replace
+        from query.engine import QueryEngine, build_engine_config
+
+        config = build_engine_config(permission_prompt=permission_bridge.request_permission)
+        config = replace(config, cwd=session.workspace_path)
+        new_engine = QueryEngine(config)
+        # 替换全局引擎（需要在本模块内赋值）
+        app_module = __import__("server.app", fromlist=["app"])
+        app_module.engine = new_engine
+
+    # 加载消息到引擎
+    engine.mutable_messages = list(session.messages)
+    session_store.update_workspace_last_used(session.workspace_path)
+
+    return {
+        "ok": True,
+        "messages": session.messages,
+        "workspace_path": session.workspace_path,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 工作区管理 API
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/workspaces")
+async def list_workspaces() -> dict:
+    """列出所有工作区。
+
+    返回 {"workspaces": [{path, name, last_used_at, session_count}]}
+    """
+    workspaces = session_store.list_workspaces()
+    return {
+        "workspaces": [
+            {
+                "path": w.path,
+                "name": w.name,
+                "last_used_at": w.last_used_at,
+                "session_count": w.session_count,
+            }
+            for w in workspaces
+        ]
+    }
+
+
+@app.post("/api/workspaces")
+async def add_workspace(body: dict) -> dict:
+    """添加工作区。
+
+    请求体：{"path": "..."}
+    返回 {"ok": true, "workspace": {...}}
+    """
+    path = body.get("path", "")
+    if not path:
+        return {"ok": False, "error": "path is required"}
+    workspace = session_store.add_workspace(path)
+    return {
+        "ok": True,
+        "workspace": {
+            "path": workspace.path,
+            "name": workspace.name,
+            "last_used_at": workspace.last_used_at,
+            "session_count": workspace.session_count,
+        },
+    }
+
+
+@app.post("/api/workspaces/switch")
+async def switch_workspace(body: dict) -> dict:
+    """切换工作区。
+
+    更新工作目录，重建 QueryEngine，更新最后使用时间，获取当前 git 分支。
+    请求体：{"path": "..."}
+    返回 {"ok": true, "workspace": {...}, "current_branch": "..."}
+    """
+    path = body.get("path", "")
+    if not path:
+        return {"ok": False, "error": "path is required"}
+
+    from dataclasses import replace
+    from query.engine import QueryEngine, build_engine_config
+
+    # 1. 更新工作目录
+    set_project_root(path)
+
+    # 2. 重建引擎
+    config = build_engine_config(permission_prompt=permission_bridge.request_permission)
+    config = replace(config, cwd=path)
+    new_engine = QueryEngine(config)
+    # 替换全局引擎
+    app_module = __import__("server.app", fromlist=["app"])
+    app_module.engine = new_engine
+
+    # 3. 更新最后使用时间
+    session_store.update_workspace_last_used(path)
+
+    # 4. 获取当前 git 分支
+    current_branch = ""
+    try:
+        proc = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=path,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if proc.returncode == 0:
+            current_branch = proc.stdout.strip()
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    # 获取工作区信息
+    workspaces = session_store.list_workspaces()
+    workspace_info = None
+    for w in workspaces:
+        if w.path == path:
+            workspace_info = {
+                "path": w.path,
+                "name": w.name,
+                "last_used_at": w.last_used_at,
+                "session_count": w.session_count,
+            }
+            break
+    if workspace_info is None:
+        workspace_info = {
+            "path": path,
+            "name": os.path.basename(path),
+            "last_used_at": "",
+            "session_count": 0,
+        }
+
+    return {"ok": True, "workspace": workspace_info, "current_branch": current_branch}
+
+
+@app.post("/api/workspaces/delete")
+async def delete_workspace(body: dict) -> dict:
+    """删除工作区及其所有会话。
+
+    请求体：{"path": "..."}
+    如果删除的是当前工作区，删除后清空当前工作区状态。
+    """
+    path = body.get("path", "")
+    if not path:
+        return {"ok": False, "error": "path is required"}
+
+    deleted = session_store.delete_workspace(path)
+    if not deleted:
+        return {"ok": False, "error": "工作区不存在"}
+
+    # 刷新工作区列表
+    workspaces = session_store.list_workspaces()
+    return {
+        "ok": True,
+        "workspaces": [
+            {
+                "path": w.path,
+                "name": w.name,
+                "last_used_at": w.last_used_at,
+                "session_count": w.session_count,
+            }
+            for w in workspaces
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Git 分支管理 API
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/git/branches")
+async def git_branches(path: str = "") -> dict:
+    """列出所有 Git 分支。
+
+    参数 path：可选，默认用当前工作区。
+    返回 {"branches": [...], "current": "..."}。当前分支排在第一位。
+    非 git 仓库返回空列表。
+    """
+    cwd = path if path else _project_root()
+    branches: list[str] = []
+    current = ""
+
+    try:
+        # 获取当前分支
+        cur_proc = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if cur_proc.returncode == 0:
+            current = cur_proc.stdout.strip()
+
+        # 获取所有分支
+        list_proc = subprocess.run(
+            ["git", "branch"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if list_proc.returncode == 0:
+            for line in list_proc.stdout.splitlines():
+                branch_name = line.strip()
+                # 当前分支行以 * 开头
+                if branch_name.startswith("* "):
+                    branch_name = branch_name[2:].strip()
+                if branch_name and branch_name not in branches:
+                    branches.append(branch_name)
+    except (subprocess.SubprocessError, OSError):
+        return {"branches": [], "current": ""}
+
+    # 当前分支排到第一位
+    if current and current in branches:
+        branches.remove(current)
+        branches.insert(0, current)
+
+    return {"branches": branches, "current": current}
+
+
+@app.post("/api/git/checkout")
+async def git_checkout(body: dict) -> dict:
+    """切换 Git 分支。
+
+    请求体：{"branch": "..."}
+    返回 {"ok": true, "branch": "..."}
+    """
+    branch = body.get("branch", "")
+    if not branch:
+        return {"ok": False, "error": "branch is required"}
+
+    root = _project_root()
+    try:
+        proc = subprocess.run(
+            ["git", "checkout", branch],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (subprocess.SubprocessError, OSError) as e:
+        return {"ok": False, "error": str(e)}
+
+    if proc.returncode != 0:
+        return {"ok": False, "error": proc.stderr.strip()}
+
+    return {"ok": True, "branch": branch}
+
+
+# ---------------------------------------------------------------------------
+# 静态文件 - 挂载前端构建产物
 # ---------------------------------------------------------------------------
 # 必须放在所有 API 路由（/api/*）之后，否则 /api/* 请求会被静态文件拦截。
 # server/__main__.py 运行时 cwd 是项目根目录，前端构建产物在 frontend/dist。
