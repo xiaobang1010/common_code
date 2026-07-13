@@ -90,6 +90,9 @@ const genId = () => `msg-${Date.now()}-${idCounter++}`
 export function useChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [isStreaming, setIsStreaming] = useState(false)
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  // 用 ref 保存 sessionId，让 sendMessage 能拿到最新值（避免 useCallback 依赖重建）
+  const sessionIdRef = useRef<string | null>(null)
   const [tokenUsage, setTokenUsage] = useState<TokenUsage>({
     input_tokens: 0,
     output_tokens: 0,
@@ -410,7 +413,7 @@ export function useChat() {
             const chatResp = await fetch('/api/chat', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ prompt: data.skill_prompt }),
+              body: JSON.stringify({ prompt: data.skill_prompt, session_id: sessionIdRef.current }),
             })
             if (!chatResp.ok) throw new Error(`HTTP ${chatResp.status}`)
             await parseSSEStream(chatResp)
@@ -456,7 +459,7 @@ export function useChat() {
         const resp = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt }),
+          body: JSON.stringify({ prompt, session_id: sessionIdRef.current }),
         })
         if (!resp.ok) {
           throw new Error(`HTTP ${resp.status}`)
@@ -543,6 +546,65 @@ export function useChat() {
     }
   }, [])
 
+  // 设置当前会话 id，同时更新 ref 让 sendMessage 能读到最新值
+  const setSessionIdWrapper = useCallback((id: string | null) => {
+    sessionIdRef.current = id
+    setSessionId(id)
+  }, [])
+
+  // 清空消息列表
+  const clearMessages = useCallback(() => {
+    setMessages([])
+    currentAssistantId.current = null
+    assistantContentRef.current = ''
+    reasoningContentRef.current = ''
+    hasToolCallStartedRef.current = false
+    pendingToolReasoningRef.current = ''
+  }, [])
+
+  // 把后端返回的 OpenAI 格式消息列表转成前端 ChatMessage[]
+  const loadMessages = useCallback((rawMessages: Record<string, unknown>[]) => {
+    const converted: ChatMessage[] = []
+    for (const raw of rawMessages) {
+      const role = raw.role as string
+      const content = (raw.content as string) || ''
+      if (role === 'user') {
+        converted.push({ id: genId(), role: 'user', content })
+      } else if (role === 'assistant') {
+        const toolCalls = raw.tool_calls as Array<{
+          id: string
+          function: { name: string; arguments: string }
+        }> | undefined
+        if (toolCalls && toolCalls.length > 0) {
+          converted.push({
+            id: genId(),
+            role: 'assistant',
+            content,
+            toolCalls: toolCalls.map(tc => ({
+              id: tc.id,
+              name: tc.function.name,
+              args: tc.function.arguments,
+            })),
+          })
+        } else {
+          converted.push({ id: genId(), role: 'assistant', content })
+        }
+      } else if (role === 'tool') {
+        converted.push({
+          id: genId(),
+          role: 'tool',
+          content,
+          toolStep: {
+            toolName: (raw.tool_name as string) || 'tool',
+            args: '',
+            result: content,
+          },
+        })
+      }
+    }
+    setMessages(converted)
+  }, [])
+
   return {
     messages,
     isStreaming,
@@ -556,5 +618,9 @@ export function useChat() {
     loopResult,
     permissionMode,
     setPermissionMode,
+    sessionId,
+    setSessionId: setSessionIdWrapper,
+    loadMessages,
+    clearMessages,
   }
 }

@@ -2,12 +2,15 @@ import type { ViewType } from '../App'
 import FileTree from './sidebar/FileTree'
 import GitStatus from './sidebar/GitStatus'
 import SearchPanel from './sidebar/SearchPanel'
+import SessionList from './sidebar/SessionList'
+import type { SessionGroup } from '../api/client'
 
 // 各视图对应的标题
 const viewTitles: Record<ViewType, string> = {
   files: '文件资源管理器',
   search: '搜索',
   git: '源代码管理',
+  sessions: '会话历史',
 }
 
 interface SidebarProps {
@@ -15,9 +18,19 @@ interface SidebarProps {
   collapsed: boolean
   onToggleCollapse: () => void
   onFileOpen: (path: string) => void
+  // 会话列表相关 props
+  groups: SessionGroup[]
+  currentWorkspacePath: string | null
+  currentSessionId: string | null
+  onCreateSession: () => void
+  onSwitchSession: (sessionId: string) => void
+  onSwitchInWorkspace: (sessionId: string, workspacePath: string) => void
+  onDeleteSession: (sessionId: string) => void
+  onRemoveWorkspace: (workspacePath: string) => void
+  onOpenWorkspace: () => void
 }
 
-function Sidebar({ activeView, collapsed, onToggleCollapse, onFileOpen }: SidebarProps) {
+function Sidebar({ activeView, collapsed, onToggleCollapse, onFileOpen, groups, currentWorkspacePath, currentSessionId, onCreateSession, onSwitchSession, onSwitchInWorkspace, onDeleteSession, onRemoveWorkspace, onOpenWorkspace }: SidebarProps) {
   // 折叠状态下渲染一个窄条展开按钮
   if (collapsed) {
     return (
@@ -63,6 +76,20 @@ function Sidebar({ activeView, collapsed, onToggleCollapse, onFileOpen }: Sideba
         return <SearchPanel onFileOpen={onFileOpen} />
       case 'git':
         return <GitStatus />
+      case 'sessions':
+        return (
+          <SessionList
+            groups={groups}
+            currentWorkspacePath={currentWorkspacePath}
+            currentSessionId={currentSessionId}
+            onCreate={onCreateSession}
+            onSwitch={onSwitchSession}
+            onSwitchInWorkspace={onSwitchInWorkspace}
+            onDelete={onDeleteSession}
+            onRemoveWorkspace={onRemoveWorkspace}
+            onOpenWorkspace={onOpenWorkspace}
+          />
+        )
     }
   }
 

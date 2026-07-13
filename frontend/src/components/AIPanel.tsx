@@ -16,6 +16,10 @@ interface AIPanelProps {
   resolvePermission: (decision: 'allow' | 'deny' | 'always_allow') => void
   permissionMode: PermissionMode
   onPermissionModeChange: (mode: PermissionMode) => void
+  // 顶部栏的工作区选择器和分支选择器，由 App.tsx 传入组合好的组件
+  workspaceSelector: React.ReactNode
+  branchSelector: React.ReactNode
+  onNewSession: () => void
 }
 
 function AIPanel({
@@ -28,6 +32,9 @@ function AIPanel({
   resolvePermission,
   permissionMode,
   onPermissionModeChange,
+  workspaceSelector,
+  branchSelector,
+  onNewSession,
 }: AIPanelProps) {
   const [infoExpanded, setInfoExpanded] = useState(false)
 
@@ -47,21 +54,21 @@ function AIPanel({
         transition: 'box-shadow 400ms ease',
       }}
     >
-      {/* 顶部标题栏 - 带状态指示 */}
+      {/* 顶部标题栏 - 工作区/分支选择器 + 新建按钮 */}
       <div
         style={{
           height: '44px',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          padding: '0 16px',
+          padding: '0 12px',
           borderBottom: '1px solid var(--border)',
           flexShrink: 0,
           background: 'linear-gradient(180deg, rgba(245, 166, 35, 0.03), transparent)',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          {/* 状态指示点 */}
+        {/* 左侧：状态指示点 + 工作区选择器 + 分支选择器 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           <span
             style={{
               width: '8px',
@@ -72,29 +79,57 @@ function AIPanel({
                 ? '0 0 10px var(--accent-glow)'
                 : '0 0 6px rgba(78, 201, 176, 0.4)',
               animation: isStreaming ? 'breathe 1.4s ease-in-out infinite' : 'none',
+              flexShrink: 0,
             }}
           />
-          <span
+          {workspaceSelector}
+          {branchSelector}
+        </div>
+        {/* 右侧：新建任务按钮 + 快捷键提示 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <button
+            onClick={onNewSession}
+            title="新建任务"
             style={{
-              fontSize: '13px',
-              fontWeight: 500,
-              color: 'var(--text-primary)',
-              letterSpacing: '0.2px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: '28px',
+              height: '28px',
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-sm)',
+              background: 'transparent',
+              color: 'var(--text-secondary)',
+              cursor: 'pointer',
+              transition: 'all var(--transition-fast)',
+              flexShrink: 0,
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.borderColor = 'var(--accent)'
+              e.currentTarget.style.color = 'var(--accent)'
+              e.currentTarget.style.backgroundColor = 'var(--accent-soft)'
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.borderColor = 'var(--border)'
+              e.currentTarget.style.color = 'var(--text-secondary)'
+              e.currentTarget.style.backgroundColor = 'transparent'
             }}
           >
-            {isStreaming ? 'AI 正在工作' : 'AI 对话'}
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </button>
+          <span
+            style={{
+              fontSize: '11px',
+              color: 'var(--text-tertiary)',
+              fontFamily: 'var(--font-mono)',
+              letterSpacing: '0.5px',
+            }}
+          >
+            ⌘ + Enter
           </span>
         </div>
-        <span
-          style={{
-            fontSize: '11px',
-            color: 'var(--text-tertiary)',
-            fontFamily: 'var(--font-mono)',
-            letterSpacing: '0.5px',
-          }}
-        >
-          ⌘ + Enter
-        </span>
       </div>
 
       {/* 对话流 */}

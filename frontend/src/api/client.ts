@@ -138,6 +138,20 @@ export async function apiDelete<T>(path: string): Promise<T> {
   return json as T
 }
 
+/** PATCH 请求，发送 JSON body，返回 JSON 并带类型 */
+export async function apiPatch<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  })
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok || json.ok === false) {
+    throw new Error(json.error || `PATCH ${path} 失败：${res.status}`)
+  }
+  return json as T
+}
+
 // ---------------------------------------------------------------------------
 // 具体 endpoint 封装
 // ---------------------------------------------------------------------------
@@ -293,4 +307,77 @@ export type PermissionMode = 'default' | 'full_access'
 export const permissionsApi = {
   setMode: (mode: PermissionMode) =>
     apiPost<{ ok: boolean; mode: PermissionMode }>('/api/permission/mode', { mode }),
+}
+
+// ---------------------------------------------------------------------------
+// 会话 / 工作区 / Git 分支
+// ---------------------------------------------------------------------------
+
+/** 会话信息 */
+export interface SessionInfo {
+  id: string
+  title: string
+  workspace_path: string
+  branch: string
+  created_at: string
+  updated_at: string
+  message_count: number
+}
+
+/** 会话详情（含消息） */
+export interface SessionDetail {
+  session: SessionInfo
+  messages: Record<string, unknown>[]
+}
+
+/** 工作区信息 */
+export interface WorkspaceInfo {
+  path: string
+  name: string
+  last_used_at: string
+  session_count: number
+}
+
+/** 工作区分组（含会话列表） */
+export interface SessionGroup {
+  workspace: WorkspaceInfo
+  sessions: SessionInfo[]
+}
+
+/** 会话管理 */
+export const sessionsApi = {
+  create: (workspace_path: string, title?: string) =>
+    apiPost<{ session_id: string; workspace_path: string; title: string }>('/api/sessions', { workspace_path, title }),
+  list: (workspace_path: string) =>
+    apiGet<{ sessions: SessionInfo[] }>(`/api/sessions?workspace_path=${encodeURIComponent(workspace_path)}`),
+  get: (session_id: string) =>
+    apiGet<SessionDetail>(`/api/sessions/${session_id}`),
+  delete: (session_id: string) =>
+    apiDelete<{ ok: boolean }>(`/api/sessions/${session_id}`),
+  rename: (session_id: string, title: string) =>
+    apiPatch<{ ok: boolean }>(`/api/sessions/${session_id}`, { title }),
+  switch: (session_id: string) =>
+    apiPost<{ ok: boolean; messages: Record<string, unknown>[]; workspace_path: string }>(`/api/sessions/${session_id}/switch`),
+  grouped: () =>
+    apiGet<{ groups: SessionGroup[] }>('/api/sessions/grouped'),
+}
+
+/** 工作区管理 */
+export const workspacesApi = {
+  list: () =>
+    apiGet<{ workspaces: WorkspaceInfo[] }>('/api/workspaces'),
+  add: (path: string) =>
+    apiPost<{ ok: boolean; workspace: WorkspaceInfo }>('/api/workspaces', { path }),
+  switch: (path: string) =>
+    apiPost<{ ok: boolean; workspace: WorkspaceInfo; current_branch: string }>('/api/workspaces/switch', { path }),
+  remove: (path: string) =>
+    apiPost<{ ok: boolean; workspaces: WorkspaceInfo[] }>('/api/workspaces/delete', { path }),
+}
+
+/** Git 分支管理 */
+export const gitApi = {
+  branches: (path: string) =>
+    apiGet<{ branches: string[]; current: string }>(`/api/git/branches?path=${encodeURIComponent(path)}`),
+  checkout: (branch: string) =>
+    apiPost<{ ok: boolean; branch: string }>('/api/git/checkout', { branch }),
 }

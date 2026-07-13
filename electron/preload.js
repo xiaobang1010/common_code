@@ -13,5 +13,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('terminal:output', handler)
       return () => ipcRenderer.removeListener('terminal:output', handler)
     }
-  }
+  },
+  // 选择目录对话框，返回选中的目录路径或 null
+  selectDirectory: () => ipcRenderer.invoke('dialog:selectDirectory')
 })

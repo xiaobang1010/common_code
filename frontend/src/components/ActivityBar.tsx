@@ -22,6 +22,11 @@ const viewIcons: Record<ViewType, React.ReactNode> = {
       <path d="M6 12h7a3 3 0 0 0 2.5-2.5" />
     </svg>
   ),
+  sessions: (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </svg>
+  ),
 }
 
 const settingsIcon = (
@@ -35,6 +40,7 @@ const viewLabels: Record<ViewType, string> = {
   files: '文件资源管理器',
   search: '搜索',
   git: '源代码管理',
+  sessions: '会话历史',
 }
 
 interface ActivityBarProps {
@@ -45,8 +51,8 @@ interface ActivityBarProps {
 }
 
 function ActivityBar({ activeView, onViewChange, onOpenSettings }: ActivityBarProps) {
-  // 侧边栏视图：files / search / git
-  const sidebarViews: ViewType[] = ['files', 'search', 'git']
+  // 侧边栏视图：files / search / git / sessions
+  const sidebarViews: ViewType[] = ['sessions', 'files', 'search', 'git']
 
   return (
     <div
