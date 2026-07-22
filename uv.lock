@@ -345,10 +345,8 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "openai" },
-    { name = "prompt-toolkit" },
     { name = "pydantic" },
     { name = "python-dotenv" },
-    { name = "rich" },
     { name = "sentence-transformers" },
     { name = "torch" },
     { name = "uvicorn", extra = ["standard"] },
@@ -368,10 +366,8 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.100" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "openai", specifier = ">=1.0" },
-    { name = "prompt-toolkit", specifier = ">=3.0" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "python-dotenv", specifier = ">=1.0" },
-    { name = "rich", specifier = ">=13.0" },
     { name = "sentence-transformers", specifier = ">=3.0" },
     { name = "torch" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.20" },
@@ -1435,18 +1431,6 @@ wheels = [
 ]
 
 [[package]]
-name = "prompt-toolkit"
-version = "3.0.52"
-source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
-dependencies = [
-    { name = "wcwidth" },
-]
-sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/a1/96/06e01a7b38dce6fe1db213e061a4602dd6032a8a97ef6c1a862537732421/prompt_toolkit-3.0.52.tar.gz", hash = "sha256:28cde192929c8e7321de85de1ddbe736f1375148b02f2e17edd840042b1be855" }
-wheels = [
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/84/03/0d3ce49e2505ae70cf43bc5bb3033955d2fc9f932163e84dc0779cc47f48/prompt_toolkit-3.0.52-py3-none-any.whl", hash = "sha256:9aac639a3bbd33284347de5ad8d68ecc044b91a762dc39b7c21095fcd6a19955" },
-]
-
-[[package]]
 name = "propcache"
 version = "0.5.2"
 source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
@@ -2325,15 +2309,6 @@ wheels = [
     { url = "https://mirrors.cloud.tencent.com/pypi/packages/56/fe/cb8ef3d6f929d14158fdaaad9925985b7310abc9384dcd4d82dd0016fb59/watchfiles-1.2.0-cp315-cp315-manylinux_2_31_riscv64.whl", hash = "sha256:cee9d5efd929efdac5f7e58f72b3376f676b64050a91c5b99a7094c5b2317488" },
     { url = "https://mirrors.cloud.tencent.com/pypi/packages/25/91/80908e835e100527a9267147b08c0eee1fa6ab0ffec15edc04d1d44885f7/watchfiles-1.2.0-cp315-cp315-musllinux_1_1_aarch64.whl", hash = "sha256:b718bf356bbc15e559bd8ef41782b573b8ae0e3f177ab244b440568d7ea02cfb" },
     { url = "https://mirrors.cloud.tencent.com/pypi/packages/46/4b/95ab2f256bb4af3cb2eb23b9317bda984ee6e0f11733a5c004a6c95b06e3/watchfiles-1.2.0-cp315-cp315-musllinux_1_1_x86_64.whl", hash = "sha256:922c0e019fe68b3ae392965a766b02a71ba1168c932cebc3733cd52c5fe5b377" },
-]
-
-[[package]]
-name = "wcwidth"
-version = "0.7.0"
-source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
-sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/2c/ee/afaf0f85a9a18fe47a67f1e4422ed6cf1fe642f0ae0a2f81166231303c52/wcwidth-0.7.0.tar.gz", hash = "sha256:90e3a7ea092341c44b99562e75d09e4d5160fe7a3974c6fb842a101a95e7eed0" }
-wheels = [
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/41/52/e465037f5375f43533d1a80b6923955201596a99142ed524d77b571a1418/wcwidth-0.7.0-py3-none-any.whl", hash = "sha256:5d69154c429a82910e241c738cd0e2976fac8a2dd47a1a805f4afed1c0f136f2" },
 ]
 
 [[package]]

@@ -1,6 +1,6 @@
 # DO NOT ADD MORE STATE HERE - BE JUDICIOUS WITH GLOBAL STATE
 
-"""模块级单例状态，参考原始 bootstrap/state.ts 的设计。
+"""模块级单例状态。
 
 使用模块级 _STATE 字典 + get_xxx/set_xxx 函数对访问/修改全局状态，
 threading.Lock 保证线程安全。
@@ -37,22 +37,11 @@ def _get_initial_state() -> dict[str, Any]:
         "last_interaction_time": time.time() * 1000,
         "total_lines_added": 0,
         "total_lines_removed": 0,
-        "has_unknown_model_cost": False,
         "cwd": resolved_cwd,
         "model_usage": {},
         "main_loop_model_override": None,
         "initial_main_loop_model": None,
         "model_strings": None,
-        "is_interactive": False,
-        "kairos_active": False,
-        "strict_tool_result_pairing": False,
-        "sdk_agent_progress_summaries_enabled": False,
-        "user_msg_opt_in": False,
-        "client_type": "cli",
-        "session_source": None,
-        "question_preview_format": None,
-        "flag_settings_path": None,
-        "flag_settings_inline": None,
         "allowed_setting_sources": [
             "userSettings",
             "projectSettings",
@@ -60,78 +49,15 @@ def _get_initial_state() -> dict[str, Any]:
             "flagSettings",
             "policySettings",
         ],
-        "session_ingress_token": None,
-        "oauth_token_from_fd": None,
-        "api_key_from_fd": None,
-        # Telemetry state
-        "meter": None,
-        "session_counter": None,
-        "loc_counter": None,
-        "pr_counter": None,
-        "commit_counter": None,
-        "cost_counter": None,
-        "token_counter": None,
-        "code_edit_tool_decision_counter": None,
-        "active_time_counter": None,
-        "stats_store": None,
         "session_id": str(uuid.uuid4()),
         "parent_session_id": None,
-        # Logger state
-        "logger_provider": None,
-        "event_logger": None,
-        # Meter / Tracer provider state
-        "meter_provider": None,
-        "tracer_provider": None,
-        # Agent color state
-        "agent_color_map": {},
-        "agent_color_index": 0,
-        # Last API request for bug reports
-        "last_api_request": None,
-        "last_api_request_messages": None,
-        "last_classifier_requests": None,
-        "cached_agent_md_content": None,
-        # In-memory error log
-        "in_memory_error_log": [],
-        # Session-only plugins
-        "inline_plugins": [],
-        "chrome_flag_override": None,
-        "use_cowork_plugins": False,
-        "session_bypass_permissions_mode": False,
-        "scheduled_tasks_enabled": False,
-        "session_cron_tasks": [],
-        "session_created_teams": set(),
-        "session_trust_accepted": False,
-        "session_persistence_disabled": False,
-        "has_exited_plan_mode": False,
-        "needs_plan_mode_exit_attachment": False,
-        "needs_auto_mode_exit_attachment": False,
-        "lsp_recommendation_shown_this_session": False,
-        "init_json_schema": None,
-        "registered_hooks": None,
-        "plan_slug_cache": {},
-        "teleported_session_info": None,
-        "invoked_skills": {},
-        "slow_operations": [],
-        "sdk_betas": None,
-        "main_thread_agent_type": None,
-        "is_remote_mode": False,
-        "direct_connect_server_url": None,
-        "system_prompt_section_cache": {},
-        "last_emitted_date": None,
-        "additional_directories_for_agent_md": [],
-        "allowed_channels": [],
-        "has_dev_channels": False,
         "session_project_dir": None,
-        "prompt_cache_1h_allowlist": None,
-        "prompt_cache_1h_eligible": None,
-        "afk_mode_header_latched": None,
-        "fast_mode_header_latched": None,
-        "cache_editing_header_latched": None,
-        "thinking_clear_latched": None,
-        "prompt_id": None,
-        "last_main_request_id": None,
         "last_api_completion_timestamp": None,
         "pending_post_compaction": False,
+        "system_prompt_section_cache": {},
+        "last_emitted_date": None,
+        "prompt_id": None,
+        "last_main_request_id": None,
     }
 
 
@@ -151,7 +77,6 @@ def regenerate_session_id(set_current_as_parent: bool = False) -> str:
     with _lock:
         if set_current_as_parent:
             _STATE["parent_session_id"] = _STATE["session_id"]
-        _STATE["plan_slug_cache"].pop(_STATE["session_id"], None)
         _STATE["session_id"] = str(uuid.uuid4())
         _STATE["session_project_dir"] = None
         return _STATE["session_id"]
@@ -163,7 +88,6 @@ def get_parent_session_id() -> str | None:
 
 def switch_session(session_id: str, project_dir: str | None = None) -> None:
     with _lock:
-        _STATE["plan_slug_cache"].pop(_STATE["session_id"], None)
         _STATE["session_id"] = session_id
         _STATE["session_project_dir"] = project_dir
 
@@ -255,7 +179,6 @@ def reset_cost_state() -> None:
         _STATE["start_time"] = time.time() * 1000
         _STATE["total_lines_added"] = 0
         _STATE["total_lines_removed"] = 0
-        _STATE["has_unknown_model_cost"] = False
         _STATE["model_usage"] = {}
         _STATE["prompt_id"] = None
 
@@ -388,112 +311,6 @@ def set_model_strings(model_strings: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Interactive / Client
-# ---------------------------------------------------------------------------
-
-def get_is_interactive() -> bool:
-    return _STATE["is_interactive"]
-
-
-def set_is_interactive(value: bool) -> None:
-    with _lock:
-        _STATE["is_interactive"] = value
-
-
-def get_client_type() -> str:
-    return _STATE["client_type"]
-
-
-def set_client_type(client_type: str) -> None:
-    with _lock:
-        _STATE["client_type"] = client_type
-
-
-# ---------------------------------------------------------------------------
-# Misc boolean flags
-# ---------------------------------------------------------------------------
-
-def get_kairos_active() -> bool:
-    return _STATE["kairos_active"]
-
-
-def set_kairos_active(value: bool) -> None:
-    with _lock:
-        _STATE["kairos_active"] = value
-
-
-def get_strict_tool_result_pairing() -> bool:
-    return _STATE["strict_tool_result_pairing"]
-
-
-def set_strict_tool_result_pairing(value: bool) -> None:
-    with _lock:
-        _STATE["strict_tool_result_pairing"] = value
-
-
-def get_user_msg_opt_in() -> bool:
-    return _STATE["user_msg_opt_in"]
-
-
-def set_user_msg_opt_in(value: bool) -> None:
-    with _lock:
-        _STATE["user_msg_opt_in"] = value
-
-
-def has_unknown_model_cost() -> bool:
-    return _STATE["has_unknown_model_cost"]
-
-
-def set_has_unknown_model_cost() -> None:
-    with _lock:
-        _STATE["has_unknown_model_cost"] = True
-
-
-# ---------------------------------------------------------------------------
-# Session source / format
-# ---------------------------------------------------------------------------
-
-def get_session_source() -> str | None:
-    return _STATE["session_source"]
-
-
-def set_session_source(source: str) -> None:
-    with _lock:
-        _STATE["session_source"] = source
-
-
-def get_question_preview_format() -> str | None:
-    return _STATE["question_preview_format"]
-
-
-def set_question_preview_format(fmt: str) -> None:
-    with _lock:
-        _STATE["question_preview_format"] = fmt
-
-
-# ---------------------------------------------------------------------------
-# Direct connect / Remote
-# ---------------------------------------------------------------------------
-
-def get_direct_connect_server_url() -> str | None:
-    return _STATE["direct_connect_server_url"]
-
-
-def set_direct_connect_server_url(url: str) -> None:
-    with _lock:
-        _STATE["direct_connect_server_url"] = url
-
-
-def get_is_remote_mode() -> bool:
-    return _STATE["is_remote_mode"]
-
-
-def set_is_remote_mode(value: bool) -> None:
-    with _lock:
-        _STATE["is_remote_mode"] = value
-
-
-# ---------------------------------------------------------------------------
 # Last interaction time
 # ---------------------------------------------------------------------------
 
@@ -504,19 +321,6 @@ def get_last_interaction_time() -> float:
 def update_last_interaction_time(immediate: bool = True) -> None:
     with _lock:
         _STATE["last_interaction_time"] = time.time() * 1000
-
-
-# ---------------------------------------------------------------------------
-# Stats store
-# ---------------------------------------------------------------------------
-
-def get_stats_store() -> Any:
-    return _STATE["stats_store"]
-
-
-def set_stats_store(store: Any) -> None:
-    with _lock:
-        _STATE["stats_store"] = store
 
 
 # ---------------------------------------------------------------------------
