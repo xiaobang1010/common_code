@@ -20,6 +20,7 @@ import uvicorn
 
 from query.engine import QueryEngine, build_engine_config
 from server import app as app_module
+from server import state as server_state
 from server.permission_bridge import PermissionBridge
 from startup.entrypoints.init import init
 from startup.setup import setup
@@ -60,14 +61,14 @@ async def main() -> None:
     config = build_engine_config(permission_prompt=bridge.request_permission)
     engine = QueryEngine(config)
 
-    # 4. 设置 app 全局变量，让路由能访问
-    app_module.app_state = app_state
-    app_module.engine = engine
-    app_module.permission_bridge = bridge
+    # 4. 设置全局变量，让路由能访问
+    server_state.app_state = app_state
+    server_state.engine = engine
+    server_state.permission_bridge = bridge
 
     # 初始化会话存储层
     from session.store import SessionStore
-    app_module.session_store = SessionStore()
+    server_state.session_store = SessionStore()
 
     # 5. 分配端口
     port = find_free_port()
