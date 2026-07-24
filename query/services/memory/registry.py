@@ -136,7 +136,7 @@ class MemoryRegistry:
         """把激活的记忆后端名写入 config.json 的 memory.active 字段。"""
         try:
             import json
-            from startup.utils.config import get_global_config_path, _config_lock
+            from startup.config import get_global_config_path, _config_lock
             path = get_global_config_path()
             with _config_lock:
                 data = {}
@@ -160,7 +160,7 @@ class MemoryRegistry:
     def restore_active_after_load(self) -> None:
         """所有记忆插件加载完成后，从 config.json 恢复激活状态。"""
         try:
-            from startup.utils.config import get_global_config
+            from startup.config import get_global_config
             config = get_global_config()
             active_name = config.memory.get("active") if config.memory else None
             if active_name:

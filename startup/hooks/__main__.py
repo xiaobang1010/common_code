@@ -1,6 +1,6 @@
-"""Hook 系统包入口，支持 python -m startup.utils.hooks 运行测试。"""
+"""Hook 系统包入口，支持 python -m startup.hooks 运行测试。"""
 
-from startup.utils.hooks import *  # noqa: F401,F403
+from startup.hooks import *  # noqa: F401,F403
 
 if __name__ == "__main__":
     import asyncio
@@ -9,7 +9,7 @@ if __name__ == "__main__":
     import sys
     import tempfile
 
-    from startup.utils.hooks import (
+    from startup.hooks import (
         HookConfig,
         HookDefinition,
         HookEntry,
@@ -85,13 +85,13 @@ if __name__ == "__main__":
     print("\n--- 测试 4: run_pre_tool_use_hooks ---")
 
     async def test_pre_hook():
-        # 空 hook 配置 — 不 deny
+        # 空 hook 配置 - 不 deny
         empty_config = HookConfig()
         result = await run_pre_tool_use_hooks(empty_config, "Bash", {"command": "ls"})
         assert not result.decided, "空配置不应 deny"
         print("  空 config: decided=False")
 
-        # 匹配但退出码为 0 的 hook — 不 deny
+        # 匹配但退出码为 0 的 hook - 不 deny
         config_ok = HookConfig(
             pre_tool_use=[
                 HookEntry(
@@ -104,7 +104,7 @@ if __name__ == "__main__":
         assert not result.decided, "退出码 0 不应 deny"
         print("  exit 0: decided=False")
 
-        # 匹配但退出码非 0 的 hook — deny
+        # 匹配但退出码非 0 的 hook - deny
         config_deny = HookConfig(
             pre_tool_use=[
                 HookEntry(
@@ -117,7 +117,7 @@ if __name__ == "__main__":
         assert result.decided, "退出码非 0 应 deny"
         print(f"  exit 1: decided=True, reason={result.reason!r}")
 
-        # 不匹配的 hook — 不 deny
+        # 不匹配的 hook - 不 deny
         result = await run_pre_tool_use_hooks(config_deny, "Read", {"path": "/tmp/test"})
         assert not result.decided, "不匹配的 hook 不应 deny"
         print("  不匹配: decided=False")

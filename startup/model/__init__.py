@@ -6,7 +6,7 @@
 内置已知模型配置，未知模型使用通用默认值。
 """
 
-from startup.utils.model.config import (
+from startup.model.config import (
     ModelConfig,
     get_model_config,
     get_effective_context_window,

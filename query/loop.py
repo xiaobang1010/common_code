@@ -228,7 +228,7 @@ async def _run_inline_compression(
         context_collapse_messages,
         should_context_collapse,
     )
-    from startup.utils.model.config import get_effective_context_window
+    from startup.model.config import get_effective_context_window
     from query.utils.messages import get_messages_after_compact_boundary
 
     # token 估算基于切片后的活跃窗口（最后一个 boundary 之后的消息），
@@ -432,7 +432,7 @@ async def query_loop(
         # ---- 2. 用户/系统上下文（由调用方传入，无需此处获取） ----
 
         # ---- 3. 构建 API 请求 ----
-        from startup.constants.prompts import build_system_messages, get_system_prompt_sections
+        from prompts import build_system_messages, get_system_prompt_sections
 
         sections = engine_config.system_prompt_sections or get_system_prompt_sections()
         system_messages = build_system_messages(sections)
@@ -449,7 +449,7 @@ async def query_loop(
         try:
             from tools.skills.bundled import get_model_invocable_skills
             from tools.skills.listing import get_skill_listing_attachment
-            from startup.utils.model.config import get_effective_context_window
+            from startup.model.config import get_effective_context_window
 
             invocable_skills = get_model_invocable_skills()
             if invocable_skills:

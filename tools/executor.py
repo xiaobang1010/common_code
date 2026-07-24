@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from pydantic import BaseModel
 
 from tools.protocol import Tool, ToolResult, ToolUseContext, tool_matches_name
-from startup.utils.hooks import (
+from startup.hooks import (
     HookConfig, HookResult,
     run_pre_tool_use_hooks, run_post_tool_use_hooks,
     run_permission_denied_hooks, run_post_tool_use_failure_hooks,

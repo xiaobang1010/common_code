@@ -25,7 +25,7 @@ from startup.bootstrap.state import (
     set_project_root,
 )
 from startup.state.app_state import AppState, AppStateProvider
-from startup.utils.hooks import capture_hooks_config_snapshot, HookConfig
+from startup.hooks import capture_hooks_config_snapshot, HookConfig
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +127,7 @@ async def setup(
     #    IMPORTANT: 必须在 setCwd() 之后调用，确保 hooks 从正确目录加载
 
     # 确保项目设置文件存在
-    from startup.utils.config import get_project_settings_path, _ensure_config_file
+    from startup.config import get_project_settings_path, _ensure_config_file
     _ensure_config_file(get_project_settings_path())
 
     _hooks_snapshot = capture_hooks_config_snapshot()

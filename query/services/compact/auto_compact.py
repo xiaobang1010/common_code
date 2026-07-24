@@ -92,7 +92,7 @@ def get_auto_compact_threshold(model: str) -> int:
     Returns:
         自动压缩阈值（token 数）
     """
-    from startup.utils.model.config import get_effective_context_window
+    from startup.model.config import get_effective_context_window
 
     effective_window = get_effective_context_window(model)
     threshold = effective_window - AUTOCOMPACT_BUFFER_TOKENS
@@ -187,7 +187,7 @@ async def compact_conversation(
     if not messages:
         raise RuntimeError("Not enough messages to compact.")
 
-    from startup.utils.model.config import get_effective_context_window
+    from startup.model.config import get_effective_context_window
 
     context_window = get_effective_context_window(model)
 

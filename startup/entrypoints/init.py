@@ -19,7 +19,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from startup.utils.config import (
+from startup.config import (
     apply_config_environment_variables,
     enable_configs,
 )

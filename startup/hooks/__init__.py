@@ -173,7 +173,7 @@ def capture_hooks_config_snapshot() -> HookConfig:
     如果配置系统未初始化或无 hooks 配置，返回空的 HookConfig。
     """
     try:
-        from startup.utils.config import get_initial_settings
+        from startup.config import get_initial_settings
 
         settings = get_initial_settings()
         hooks_data = settings.hooks
@@ -253,7 +253,7 @@ async def _execute_command_hook(
         return (exit_code, stdout, stderr)
 
     except Exception as e:
-        logger.error("Hook 命令执行失败: %s — %s", command, e)
+        logger.error("Hook 命令执行失败: %s - %s", command, e)
         return (-1, "", str(e))
 
 
@@ -456,12 +456,12 @@ async def resolve_permission_decision(
     context,
     permission_check,
 ) -> dict | None:
-    """权限策略协调器 — 协调 hook 决策与规则层决策。
+    """权限策略协调器 - 协调 hook 决策与规则层决策。
 
     策略（与 TS 版 resolveHookPermissionDecision 对齐）：
-    - hook 做出 allow 决策 → 仍需调用 permission_check 检查 deny/ask 规则
-    - hook 做出 deny 决策 → 直接返回 deny，不调 permission_check
-    - hook 无决策（decided=False）→ 调用 permission_check
+    - hook 做出 allow 决策 -> 仍需调用 permission_check 检查 deny/ask 规则
+    - hook 做出 deny 决策 -> 直接返回 deny，不调 permission_check
+    - hook 无决策（decided=False）-> 调用 permission_check
 
     返回：
         None 表示通过（允许执行）
@@ -470,7 +470,7 @@ async def resolve_permission_decision(
     if hook_result.decided and hook_result.reason:
         # hook 做出了决策
         if "Allowed" in hook_result.reason or "allow" in hook_result.reason.lower():
-            # hook allow — 仍要检查规则层
+            # hook allow - 仍要检查规则层
             if permission_check is not None:
                 try:
                     perm_result = await permission_check(tool, validated_input, context)
@@ -491,10 +491,10 @@ async def resolve_permission_decision(
                     logger.error("权限检查异常（hook allow 后规则检查）: %s", e)
             return None  # 通过
         else:
-            # hook deny — 直接生效
+            # hook deny - 直接生效
             return {"decision": "deny", "reason": hook_result.reason}
     else:
-        # 无 hook 决策 — 正常权限检查
+        # 无 hook 决策 - 正常权限检查
         if permission_check is not None:
             try:
                 perm_result = await permission_check(tool, validated_input, context)

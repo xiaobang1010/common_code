@@ -76,7 +76,7 @@ async def _default_permission_check(tool, input_args, context):
         "permission_mode": get_permission_mode(),
     }
     try:
-        from startup.utils.config import get_initial_settings
+        from startup.config import get_initial_settings
         settings = get_initial_settings()
         perms = settings.permissions
         perm_context["deny_rules"] = perms.deny

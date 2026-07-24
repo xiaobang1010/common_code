@@ -31,11 +31,11 @@ logger = logging.getLogger(__name__)
 def _read_plugins_config() -> dict[str, Any]:
     """从 config.json 读取 plugins 配置段。"""
     try:
-        from startup.utils.config import get_global_config
+        from startup.config import get_global_config
         config = get_global_config()
         # GlobalConfig 可能有 plugins 字段，也可能没有，用 raw dict 读
         import json
-        from startup.utils.config import get_global_config_path
+        from startup.config import get_global_config_path
         path = get_global_config_path()
         if path.exists():
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -49,7 +49,7 @@ def _write_plugins_config(plugins_config: dict[str, Any]) -> None:
     """写入 plugins 配置段到 config.json。"""
     try:
         import json
-        from startup.utils.config import get_global_config_path, _config_lock
+        from startup.config import get_global_config_path, _config_lock
         path = get_global_config_path()
         with _config_lock:
             data = {}

@@ -20,8 +20,8 @@ from typing import Any
 import httpx
 import openai
 
-from startup.utils.config import get_global_config
-from startup.utils.config_constants import (
+from startup.config import get_global_config
+from startup.config.constants import (
     DEFAULT_LLM_API_KEY,
     DEFAULT_LLM_BASE_URL,
     DEFAULT_LLM_MODEL,

@@ -20,14 +20,14 @@ from query.services.mcp.types import MCPServerConfig
 
 def _get_settings_json_path() -> Path:
     """获取 settings.json 路径（项目级 .claude/settings.json）。"""
-    from startup.utils.config import get_project_settings_path
+    from startup.config import get_project_settings_path
 
     return get_project_settings_path()
 
 
 def _get_global_settings_json_path() -> Path:
     """获取全局 settings.json 路径（~/.claude/settings.json）。"""
-    from startup.utils.config import get_config_home_dir, PROJECT_SETTINGS_FILENAME
+    from startup.config import get_config_home_dir, PROJECT_SETTINGS_FILENAME
 
     return get_config_home_dir() / PROJECT_SETTINGS_FILENAME
 

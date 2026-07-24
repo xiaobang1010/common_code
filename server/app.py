@@ -30,7 +30,7 @@ from query.services.api.llm import StreamEvent
 from query.services.api.providers import get_registry
 from query.services.pricing import calculate_cost
 from startup.bootstrap.state import add_to_total_cost
-from startup.utils.config import (
+from startup.config import (
     CustomLLMModel,
     CustomLLMProvider,
     get_global_config,

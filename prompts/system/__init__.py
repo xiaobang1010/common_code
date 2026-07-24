@@ -1,15 +1,16 @@
-"""系统提示词构建。"""
+"""系统提示词构建。
+
+定义系统提示词的段结构、各段静态内容、以及按需组装逻辑。
+"""
 
 from __future__ import annotations
 
 import platform as _platform
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Literal
 
 
 # ---------------------------------------------------------------------------
-# SystemPromptSection — 系统提示段落
+# SystemPromptSection - 系统提示段落
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -22,17 +23,15 @@ class SystemPromptSection:
 
 
 # ---------------------------------------------------------------------------
-# 核心提示词内容（简化版，保留关键规则）
+# 核心提示词内容
 # ---------------------------------------------------------------------------
-
-import platform as _platform
 
 # 归因头：标识客户端类型和运行平台
 _ATTRIBUTION_HEADER = (
     f"x-{_platform.system().lower()}-header: common-code-python"
 )
 
-_CLI_PREFIX = """You are Common Code, an AI programming assistant — the official CLI for Common. \
+_CLI_PREFIX = """You are Common Code, an AI programming assistant - the official CLI for Common. \
 You help users with software engineering tasks using the tools available to you."""
 
 _STATIC_SECTIONS = """# Core Behavior
@@ -46,13 +45,13 @@ _STATIC_SECTIONS = """# Core Behavior
 - Use dedicated tools (Read, Edit, Write, Glob, Grep) instead of shell commands when available.
 - Call multiple independent tools in parallel for efficiency.
 - Verify tool results rather than assuming they succeeded.
-- Do not re-attempt a tool call that the user has denied — adjust your approach instead.
+- Do not re-attempt a tool call that the user has denied - adjust your approach instead.
 
 # Safety Rules
 - Never execute destructive operations (rm -rf, force push, drop tables) without explicit user confirmation.
 - Never expose or log secrets, API keys, or credentials.
 - Be careful not to introduce security vulnerabilities (command injection, XSS, SQL injection, etc.).
-- Protect sensitive files (.env, credentials) — never commit them.
+- Protect sensitive files (.env, credentials) - never commit them.
 - Only take risky actions carefully; when in doubt, ask before acting."""
 
 
@@ -79,7 +78,7 @@ _SUBAGENT_GUIDANCE = """\
   - Read-only exploration where you don't want to clutter main context
 - The subagent's result is NOT visible to the user. You must relay key findings.
 - For parallel independent tasks, issue multiple Agent tool calls in a single message.
-- Subagents do NOT inherit your conversation history — give them complete instructions."""
+- Subagents do NOT inherit your conversation history - give them complete instructions."""
 
 
 # Team 协作指导段（当团队模式启用时注入）
@@ -90,7 +89,7 @@ _TEAM_GUIDANCE = """\
 - Create tasks with TaskCreate and assign them to teammates with TaskUpdate (set owner).
 - Communicate with teammates using SendMessage. Messages are delivered as new conversation turns.
 - Broadcast with to="*" to reach all team members.
-- Teammates are flat — they cannot spawn their own teammates.
+- Teammates are flat - they cannot spawn their own teammates.
 - When a teammate is done, it enters idle state. Send a message to wake it for more work.
 - To shut down a teammate, send a message containing "[shutdown_request]".
 - Use TaskList to monitor overall progress across the team."""
@@ -198,30 +197,3 @@ def get_system_prompt_sections(
         )
 
     return sections
-
-
-# ---------------------------------------------------------------------------
-# build_system_messages
-# ---------------------------------------------------------------------------
-
-def build_system_messages(sections: list[SystemPromptSection]) -> list[dict]:
-    """将段列表转换为 OpenAI system 消息列表。
-
-    - 静态段（cache_scope 为 "static" 或 "global"）合并为一条 system 消息放在最前
-    - 动态段（cache_scope 为 None）作为单独 system 消息追加
-    """
-    static_parts: list[str] = []
-    dynamic_messages: list[dict] = []
-
-    for section in sections:
-        if section.cache_scope in ("static", "global"):
-            static_parts.append(section.content)
-        else:
-            dynamic_messages.append({"role": "system", "content": section.content})
-
-    messages: list[dict] = []
-    if static_parts:
-        messages.append({"role": "system", "content": "\n\n".join(static_parts)})
-
-    messages.extend(dynamic_messages)
-    return messages

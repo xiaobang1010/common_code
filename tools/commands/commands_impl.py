@@ -149,7 +149,7 @@ async def cmd_config(context: CommandContext) -> str:
 
         # 从全局配置文件读取
         try:
-            from startup.utils.config import get_global_config
+            from startup.config import get_global_config
             gcfg = get_global_config()
             lines.append(f"  llm_base_url: {gcfg.llm_base_url or 'default'}")
             lines.append(f"  llm_model: {gcfg.llm_model or 'default'}")
@@ -313,8 +313,8 @@ async def cmd_spec(context: CommandContext) -> str:
     project_root = context.project_root
     if not project_root:
         try:
-            from startup.bootstrap.state import get_cwd
-            project_root = get_cwd()
+            from startup.bootstrap.state import get_cwd_state
+            project_root = get_cwd_state()
         except ImportError:
             project_root = "."
 

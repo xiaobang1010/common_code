@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from startup.utils.settings.types import PermissionRule
+from startup.config.types import PermissionRule
 
 
 class PermissionDecision(Enum):

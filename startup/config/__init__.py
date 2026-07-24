@@ -25,7 +25,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from startup.utils.config_constants import (
+from startup.config.constants import (
     DEFAULT_LLM_BASE_URL,
     DEFAULT_LLM_MODEL,
     ENV_LLM_API_KEY,
@@ -37,7 +37,7 @@ from startup.utils.config_constants import (
     PROJECT_CONFIG_DIR,
     PROJECT_SETTINGS_FILENAME,
 )
-from startup.utils.settings.types import Permissions, PermissionRule, Settings
+from startup.config.types import Permissions, PermissionRule, Settings
 
 logger = logging.getLogger(__name__)
 
@@ -365,7 +365,7 @@ _DEFAULT_USER_SETTINGS = """\
         "hooks": [
           {
             "type": "command",
-            "command": "python startup/utils/hooks/scripts/validate_command.py",
+            "command": "python startup/hooks/scripts/validate_command.py",
             "timeout": 10
           }
         ]
@@ -375,7 +375,7 @@ _DEFAULT_USER_SETTINGS = """\
         "hooks": [
           {
             "type": "command",
-            "command": "python startup/utils/hooks/scripts/protect_sensitive_files.py",
+            "command": "python startup/hooks/scripts/protect_sensitive_files.py",
             "timeout": 10
           }
         ]
@@ -387,7 +387,7 @@ _DEFAULT_USER_SETTINGS = """\
         "hooks": [
           {
             "type": "command",
-            "command": "python startup/utils/hooks/scripts/audit_log.py",
+            "command": "python startup/hooks/scripts/audit_log.py",
             "timeout": 15
           }
         ]
@@ -399,7 +399,7 @@ _DEFAULT_USER_SETTINGS = """\
         "hooks": [
           {
             "type": "command",
-            "command": "python startup/utils/hooks/scripts/session_context.py",
+            "command": "python startup/hooks/scripts/session_context.py",
             "timeout": 15
           }
         ]
@@ -411,7 +411,7 @@ _DEFAULT_USER_SETTINGS = """\
         "hooks": [
           {
             "type": "command",
-            "command": "python startup/utils/hooks/scripts/pre_compact_save.py",
+            "command": "python startup/hooks/scripts/pre_compact_save.py",
             "timeout": 10
           }
         ]
@@ -690,7 +690,7 @@ def _apply_llm_env_vars_to_settings(settings: Settings) -> None:
     """环境变量优先级最高，覆盖 LLM 配置；未设置时用默认值兜底。
 
     仅对 LLM 三字段 (llm_api_key / llm_base_url / model) 生效。
-    注意：不在 base_url 和 model 为 None 时设默认值——那会覆盖 config.json 的配置。
+    注意：不在 base_url 和 model 为 None 时设默认值--那会覆盖 config.json 的配置。
     """
     env_api_key = os.environ.get(ENV_LLM_API_KEY)
     if env_api_key:
@@ -699,12 +699,12 @@ def _apply_llm_env_vars_to_settings(settings: Settings) -> None:
     env_base_url = os.environ.get(ENV_LLM_BASE_URL)
     if env_base_url:
         settings.llm_base_url = env_base_url
-    # 不再设默认值——让 config.json 的配置通过 get_global_config 生效
+    # 不再设默认值--让 config.json 的配置通过 get_global_config 生效
 
     env_model = os.environ.get(ENV_LLM_MODEL)
     if env_model:
         settings.model = env_model
-    # 不再设默认值——让 config.json 的配置通过 get_global_config 生效
+    # 不再设默认值--让 config.json 的配置通过 get_global_config 生效
 
 
 def _merge_settings(base: Settings, override: Settings) -> Settings:
