@@ -108,7 +108,6 @@ async def chat_event_stream(prompt: str, session_id: str = ""):
     队列空时（引擎可能挂起在权限回调），轮询权限桥推 permission_request 事件。
     """
     from query.services.pricing import calculate_cost
-    from startup.bootstrap.state import add_to_total_cost
 
     import server.state
 
@@ -136,11 +135,6 @@ async def chat_event_stream(prompt: str, session_id: str = ""):
                     state.token_usage.last_cache_creation = cache_creation
                     cost = calculate_cost(state.model or "", ev.usage)
                     state.total_cost_usd += cost
-                    add_to_total_cost(
-                        cost,
-                        {"input_tokens": prompt_tokens, "output_tokens": completion_tokens},
-                        state.model or "",
-                    )
                 await queue.put(ev)
         except Exception as e:
             await queue.put(e)

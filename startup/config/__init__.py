@@ -48,46 +48,6 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class ProjectConfig:
-    """项目级配置，存储在全局配置文件的 projects 字段中。"""
-
-    allowed_tools: list[str] = field(default_factory=list)
-    mcp_context_uris: list[str] = field(default_factory=list)
-    mcp_servers: dict[str, Any] = field(default_factory=dict)
-    has_trust_dialog_accepted: bool = False
-    project_onboarding_seen_count: int = 0
-    has_agent_md_external_includes_approved: bool = False
-    has_agent_md_external_includes_warning_shown: bool = False
-    enabled_mcpjson_servers: list[str] = field(default_factory=list)
-    disabled_mcpjson_servers: list[str] = field(default_factory=list)
-    disabled_mcp_servers: list[str] = field(default_factory=list)
-    enabled_mcp_servers: list[str] = field(default_factory=list)
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ProjectConfig:
-        return cls(
-            allowed_tools=data.get("allowedTools", []),
-            mcp_context_uris=data.get("mcpContextUris", []),
-            mcp_servers=data.get("mcpServers", {}),
-            has_trust_dialog_accepted=data.get("hasTrustDialogAccepted", False),
-            project_onboarding_seen_count=data.get("projectOnboardingSeenCount", 0),
-            has_agent_md_external_includes_approved=data.get(
-                "hasAgentMdExternalIncludesApproved", False
-            ),
-            has_agent_md_external_includes_warning_shown=data.get(
-                "hasAgentMdExternalIncludesWarningShown", False
-            ),
-            enabled_mcpjson_servers=data.get("enabledMcpjsonServers", []),
-            disabled_mcpjson_servers=data.get("disabledMcpjsonServers", []),
-            disabled_mcp_servers=data.get("disabledMcpServers", []),
-            enabled_mcp_servers=data.get("enabledMcpServers", []),
-        )
-
-
-@dataclass
 class CustomLLMModel:
     """自定义 LLM 模型配置。"""
     model_id: str
@@ -516,34 +476,6 @@ def save_global_config(config: GlobalConfig | dict) -> None:
         _global_config_cache_mtime = config_path.stat().st_mtime
 
 
-def get_current_project_config(project_root: Path | None = None) -> ProjectConfig:
-    """读取项目配置。
-
-    项目配置存储在全局配置文件的 projects 字段中，
-    以项目路径为键。线程安全。
-    """
-    global_config = get_global_config()
-    project_path = _get_project_path_key(project_root)
-
-    project_data = global_config.projects.get(project_path)
-    if project_data is not None:
-        return ProjectConfig.from_dict(project_data)
-
-    return ProjectConfig()
-
-
-def save_current_project_config(
-    project_config: ProjectConfig,
-    project_root: Path | None = None,
-) -> None:
-    """保存项目配置到全局配置文件。线程安全。"""
-    global_config = get_global_config()
-    project_path = _get_project_path_key(project_root)
-
-    global_config.projects[project_path] = project_config.to_dict()
-    save_global_config(global_config)
-
-
 def get_project_settings(project_root: Path | None = None) -> Settings:
     """读取项目设置 .agent/settings.json。线程安全。"""
     settings_path = get_project_settings_path(project_root)
@@ -668,12 +600,6 @@ def apply_config_environment_variables(settings: Settings | None = None) -> dict
 # ---------------------------------------------------------------------------
 # 内部辅助
 # ---------------------------------------------------------------------------
-
-
-def _get_project_path_key(project_root: Path | None = None) -> str:
-    """获取项目路径作为配置键，统一使用正斜杠。"""
-    root = project_root or Path.cwd()
-    return str(root).replace("\\", "/")
 
 
 def _apply_llm_env_vars(config: GlobalConfig) -> None:
