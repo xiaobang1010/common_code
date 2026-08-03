@@ -55,7 +55,8 @@ def get_model_config(model: str) -> ModelConfig:
     查找策略：
       1. 精确匹配内置配置
       2. 前缀匹配（模型名以已知 key 开头）
-      3. 返回默认配置
+      3. 从用户配置的自定义供应商里查 context_window
+      4. 返回默认配置
 
     Args:
         model: 模型名称，如 "gpt-4o", "claude-3-5-sonnet"
@@ -75,6 +76,21 @@ def get_model_config(model: str) -> ModelConfig:
     for key, config in _BUILTIN_MODELS.items():
         if model_lower.startswith(key.lower()):
             return config
+
+    # 从用户配置的自定义供应商里查 context_window
+    try:
+        from startup.config import get_global_config
+        gc = get_global_config()
+        for provider in gc.llm_providers:
+            for m in provider.get("models", []):
+                if m.get("model_id") == model:
+                    return ModelConfig(
+                        name=model,
+                        context_window=m.get("context_window", 200000),
+                        max_output_tokens=32768,
+                    )
+    except Exception:
+        pass
 
     return _DEFAULT_MODEL_CONFIG
 

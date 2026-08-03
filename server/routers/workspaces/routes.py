@@ -8,7 +8,6 @@ import subprocess
 from fastapi import APIRouter
 
 from server.paths import set_project_root
-from server.state import permission_bridge, session_store
 import server.state
 
 router = APIRouter()
@@ -25,7 +24,7 @@ async def list_workspaces() -> dict:
 
     返回 {"workspaces": [{path, name, last_used_at, session_count}]}
     """
-    workspaces = session_store.list_workspaces()
+    workspaces = server.state.session_store.list_workspaces()
     return {
         "workspaces": [
             {
@@ -49,7 +48,7 @@ async def add_workspace(body: dict) -> dict:
     path = body.get("path", "")
     if not path:
         return {"ok": False, "error": "path is required"}
-    workspace = session_store.add_workspace(path)
+    workspace = server.state.session_store.add_workspace(path)
     return {
         "ok": True,
         "workspace": {
@@ -81,14 +80,14 @@ async def switch_workspace(body: dict) -> dict:
     set_project_root(path)
 
     # 2. 重建引擎
-    config = build_engine_config(permission_prompt=permission_bridge.request_permission)
+    config = build_engine_config(permission_prompt=server.state.permission_bridge.request_permission)
     config = replace(config, cwd=path)
     new_engine = QueryEngine(config)
     # 替换全局引擎
     server.state.engine = new_engine
 
     # 3. 更新最后使用时间
-    session_store.update_workspace_last_used(path)
+    server.state.session_store.update_workspace_last_used(path)
 
     # 4. 获取当前 git 分支
     current_branch = ""
@@ -106,7 +105,7 @@ async def switch_workspace(body: dict) -> dict:
         pass
 
     # 获取工作区信息
-    workspaces = session_store.list_workspaces()
+    workspaces = server.state.session_store.list_workspaces()
     workspace_info = None
     for w in workspaces:
         if w.path == path:
@@ -139,12 +138,12 @@ async def delete_workspace(body: dict) -> dict:
     if not path:
         return {"ok": False, "error": "path is required"}
 
-    deleted = session_store.delete_workspace(path)
+    deleted = server.state.session_store.delete_workspace(path)
     if not deleted:
         return {"ok": False, "error": "工作区不存在"}
 
     # 刷新工作区列表
-    workspaces = session_store.list_workspaces()
+    workspaces = server.state.session_store.list_workspaces()
     return {
         "ok": True,
         "workspaces": [

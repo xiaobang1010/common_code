@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from server.state import app_state
+import server.state
 
 router = APIRouter()
 
@@ -100,8 +100,8 @@ async def switch_llm_provider(body: dict) -> dict:
 
     # 更新 AppState model
     provider = registry.get_active_provider()
-    if provider and app_state:
-        state = app_state.get_state()
+    if provider and server.state.app_state:
+        state = server.state.app_state.get_state()
         state.model = provider.get("model", "")
 
     return {"ok": True, "active_provider": provider_name}

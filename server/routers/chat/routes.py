@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from query.loop import LoopResult
 from query.services.api.llm import StreamEvent
-from server.state import app_state, engine, permission_bridge, session_store
+import server.state
 
 router = APIRouter()
 
@@ -26,6 +26,8 @@ async def get_state() -> dict:
     """返回会话状态：消息历史、模型、token 用量、成本、权限模式。"""
     from startup.bootstrap.state import get_permission_mode
 
+    app_state = server.state.app_state
+    engine = server.state.engine
     state = app_state.get_state()
     usage = state.token_usage
     return {
@@ -109,7 +111,10 @@ async def chat_event_stream(prompt: str, session_id: str = ""):
     """
     from query.services.pricing import calculate_cost
 
-    import server.state
+    app_state = server.state.app_state
+    engine = server.state.engine
+    permission_bridge = server.state.permission_bridge
+    session_store = server.state.session_store
 
     queue: asyncio.Queue = asyncio.Queue()
 

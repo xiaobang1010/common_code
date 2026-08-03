@@ -88,11 +88,42 @@ async def main() -> None:
     while not server.started:
         await asyncio.sleep(0.01)
 
+    # 服务启动后触发 SessionStart hooks，收集额外上下文供后续使用
+    from startup.bootstrap.state import get_cwd_state
+    from startup.hooks import run_session_start_hooks
+    from startup.setup import get_hooks_snapshot
+
+    hook_snapshot = get_hooks_snapshot()
+    session_start_context = ""
+    if hook_snapshot is not None:
+        try:
+            session_start_context = await run_session_start_hooks(
+                hook_snapshot,
+                "",
+                get_cwd_state(),
+            )
+        except Exception as e:
+            print(f"SessionStart hooks 执行失败: {e}", file=sys.stderr)
+    server_state.session_start_context = session_start_context
+
     sys.stdout.write(json.dumps({"port": port}) + "\n")
     sys.stdout.flush()
 
     # 等待服务结束
     await task
+
+    # 服务退出时触发 SessionEnd hooks，做清理
+    from startup.hooks import run_session_end_hooks
+
+    if hook_snapshot is not None:
+        try:
+            await run_session_end_hooks(
+                hook_snapshot,
+                "",
+                get_cwd_state(),
+            )
+        except Exception as e:
+            print(f"SessionEnd hooks 执行失败: {e}", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -473,12 +473,14 @@ async def query_loop(
 
         # 创建流式工具执行器
         from tools.protocol import ToolUseContext
+        from startup.setup import get_hooks_snapshot
         tool_executor = StreamingToolExecutor(
             tools=engine_config.tools,
             context=ToolUseContext(),
             permission_check=engine_config.permission_check,
             permission_prompt=engine_config.permission_prompt,
             always_allowed=engine.always_allowed,
+            hook_config=get_hooks_snapshot(),
         )
         tool_result_messages: list[dict] = []
 
@@ -551,6 +553,8 @@ async def query_loop(
                 error=e,
                 content=str(e),
             )
+            # 回滚引擎消息历史
+            engine.mutable_messages = messages
             yield LoopResult(reason="model_error", error=e)
             return
 
@@ -660,6 +664,9 @@ async def query_loop(
                 error=error_occurred,
                 content=str(error_occurred),
             )
+            # 回滚引擎消息历史：错误时不保留这一轮的不完整 assistant 消息，
+            # 避免坏历史导致下次请求又报错
+            engine.mutable_messages = messages
             yield LoopResult(reason="model_error", error=error_occurred)
             return
 

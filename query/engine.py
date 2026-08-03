@@ -90,6 +90,7 @@ async def _default_permission_check(tool, input_args, context):
         tool_name=tool.name,
         tool_input=input_args.model_dump() if hasattr(input_args, "model_dump") else input_args,
         context=perm_context,
+        tool=tool,
     )
     if result.decision.value == "deny":
         return {"decision": "deny", "reason": result.reason}
@@ -243,6 +244,41 @@ class QueryEngine:
         """
         # 延迟 import 避免循环依赖
         from query.loop import query_loop
+
+        # UserPromptSubmit hooks：在消息进引擎前执行，可拦截或注入上下文
+        from startup.bootstrap.state import get_cwd_state
+        from startup.hooks import run_user_prompt_submit_hooks
+        from startup.setup import get_hooks_snapshot
+        from query.services.api.llm import StreamEvent
+
+        hook_snapshot = get_hooks_snapshot()
+        hook_result = None
+        if hook_snapshot is not None:
+            try:
+                hook_result = await run_user_prompt_submit_hooks(
+                    hook_snapshot,
+                    prompt,
+                    self._session_id,
+                    get_cwd_state(),
+                )
+            except Exception:
+                hook_result = None
+            except Exception:
+                hook_result = None
+
+        # hook 拦截消息：不进入循环，返回拦截原因
+        if hook_result is not None and hook_result.decided:
+            yield StreamEvent(
+                type="error",
+                content=f"Message blocked by UserPromptSubmit hook: {hook_result.reason}",
+            )
+            return
+
+        # hook 返回的额外上下文合并进 user_context
+        if hook_result is not None and hook_result.reason:
+            if user_context is None:
+                user_context = {}
+            user_context["hook_context"] = hook_result.reason
 
         # 把 user 消息加到 mutable_messages
         self._mutable_messages.append({"role": "user", "content": prompt})

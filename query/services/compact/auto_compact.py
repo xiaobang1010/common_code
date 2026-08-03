@@ -291,6 +291,25 @@ async def _generate_compact_summary(
     # 构建压缩提示词
     compact_prompt = build_compact_prompt(messages)
 
+    # PreCompact hooks：收集压缩指导信息，拼入提示词
+    try:
+        from startup.bootstrap.state import get_cwd_state
+        from startup.hooks import run_pre_compact_hooks
+        from startup.setup import get_hooks_snapshot
+
+        hook_snapshot = get_hooks_snapshot()
+        if hook_snapshot is not None:
+            guidance = await run_pre_compact_hooks(
+                hook_snapshot,
+                trigger="auto",
+                session_id="",
+                cwd=get_cwd_state(),
+            )
+            if guidance.strip():
+                compact_prompt += f"\n\n## Additional compact guidance\n{guidance}"
+    except Exception:
+        pass  # hook 失败不阻断压缩
+
     # 构建 LLM 请求消息
     request_messages = [
         {"role": "system", "content": "You are a helpful AI assistant tasked with summarizing conversations."},
