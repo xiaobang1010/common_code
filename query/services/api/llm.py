@@ -53,6 +53,7 @@ class StreamEvent:
     tool_call_id: str | None = None
     tool_call_name: str | None = None
     tool_call_arguments: str | None = None
+    tool_call_index: int | None = None
     usage: dict | None = None
     error: Exception | None = None
     finish_reason: str | None = None
@@ -137,6 +138,10 @@ async def query_model_with_streaming(
     except openai.APIError as e:
         # 不可重试错误或重试耗尽后到这里
         api_error = classify_error(e)
+        # 临时调试：打印 400 的完整错误和请求摘要
+        import sys as _sys
+        _sys.stderr.write(f"[400 DEBUG] status={getattr(e,'status_code',None)} msg={api_error.message} msgs={len(params.get('messages',[]))} tools={len(params.get('tools',[]))}\n")
+        _sys.stderr.flush()
         yield StreamEvent(
             type="error",
             error=e,
@@ -214,6 +219,7 @@ def parse_stream_chunk(chunk: Any) -> list[StreamEvent]:
             if tool_calls:
                 for tc in tool_calls:
                     tc_id = getattr(tc, "id", None)
+                    tc_index = getattr(tc, "index", None)
                     tc_function = getattr(tc, "function", None)
 
                     tc_name = None
@@ -227,6 +233,7 @@ def parse_stream_chunk(chunk: Any) -> list[StreamEvent]:
                         tool_call_id=tc_id,
                         tool_call_name=tc_name,
                         tool_call_arguments=tc_arguments,
+                        tool_call_index=tc_index,
                     ))
 
         # finish_reason → done 事件
@@ -297,10 +304,10 @@ def parse_stream_chunk(chunk: Any) -> list[StreamEvent]:
 def collect_tool_calls(events: list[StreamEvent]) -> list[dict[str, Any]]:
     """从流式事件中收集完整的工具调用。
 
-    合并 tool_call_delta 事件为完整 tool_call：
-      - 首个带 id 的 delta 创建新条目
-      - 后续 delta 追加 name/arguments
-      - 最终返回 [{id, function: {name, arguments}}]
+    按 index 聚合 tool_call_delta 事件：
+      - 首个 delta 带 id+name+index，创建新条目
+      - 后续 delta 带 index+arguments（id 为 null），追加到对应 index 条目
+      - 最终返回 [{id, type, function: {name, arguments}}]，按 index 升序
 
     Args:
         events: 流式事件列表
@@ -308,42 +315,46 @@ def collect_tool_calls(events: list[StreamEvent]) -> list[dict[str, Any]]:
     Returns:
         完整工具调用列表，格式为 OpenAI function calling 格式
     """
-    # 使用有序字典按 id 聚合
-    tool_calls_map: dict[str, dict[str, Any]] = {}
-    # 保持插入顺序
-    tool_call_order: list[str] = []
+    # 按 index 聚合，保持插入顺序
+    tool_calls_map: dict[int, dict[str, Any]] = {}
+    tool_call_order: list[int] = []
 
     for event in events:
         if event.type != "tool_call_delta":
             continue
 
-        tc_id = event.tool_call_id
+        idx = event.tool_call_index
+        if idx is None:
+            continue
 
-        # 有 id 的 delta → 新工具调用或更新已有条目
-        if tc_id:
-            if tc_id not in tool_calls_map:
-                tool_calls_map[tc_id] = {
-                    "id": tc_id,
-                    "type": "function",
-                    "function": {
-                        "name": "",
-                        "arguments": "",
-                    },
-                }
-                tool_call_order.append(tc_id)
+        # 首次见到该 index，创建条目
+        if idx not in tool_calls_map:
+            tool_calls_map[idx] = {
+                "id": "",
+                "type": "function",
+                "function": {
+                    "name": "",
+                    "arguments": "",
+                },
+            }
+            tool_call_order.append(idx)
 
-            entry = tool_calls_map[tc_id]
+        entry = tool_calls_map[idx]
 
-            # 追加 name（通常只在首个 delta 出现）
-            if event.tool_call_name:
-                entry["function"]["name"] += event.tool_call_name
+        # 首个 delta 带 id，记录下来
+        if event.tool_call_id:
+            entry["id"] = event.tool_call_id
 
-            # 追加 arguments（增量拼接）
-            if event.tool_call_arguments:
-                entry["function"]["arguments"] += event.tool_call_arguments
+        # 追加 name（通常只在首个 delta 出现）
+        if event.tool_call_name:
+            entry["function"]["name"] += event.tool_call_name
 
-    # 按插入顺序返回
-    return [tool_calls_map[tc_id] for tc_id in tool_call_order]
+        # 追加 arguments（增量拼接）
+        if event.tool_call_arguments:
+            entry["function"]["arguments"] += event.tool_call_arguments
+
+    # 按 index 升序返回
+    return [tool_calls_map[idx] for idx in sorted(tool_call_order)]
 
 
 # ---------------------------------------------------------------------------

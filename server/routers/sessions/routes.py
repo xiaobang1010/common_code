@@ -9,7 +9,6 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from server.paths import project_root, set_project_root
-from server.state import permission_bridge, session_store
 import server.state
 
 router = APIRouter()
@@ -48,7 +47,7 @@ async def create_session(body: dict) -> dict:
     except (subprocess.SubprocessError, OSError):
         pass
 
-    session = session_store.create_session(workspace_path, title=title, branch=branch)
+    session = server.state.session_store.create_session(workspace_path, title=title, branch=branch)
     return {
         "session_id": session.id,
         "workspace_path": session.workspace_path,
@@ -66,7 +65,7 @@ async def list_sessions(workspace_path: str = "") -> dict:
     """
     if not workspace_path:
         return {"sessions": []}
-    sessions = session_store.list_sessions(workspace_path)
+    sessions = server.state.session_store.list_sessions(workspace_path)
     return {
         "sessions": [
             {
@@ -92,7 +91,7 @@ async def list_sessions_grouped() -> dict:
                                      created_at, updated_at, message_count}]}]}
     """
     try:
-        grouped = session_store.list_all_sessions_grouped()
+        grouped = server.state.session_store.list_all_sessions_grouped()
         groups = []
         for workspace, sessions in grouped:
             groups.append({
@@ -126,7 +125,7 @@ async def get_session(session_id: str) -> dict:
     返回 {"session": {...}, "messages": [...]}。
     不存在返回 404。
     """
-    session = session_store.get_session(session_id)
+    session = server.state.session_store.get_session(session_id)
     if session is None:
         return JSONResponse(status_code=404, content={"error": "session not found"})
     return {
@@ -146,7 +145,7 @@ async def get_session(session_id: str) -> dict:
 @router.delete("/api/sessions/{session_id}")
 async def delete_session(session_id: str) -> dict:
     """删除会话。"""
-    session_store.delete_session(session_id)
+    server.state.session_store.delete_session(session_id)
     return {"ok": True}
 
 
@@ -157,7 +156,7 @@ async def update_session(session_id: str, body: dict) -> dict:
     请求体：{"title": "..."}
     """
     title = body.get("title", "")
-    session_store.update_session_title(session_id, title)
+    server.state.session_store.update_session_title(session_id, title)
     return {"ok": True}
 
 
@@ -168,7 +167,7 @@ async def switch_session(session_id: str) -> dict:
     如果会话的 workspace_path 与当前工作区不同，先切换工作区（更新 project_root + 重建引擎）。
     返回 {"ok": true, "messages": [...], "workspace_path": "..."}
     """
-    session = session_store.get_session(session_id)
+    session = server.state.session_store.get_session(session_id)
     if session is None:
         return JSONResponse(status_code=404, content={"error": "session not found"})
 
@@ -180,7 +179,7 @@ async def switch_session(session_id: str) -> dict:
 
         from query.engine import QueryEngine, build_engine_config
 
-        config = build_engine_config(permission_prompt=permission_bridge.request_permission)
+        config = build_engine_config(permission_prompt=server.state.permission_bridge.request_permission)
         config = replace(config, cwd=session.workspace_path)
         new_engine = QueryEngine(config)
         # 替换全局引擎
@@ -188,7 +187,7 @@ async def switch_session(session_id: str) -> dict:
 
     # 加载消息到引擎
     server.state.engine.mutable_messages = list(session.messages)
-    session_store.update_workspace_last_used(session.workspace_path)
+    server.state.session_store.update_workspace_last_used(session.workspace_path)
 
     return {
         "ok": True,

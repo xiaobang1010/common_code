@@ -11,7 +11,7 @@ from fastapi import APIRouter
 
 from query.services.api.client import get_default_model, reset_client
 from query.services.api.providers import get_registry
-from server.state import app_state, engine
+import server.state
 from startup.config import (
     CustomLLMModel,
     CustomLLMProvider,
@@ -86,15 +86,15 @@ async def set_config(body: dict) -> dict:
         # 配置变更后：重置 LLM 客户端缓存 + 更新 AppState 的 model 字段
         # 否则引擎还会用旧模型名调 API，报 Invalid model id
         reset_client()
-        state = app_state.get_state()
+        state = server.state.app_state.get_state()
         from query.services.api.client import get_default_model
         state.model = get_default_model()
 
         # 同步更新引擎的模型名
         from dataclasses import replace as _replace
         new_model = get_default_model()
-        if new_model and engine.config.model != new_model:
-            engine._config = _replace(engine.config, model=new_model)
+        if new_model and server.state.engine.config.model != new_model:
+            server.state.engine._config = _replace(server.state.engine.config, model=new_model)
 
         return {"ok": True}
     except Exception as e:
@@ -170,13 +170,13 @@ async def add_custom_llm_provider(body: dict) -> dict:
         if models:
             registry.set_active_model(models[0].model_id)
         reset_client()
-        state = app_state.get_state()
+        state = server.state.app_state.get_state()
         state.model = get_default_model()
         # 同步更新引擎的模型名
         from dataclasses import replace as _replace
         new_model = get_default_model()
-        if new_model and engine.config.model != new_model:
-            engine._config = _replace(engine.config, model=new_model)
+        if new_model and server.state.engine.config.model != new_model:
+            server.state.engine._config = _replace(server.state.engine.config, model=new_model)
 
     return {"provider": provider.to_dict()}
 
@@ -229,13 +229,13 @@ async def update_custom_llm_provider(provider_id: str, body: dict) -> dict:
 
     # 如果更新的是当前激活的供应商，更新 AppState 和引擎模型
     if config.active_provider == provider_id:
-        state = app_state.get_state()
+        state = server.state.app_state.get_state()
         state.model = get_default_model()
         # 同步更新引擎的模型名
         from dataclasses import replace as _replace
         new_model = get_default_model()
-        if new_model and engine.config.model != new_model:
-            engine._config = _replace(engine.config, model=new_model)
+        if new_model and server.state.engine.config.model != new_model:
+            server.state.engine._config = _replace(server.state.engine.config, model=new_model)
 
     return {"provider": old_provider.to_dict()}
 
@@ -293,7 +293,7 @@ async def delete_custom_llm_provider(provider_id: str) -> dict:
     reset_client()
 
     # 更新 AppState
-    state = app_state.get_state()
+    state = server.state.app_state.get_state()
     state.model = get_default_model()
 
     return {"ok": True}
@@ -413,13 +413,13 @@ async def activate_llm_provider(body: dict) -> dict:
     reset_client()
 
     # 更新 AppState
-    state = app_state.get_state()
+    state = server.state.app_state.get_state()
     state.model = get_default_model()
 
     # 同步更新引擎的模型名（config 是 frozen dataclass，需要用 replace 创建新配置）
     from dataclasses import replace as _replace
     new_model = get_default_model()
-    if new_model and engine.config.model != new_model:
-        engine._config = _replace(engine.config, model=new_model)
+    if new_model and server.state.engine.config.model != new_model:
+        server.state.engine._config = _replace(server.state.engine.config, model=new_model)
 
     return {"ok": True, "provider_id": provider_id, "model_id": model_id}

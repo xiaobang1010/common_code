@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from server.state import permission_bridge
+import server.state
 
 router = APIRouter()
 
@@ -23,7 +23,7 @@ async def resolve_permission(body: dict) -> dict:
     """
     request_id = body.get("request_id", "")
     decision = body.get("decision", "")
-    ok = permission_bridge.resolve(request_id, decision)
+    ok = server.state.permission_bridge.resolve(request_id, decision)
     if ok:
         return {"ok": True}
     return {"ok": False, "error": "request not found"}

@@ -411,10 +411,73 @@ def _extract_bash_command(tool_input: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _decide_by_metadata(
+    tool: Any,
+    tool_input: dict,
+) -> PermissionResult | None:
+    """基于工具描述符的元数据驱动分级（default 模式）。
+
+    规则：
+    - 只读 + 低风险 → ALLOW
+    - 工作区范围 + 中风险（文件编辑类）→ ALLOW（自动编辑模式）
+    - 系统范围（命令类）→ 按命令内容风险分级
+    - 其他 → ASK
+
+    Returns:
+        决策结果，或 None 表示描述符不可用（回退名单分级）。
+    """
+    metadata = getattr(tool, "metadata", None)
+    if metadata is None:
+        return None
+
+    # 只读低风险直接放行
+    if getattr(metadata, "read_only", False) and getattr(metadata, "risk_level", "") == "low":
+        return PermissionResult(
+            decision=PermissionDecision.ALLOW,
+            reason=f"只读低风险工具 {getattr(tool, 'name', '')} 自动放行",
+        )
+
+    scope = getattr(metadata, "side_effect_scope", "")
+    risk = getattr(metadata, "risk_level", "")
+
+    # 工作区中风险（文件编辑类）：default 模式自动放行
+    if not getattr(metadata, "read_only", False) and risk == "medium" and scope == "workspace":
+        return PermissionResult(
+            decision=PermissionDecision.ALLOW,
+            reason=f"文件编辑工具 {getattr(tool, 'name', '')} 在 default 模式自动放行",
+        )
+
+    # 系统范围（命令类）：按命令内容风险分级
+    if scope == "system":
+        command = _extract_bash_command(tool_input)
+        if _is_dangerous_command(command):
+            return PermissionResult(
+                decision=PermissionDecision.ASK,
+                reason=f"危险命令需要确认：{command[:80]}",
+            )
+        if _is_safe_command(command):
+            return PermissionResult(
+                decision=PermissionDecision.ALLOW,
+                reason=f"安全命令自动放行：{command[:80]}",
+            )
+        # 其他命令保守策略：ASK
+        return PermissionResult(
+            decision=PermissionDecision.ASK,
+            reason=f"命令需要确认：{command[:80]}",
+        )
+
+    # 其他未覆盖的组合：保守 ASK
+    return PermissionResult(
+        decision=PermissionDecision.ASK,
+        reason=f"工具 {getattr(tool, 'name', '')} 未命中元数据放行规则，默认询问",
+    )
+
+
 def has_permissions_to_use_tool(
     tool_name: str,
     tool_input: dict,
     context: dict | None = None,
+    tool: Any = None,
 ) -> PermissionResult:
     """完整权限决策管线，按 permission_mode 分流。
 
@@ -427,6 +490,7 @@ def has_permissions_to_use_tool(
             - "ask_rules": list[PermissionRule] — ask 规则列表
             - "allow_rules": list[PermissionRule] — allow 规则列表
             - "bypass_permissions": bool — 是否绕过权限（兼容旧逻辑）
+        tool: 可选的 Tool 对象，携带描述符时优先按元数据分级
 
     Returns:
         PermissionResult 决策结果。
@@ -472,21 +536,28 @@ def has_permissions_to_use_tool(
             reason="Input involves protected directory (.git/ or .claude/).",
         )
 
-    # 6. 只读工具直接放行
+    # 6. 元数据驱动分级（有描述符时优先）
+    metadata_decision = _decide_by_metadata(tool, tool_input)
+    if metadata_decision is not None:
+        return metadata_decision
+
+    # --- 无描述符时的名单兜底 ---
+
+    # 7. 只读工具直接放行
     if tool_name in READONLY_TOOLS:
         return PermissionResult(
             decision=PermissionDecision.ALLOW,
             reason=f"Read-only tool {tool_name} is allowed.",
         )
 
-    # 7. 文件编辑工具自动放行（对齐 ZCode edit 模式）
+    # 8. 文件编辑工具自动放行（对齐 ZCode edit 模式）
     if tool_name in FILE_EDIT_TOOLS:
         return PermissionResult(
             decision=PermissionDecision.ALLOW,
             reason=f"File edit tool {tool_name} is allowed in default mode.",
         )
 
-    # 8. Bash 命令风险分级
+    # 9. Bash 命令风险分级
     if tool_name in ("Bash", "PowerShell"):
         command = _extract_bash_command(tool_input)
         if _is_dangerous_command(command):
@@ -505,12 +576,12 @@ def has_permissions_to_use_tool(
             reason=f"Command requires confirmation: {command[:80]}",
         )
 
-    # 9. allow 规则
+    # 10. allow 规则
     allow_result = check_rule_based_permissions(tool_name, tool_input, allow_rules)
     if allow_result is not None:
         return allow_result
-
-    # 10. 默认 ASK（default 模式保守兜底）
+    
+    # 11. 默认 ASK（default 模式保守兜底）
     return PermissionResult(
         decision=PermissionDecision.ASK,
         reason=f"No rule matched for {tool_name}, defaulting to ask.",

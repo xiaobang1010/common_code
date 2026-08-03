@@ -290,7 +290,8 @@ function App() {
         {/* AI 面板：占据剩余空间（主角） */}
         <div style={{ flex: 1, minWidth: 0 }}>
           <AIPanel
-            messages={chat.messages}
+            blocks={chat.blocks}
+            formatDuration={chat.formatDuration}
             isStreaming={chat.isStreaming}
             sendMessage={chat.sendMessage}
             abort={chat.abort}

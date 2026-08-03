@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from pydantic import BaseModel
 
 from tools.protocol import Tool, ToolResult, ToolUseContext, tool_matches_name
+from tools.implementations.runtime.budget import apply_result_budget
 from startup.hooks import (
     HookConfig, HookResult,
     run_pre_tool_use_hooks, run_post_tool_use_hooks,
@@ -61,11 +62,14 @@ def tool_result_to_openai_message(result: ToolExecutionResult) -> dict:
 
     返回：
         {"role": "tool", "tool_call_id": ..., "content": ...}
+
+    输出体量由执行管线按工具的 result_budget 描述符统一截断，
+    这里不再重复处理。
     """
     return {
         "role": "tool",
         "tool_call_id": result.tool_call_id,
-        "content": result.content,
+        "content": result.content or "",
     }
 
 
@@ -245,9 +249,23 @@ async def execute_tool_call(
             is_error=True,
         )
 
-    # ---- 6. tool.execute() ----
+    # ---- 6. tool.execute()（按描述符超时策略包裹安全网） ----
+    # 工具内部已按自身超时策略治理（如 Bash 的调用覆盖），
+    # 这里用 max_ms + 宽限期作为安全网，防止工具失控挂死管线
+    timeout_policy = tool.get_timeout_policy()
+    safety_timeout_sec = timeout_policy.max_ms / 1000.0 + 5.0
     try:
-        result: ToolResult = await tool.execute(validated_input, context)
+        result: ToolResult = await asyncio.wait_for(
+            tool.execute(validated_input, context),
+            timeout=safety_timeout_sec,
+        )
+    except asyncio.TimeoutError:
+        return ToolExecutionResult(
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            content=f"Tool execution timed out after {timeout_policy.max_ms}ms",
+            is_error=True,
+        )
     except Exception as e:
         error_msg = str(e)
         # 执行失败后跑 PostToolUseFailure hooks
@@ -277,11 +295,14 @@ async def execute_tool_call(
         except Exception:
             pass  # post hook 失败不影响工具执行结果
 
-    # ---- 8. 封装返回 ----
+    # ---- 8. 封装返回（按描述符结果预算统一截断） ----
+    budgeted_content = apply_result_budget(
+        result.content, tool.get_result_budget()
+    )
     return ToolExecutionResult(
         tool_call_id=tool_call_id,
         tool_name=tool_name,
-        content=result.content,
+        content=budgeted_content,
         is_error=result.is_error,
         metadata=result.metadata,
         new_messages=result.new_messages,
@@ -344,34 +365,39 @@ class StreamingToolExecutor:
         self._permission_check = permission_check
         self._permission_prompt = permission_prompt
         self._always_allowed = always_allowed
-        # 按 tool_call_id 聚合的 delta，每个值是 {"id": str, "name": str, "arguments": str}
-        self._delta_map: dict[str, dict] = {}
-        # 已启动执行的 tool_call_id 集合
-        self._started: set[str] = set()
-        # tool_call_id -> asyncio.Task
-        self._pending_tasks: dict[str, asyncio.Task] = {}
+        # 按 index 聚合的 delta，每个值是 {"id": str, "name": str, "arguments": str}
+        self._delta_map: dict[int, dict] = {}
+        # 已启动执行的 index 集合
+        self._started: set[int] = set()
+        # index -> asyncio.Task
+        self._pending_tasks: dict[int, asyncio.Task] = {}
         # 已完成的工具结果
         self._completed_results: list[ToolExecutionResult] = []
 
     def add_delta(self, event: StreamEvent) -> None:
         """处理流式事件，累积工具调用 delta，完整后立即异步执行。
 
-        只处理 type == "tool_call_delta" 的事件：按 tool_call_id 聚合 name 与
-        arguments 增量；当累积的 arguments 能成功 json.loads 时，认为该工具调用
-        完整，立即创建 asyncio.Task 异步执行。
+        按 tool_call_index 聚合 name 与 arguments 增量；当累积的 arguments
+        能成功 json.loads 时，认为该工具调用完整，立即创建 asyncio.Task 异步执行。
+
+        流式时首个 delta 带 id+name+index，后续 delta 带 index+arguments（id 为 null）。
         """
         if event.type != "tool_call_delta":
             return
 
-        call_id = event.tool_call_id
-        if call_id is None:
+        idx = event.tool_call_index
+        if idx is None:
             return
 
-        # 首次见到该 id，创建聚合条目
-        if call_id not in self._delta_map:
-            self._delta_map[call_id] = {"id": call_id, "name": "", "arguments": ""}
+        # 首次见到该 index，创建聚合条目
+        if idx not in self._delta_map:
+            self._delta_map[idx] = {"id": "", "name": "", "arguments": ""}
 
-        entry = self._delta_map[call_id]
+        entry = self._delta_map[idx]
+
+        # 首个 delta 带 id，记录下来
+        if event.tool_call_id:
+            entry["id"] = event.tool_call_id
 
         # 追加 name 增量（如果有）
         if event.tool_call_name:
@@ -382,7 +408,7 @@ class StreamingToolExecutor:
             entry["arguments"] += event.tool_call_arguments
 
         # 已经启动执行了，不再重复处理
-        if call_id in self._started:
+        if idx in self._started:
             return
 
         # 尝试解析 arguments；成功则认为工具调用完整，立即异步执行
@@ -394,14 +420,14 @@ class StreamingToolExecutor:
 
         # 构建完整 tool_call 并异步执行
         tool_call = {
-            "id": call_id,
+            "id": entry["id"],
             "function": {
                 "name": entry["name"],
                 "arguments": entry["arguments"],
             },
         }
-        self._started.add(call_id)
-        self._pending_tasks[call_id] = asyncio.create_task(
+        self._started.add(idx)
+        self._pending_tasks[idx] = asyncio.create_task(
             self._execute_one(tool_call)
         )
 

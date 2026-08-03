@@ -1,0 +1,98 @@
+"""Edit 工具执行逻辑 — 返回结构化结果。"""
+
+from __future__ import annotations
+
+from tools.implementations.file_edit_tool.schema import FileEditInput
+from tools.implementations.runtime.errors import (
+    ToolExecutionError,
+    file_not_found_error,
+)
+from tools.implementations.runtime.paths import resolve_workspace_path
+from tools.protocol import ToolUseContext
+
+
+def _validate_edit_input(inp: FileEditInput, file_path) -> None:
+    """编辑前置校验：old==new 无意义、文件不存在且非创建场景。
+
+    Raises:
+        ToolExecutionError: 校验失败
+    """
+    if inp.old_string == inp.new_string:
+        raise ToolExecutionError(
+            "no_change", "old_string 和 new_string 完全相同，无需修改"
+        )
+    if not file_path.exists() and inp.old_string != "":
+        raise file_not_found_error(inp.file_path)
+
+
+async def handle_edit(inp: FileEditInput, context: ToolUseContext) -> dict:
+    """读取文件 → 搜索 old_string → 替换为 new_string → 写回。
+
+    Returns:
+        结构化结果字典：
+        {
+            "file_path": 绝对路径,
+            "replacements": 实际替换次数,
+            "added_lines": 新增行数, "removed_lines": 删除行数,
+        }
+
+    Raises:
+        ToolExecutionError: 路径越界 / 无变更 / 文件不存在 / 未找到匹配 / 匹配不唯一
+    """
+    # 路径沙箱：解析并校验工作区边界
+    file_path = resolve_workspace_path(inp.file_path)
+    _validate_edit_input(inp, file_path)
+
+    # 读取现有内容（新文件创建场景为空串）
+    if file_path.exists():
+        content = file_path.read_text(encoding="utf-8", errors="replace")
+    else:
+        content = ""
+
+    # 搜索与替换
+    if inp.old_string == "" and content == "":
+        # 空文件/新文件 → 空字符串替换为 new_string
+        updated = inp.new_string
+        replacements = 1
+    else:
+        count = content.count(inp.old_string)
+        if count == 0:
+            raise ToolExecutionError(
+                "string_not_found",
+                f"未找到要替换的字符串。\n字符串：{inp.old_string}",
+            )
+        if count > 1 and not inp.replace_all:
+            raise ToolExecutionError(
+                "multiple_matches",
+                f"找到 {count} 处匹配，但 replace_all=False。"
+                f"请提供更多上下文或设置 replace_all=True。\n字符串：{inp.old_string}",
+            )
+        if inp.replace_all:
+            updated = content.replace(inp.old_string, inp.new_string)
+            replacements = count
+        else:
+            updated = content.replace(inp.old_string, inp.new_string, 1)
+            replacements = 1
+
+    # 写回文件
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text(updated, encoding="utf-8")
+
+    # 变更统计（增删行数）
+    removed = len(content.splitlines())
+    added = len(updated.splitlines())
+    return {
+        "file_path": str(file_path),
+        "replacements": replacements,
+        "added_lines": max(0, added - removed),
+        "removed_lines": max(0, removed - added),
+    }
+
+
+def format_model_content(structured: dict) -> str:
+    """结构化结果 → 给模型的文本。"""
+    replacements = structured.get("replacements", 1)
+    return (
+        f"文件 {structured['file_path']} 已成功更新"
+        f"（替换 {replacements} 处）。"
+    )
