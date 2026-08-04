@@ -177,9 +177,10 @@ export function useChat() {
 
     if (evt.type === 'stream') {
       if (evt.event_type === 'content' && evt.content) {
-        // 流式文本累加到 finalReply
+        // 流式文本累加到 finalReply；快照当前值，避免批处理时闭包读到被后续事件改动的 ref
         finalReplyRef.current += evt.content
-        updateBlock(blockId, b => ({ ...b, finalReply: finalReplyRef.current, finalReplyStreaming: true }))
+        const reply = finalReplyRef.current
+        updateBlock(blockId, b => ({ ...b, finalReply: reply, finalReplyStreaming: true }))
       } else if (evt.event_type === 'reasoning' && evt.content) {
         // 推理过程暂存，等工具步骤创建时绑定
         pendingReasoningRef.current += evt.content
@@ -228,9 +229,13 @@ export function useChat() {
         finalReplyRef.current = ''
         updateBlock(blockId, b => ({ ...b, finalReply: '', finalReplyStreaming: false }))
       } else if (msg.role === 'assistant') {
-        // 最终回复：覆盖 finalReply
+        // 最终回复：覆盖 finalReply。
+        // 注意：message/done/loop_result 常在同一网络分片里连续到达，更新会被 React 批量排队；
+        // loop_result 处理时会立刻清空 finalReplyRef，若 updater 闭包读 ref 会拿到被清空的值，
+        // 导致最终回复在完成时消失。因此必须先快照成局部变量再传给 updater。
         finalReplyRef.current = msg.content || finalReplyRef.current
-        updateBlock(blockId, b => ({ ...b, finalReply: finalReplyRef.current, finalReplyStreaming: false }))
+        const reply = finalReplyRef.current
+        updateBlock(blockId, b => ({ ...b, finalReply: reply, finalReplyStreaming: false }))
       }
     } else if (evt.type === 'heartbeat') {
       // 心跳，忽略
