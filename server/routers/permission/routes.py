@@ -50,3 +50,26 @@ async def set_permission_mode(body: dict) -> dict:
 
     _set_mode(mode)
     return {"ok": True, "mode": mode}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/question - 回传 AskUserQuestion 的用户回答
+# ---------------------------------------------------------------------------
+
+
+@router.post("/api/question")
+async def resolve_question(body: dict) -> dict:
+    """用户回答回传接口。
+
+    请求体：{"request_id": "...", "answer": "..."}
+    返回：{"ok": true} 或 {"ok": false, "error": "request not found"}
+    """
+    request_id = body.get("request_id", "")
+    answer = body.get("answer", "")
+    bridge = server.state.question_bridge
+    if bridge is None:
+        return {"ok": False, "error": "question bridge not initialized"}
+    ok = bridge.resolve(request_id, answer)
+    if ok:
+        return {"ok": True}
+    return {"ok": False, "error": "request not found"}

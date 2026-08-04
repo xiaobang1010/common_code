@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
-import type { PermissionRequest } from '../../hooks/useChat'
+import type { PermissionRequest, QuestionRequest } from '../../hooks/useChat'
 import { llmApi, type PermissionMode, type CustomLLMProviderInfo } from '../../api/client'
 import { useSettingsStore } from '../../stores/useSettingsStore'
+import QuestionCard from './QuestionCard'
 
 interface Props {
   onSend: (prompt: string) => void
@@ -14,6 +15,10 @@ interface Props {
   permissionRequest: PermissionRequest | null
   // 用户做出权限决策时回调
   onResolve: (decision: 'allow' | 'deny' | 'always_allow') => void
+  // 当前待回答的提问请求（AskUserQuestion），为 null 时不显示卡片
+  questionRequest: QuestionRequest | null
+  // 用户提交提问回答时回调
+  onAnswer: (answer: string) => void
   // 当前权限模式
   permissionMode: PermissionMode
   // 切换权限模式
@@ -32,7 +37,7 @@ const BUILTIN_COMMANDS = [
   { name: '/spec', desc: '查看规格' },
 ]
 
-function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, onResolve, permissionMode, onPermissionModeChange }: Props) {
+function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, onResolve, questionRequest, onAnswer, permissionMode, onPermissionModeChange }: Props) {
   const [value, setValue] = useState('')
   const [showCommands, setShowCommands] = useState(false)
   const [selectedIdx, setSelectedIdx] = useState(0)
@@ -203,6 +208,11 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
 
   return (
     <div style={{ position: 'relative' }}>
+      {/* 提问卡片 - 模型主动提问时内嵌在输入框上方 */}
+      {questionRequest && (
+        <QuestionCard questionRequest={questionRequest} onAnswer={onAnswer} />
+      )}
+
       {/* 权限确认卡片 - 内嵌在输入框上方，不是全屏遮罩 */}
       {permissionRequest && (
         <div

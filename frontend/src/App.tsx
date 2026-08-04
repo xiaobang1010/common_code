@@ -298,6 +298,8 @@ function App() {
             tokenUsage={chat.tokenUsage}
             permissionRequest={chat.permissionRequest}
             resolvePermission={chat.resolvePermission}
+            questionRequest={chat.questionRequest}
+            answerQuestion={chat.answerQuestion}
             permissionMode={chat.permissionMode}
             onPermissionModeChange={chat.setPermissionMode}
             workspaceSelector={

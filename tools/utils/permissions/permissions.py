@@ -1,18 +1,19 @@
 """权限决策核心模块。
 
 实现完整的权限决策管线，按 permission_mode 分流：
-- default（自动编辑）：只读放行、文件编辑放行、安全命令放行；
-  删文件、读敏感文件、危险命令才确认
+- default（自动编辑）：只审核三类操作——删除类命令、敏感文件访问（读/写均算）、
+  .git/.claude 保护目录写入；其余操作（含未收录的普通命令）一律自动放行
 - full_access（完全访问）：全部放行，除非模型主动调 AskUserQuestion
 
 按优先级依次检查：
 1. deny 规则（所有模式生效）
-2. full_access 模式：直接 ALLOW
-3. 敏感文件读取检查（default 模式）
-4. 安全路径检查（default 模式）：.git/.claude 写入 → ASK
-5. default 模式分流：只读放行、编辑放行、Bash 按风险分级
-6. allow 规则
-7. 默认：default ASK / full_access ALLOW
+2. ask 规则（所有模式生效）
+3. full_access 模式：直接 ALLOW
+4. 敏感文件访问检查（default 模式，读/写均触发）
+5. 安全路径检查（default 模式）：.git/.claude 写入 → ASK
+6. default 模式分流：删除类命令 ASK，其余放行
+7. allow 规则
+8. 默认：ALLOW
 """
 
 from __future__ import annotations
@@ -48,8 +49,8 @@ class PermissionResult:
 # 权限模式
 # ---------------------------------------------------------------------------
 
-# 默认模式（自动编辑）：只读放行、文件编辑放行、安全命令放行，
-# 删文件、读敏感文件、危险命令才确认
+# 默认模式（自动编辑）：只审核删除类命令、敏感文件访问、.git/.claude 写入，
+# 其余操作自动放行
 MODE_DEFAULT = "default"
 
 # 完全访问模式：全部放行，除非模型主动调 AskUserQuestion
@@ -97,7 +98,7 @@ _UNSAFE_PATH_PREFIXES: tuple[str, ...] = (
 )
 
 # ---------------------------------------------------------------------------
-# 敏感文件模式（读取这些文件需要确认）
+# 敏感文件模式（访问这些文件需要确认，读/写均算）
 # ---------------------------------------------------------------------------
 
 # 敏感文件名/扩展名模式
@@ -171,7 +172,7 @@ _SAFE_COMMAND_PATTERNS: list[str] = [
     r"^tree\b",
 ]
 
-# 危险命令模式（default 模式需要确认）
+# 删除类命令模式（default 模式需要确认）
 _DANGEROUS_COMMAND_PATTERNS: list[str] = [
     r"\brm\b",
     r"\bmkfs\b",
@@ -181,12 +182,24 @@ _DANGEROUS_COMMAND_PATTERNS: list[str] = [
     r":\(\)\s*\{",
     r">\s*/dev/sd",
     r"\bformat\b",
-    r"\bdel\s+/[fs]\b",
+    r"\bdel\b",
+    r"\berase\b",
     r"\brmdir\b",
     r"\bshutdown\b",
     r"\breboot\b",
     r"\bkillall\b",
     r"\bpkill\b",
+    # Windows PowerShell 删除类命令
+    r"\bRemove-Item\b",
+    r"\bClear-RecycleBin\b",
+    # git 破坏性操作
+    r"\bgit\s+clean\b",
+    r"\bgit\s+reset\s+--hard\b",
+    r"\bgit\s+push\s+(?:--force|-f\b|--force-with-lease)",
+    r"\bgit\s+branch\s+-D\b",
+    # 系统级删除
+    r"\bunlink\b",
+    r"shutil\.rmtree",
 ]
 
 # 编译正则
@@ -204,7 +217,7 @@ def _is_safe_command(command: str) -> bool:
 
 
 def _is_dangerous_command(command: str) -> bool:
-    """判断 Bash 命令是否危险（有破坏性）。"""
+    """判断 Bash 命令是否属于删除类/破坏性操作（需用户确认）。"""
     command = command.strip()
     for pattern in _DANGEROUS_COMMAND_REGEX:
         if pattern.search(command):
@@ -374,26 +387,37 @@ def _check_input_safety(tool_input: dict) -> bool:
     return True
 
 
-def _check_sensitive_file_read(tool_name: str, tool_input: dict) -> bool:
-    """检查是否在读取敏感文件（.env / *.key / credentials 等）。
+def _check_sensitive_file_access(tool_name: str, tool_input: dict) -> bool:
+    """检查工具输入是否涉及敏感文件（.env / *.key / credentials 等）。
+
+    不限定工具类型：Read 读取、Edit/Write 修改、Bash 命令文本提及均算访问，
+    读/写都会触发确认。
 
     Returns:
-        True 表示涉及敏感文件读取。
+        True 表示涉及敏感文件访问。
     """
-    if tool_name not in ("Read",):
+    # Bash/PowerShell：命令文本里提及敏感文件名也算访问（如 cat .env / copy .env）
+    # 按空白拆分 token 后逐个检查，避免路径正则要求行首/分隔符前缀而漏判
+    if tool_name in ("Bash", "PowerShell"):
+        command = _extract_bash_command(tool_input)
+        for token in re.split(r"\s+", command):
+            stripped = token.strip("\"'`")
+            if stripped and is_sensitive_file(stripped):
+                return True
         return False
 
-    for value in tool_input.values():
-        if isinstance(value, str) and is_sensitive_file(value):
-            return True
-        if isinstance(value, (list, tuple)):
-            for item in value:
-                if isinstance(item, str) and is_sensitive_file(item):
-                    return True
-        if isinstance(value, dict):
-            for v in value.values():
-                if isinstance(v, str) and is_sensitive_file(v):
-                    return True
+    # 其他工具：递归扫描所有输入字符串中的敏感路径
+    return _scan_values_for_sensitive(tool_input)
+
+
+def _scan_values_for_sensitive(value: Any) -> bool:
+    """递归扫描输入值中的字符串是否命中敏感文件模式。"""
+    if isinstance(value, str):
+        return is_sensitive_file(value)
+    if isinstance(value, (list, tuple)):
+        return any(_scan_values_for_sensitive(item) for item in value)
+    if isinstance(value, dict):
+        return any(_scan_values_for_sensitive(v) for v in value.values())
     return False
 
 
@@ -417,11 +441,11 @@ def _decide_by_metadata(
 ) -> PermissionResult | None:
     """基于工具描述符的元数据驱动分级（default 模式）。
 
-    规则：
+    规则（只审核删除/敏感，其余放行）：
     - 只读 + 低风险 → ALLOW
     - 工作区范围 + 中风险（文件编辑类）→ ALLOW（自动编辑模式）
-    - 系统范围（命令类）→ 按命令内容风险分级
-    - 其他 → ASK
+    - 系统范围（命令类）→ 删除类命令 ASK，其余 ALLOW
+    - 其他未覆盖组合 → ALLOW（敏感文件与保护目录已在上游拦截）
 
     Returns:
         决策结果，或 None 表示描述符不可用（回退名单分级）。
@@ -460,16 +484,16 @@ def _decide_by_metadata(
                 decision=PermissionDecision.ALLOW,
                 reason=f"安全命令自动放行：{command[:80]}",
             )
-        # 其他命令保守策略：ASK
+        # 非删除类命令自动放行（自动编辑模式只审核删除/敏感文件）
         return PermissionResult(
-            decision=PermissionDecision.ASK,
-            reason=f"命令需要确认：{command[:80]}",
+            decision=PermissionDecision.ALLOW,
+            reason=f"非删除类命令自动放行：{command[:80]}",
         )
 
-    # 其他未覆盖的组合：保守 ASK
+    # 其他未覆盖的组合：自动放行（敏感文件与保护目录已在上游拦截）
     return PermissionResult(
-        decision=PermissionDecision.ASK,
-        reason=f"工具 {getattr(tool, 'name', '')} 未命中元数据放行规则，默认询问",
+        decision=PermissionDecision.ALLOW,
+        reason=f"工具 {getattr(tool, 'name', '')} 非删除/敏感操作，自动放行",
     )
 
 
@@ -522,11 +546,11 @@ def has_permissions_to_use_tool(
 
     # --- 以下为 default 模式的细分判定 ---
 
-    # 4. 敏感文件读取检查：读敏感文件 → ASK
-    if _check_sensitive_file_read(tool_name, tool_input):
+    # 4. 敏感文件访问检查：读/写敏感文件 → ASK
+    if _check_sensitive_file_access(tool_name, tool_input):
         return PermissionResult(
             decision=PermissionDecision.ASK,
-            reason="Reading sensitive file requires confirmation.",
+            reason="Accessing sensitive file requires confirmation.",
         )
 
     # 5. 安全路径检查：.git/.claude 写入 → ASK
@@ -570,10 +594,10 @@ def has_permissions_to_use_tool(
                 decision=PermissionDecision.ALLOW,
                 reason=f"Safe command is allowed: {command[:80]}",
             )
-        # 其他命令保守策略：ASK
+        # 非删除类命令自动放行（自动编辑模式只审核删除/敏感文件）
         return PermissionResult(
-            decision=PermissionDecision.ASK,
-            reason=f"Command requires confirmation: {command[:80]}",
+            decision=PermissionDecision.ALLOW,
+            reason=f"Non-deletion command is allowed: {command[:80]}",
         )
 
     # 10. allow 规则
@@ -581,8 +605,8 @@ def has_permissions_to_use_tool(
     if allow_result is not None:
         return allow_result
     
-    # 11. 默认 ASK（default 模式保守兜底）
+    # 11. 默认 ALLOW（自动编辑模式只审核删除/敏感文件/保护目录，其余放行）
     return PermissionResult(
-        decision=PermissionDecision.ASK,
-        reason=f"No rule matched for {tool_name}, defaulting to ask.",
+        decision=PermissionDecision.ALLOW,
+        reason=f"No rule matched for {tool_name}, auto-allowed in default mode.",
     )

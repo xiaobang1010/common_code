@@ -476,7 +476,7 @@ async def query_loop(
         from startup.setup import get_hooks_snapshot
         tool_executor = StreamingToolExecutor(
             tools=engine_config.tools,
-            context=ToolUseContext(),
+            context=ToolUseContext(question_callback=engine_config.question_prompt),
             permission_check=engine_config.permission_check,
             permission_prompt=engine_config.permission_prompt,
             always_allowed=engine.always_allowed,

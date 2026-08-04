@@ -179,7 +179,11 @@ async def switch_session(session_id: str) -> dict:
 
         from query.engine import QueryEngine, build_engine_config
 
-        config = build_engine_config(permission_prompt=server.state.permission_bridge.request_permission)
+        q_bridge = server.state.question_bridge
+        config = build_engine_config(
+            permission_prompt=server.state.permission_bridge.request_permission,
+            question_prompt=q_bridge.ask_question if q_bridge else None,
+        )
         config = replace(config, cwd=session.workspace_path)
         new_engine = QueryEngine(config)
         # 替换全局引擎

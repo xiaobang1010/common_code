@@ -309,6 +309,12 @@ export const permissionsApi = {
     apiPost<{ ok: boolean; mode: PermissionMode }>('/api/permission/mode', { mode }),
 }
 
+/** AskUserQuestion 提问回答 */
+export const questionApi = {
+  answer: (requestId: string, answer: string) =>
+    apiPost<{ ok: boolean }>('/api/question', { request_id: requestId, answer }),
+}
+
 // ---------------------------------------------------------------------------
 // 会话 / 工作区 / Git 分支
 // ---------------------------------------------------------------------------

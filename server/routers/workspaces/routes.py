@@ -79,8 +79,12 @@ async def switch_workspace(body: dict) -> dict:
     # 1. 更新工作目录
     set_project_root(path)
 
-    # 2. 重建引擎
-    config = build_engine_config(permission_prompt=server.state.permission_bridge.request_permission)
+    # 2. 重建引擎（保留权限桥和提问桥回调）
+    q_bridge = server.state.question_bridge
+    config = build_engine_config(
+        permission_prompt=server.state.permission_bridge.request_permission,
+        question_prompt=q_bridge.ask_question if q_bridge else None,
+    )
     config = replace(config, cwd=path)
     new_engine = QueryEngine(config)
     # 替换全局引擎
