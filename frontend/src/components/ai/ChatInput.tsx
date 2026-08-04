@@ -39,7 +39,8 @@ const BUILTIN_COMMANDS = [
 
 function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, onResolve, questionRequest, onAnswer, permissionMode, onPermissionModeChange }: Props) {
   const [value, setValue] = useState('')
-  const [showCommands, setShowCommands] = useState(false)
+  // 用户手动关闭补全后置 true，阻止自动弹出，直到下次输入变化
+  const [commandsDismissed, setCommandsDismissed] = useState(false)
   const [selectedIdx, setSelectedIdx] = useState(0)
   const [isFocused, setIsFocused] = useState(false)
   const [commands, setCommands] = useState(BUILTIN_COMMANDS)
@@ -117,13 +118,15 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
 
   const filteredCommands = commands.filter(c => c.name.startsWith(value))
 
+  // 补全列表是否展示：直接从输入值派生，不用 effect 回写状态。
+  // 旧实现用 useEffect 监听 value 并回写 showCommands，且依赖里缺少 filteredCommands，
+  // 会在发送清空输入与自动回写之间形成反馈环，触发 Maximum update depth exceeded。
+  const showCommands = value.startsWith('/') && filteredCommands.length > 0 && !commandsDismissed
+
+  // 输入变化时重置选中项和手动关闭标记（新的一轮输入视为重新打开补全）
   useEffect(() => {
-    if (value.startsWith('/') && filteredCommands.length > 0) {
-      setShowCommands(true)
-      setSelectedIdx(0)
-    } else {
-      setShowCommands(false)
-    }
+    setSelectedIdx(0)
+    setCommandsDismissed(false)
   }, [value])
 
   const handleSend = () => {
@@ -131,7 +134,6 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
     if (!trimmed || disabled) return
     onSend(trimmed)
     setValue('')
-    setShowCommands(false)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -148,13 +150,12 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
       }
       if (e.key === 'Escape') {
         e.preventDefault()
-        setShowCommands(false)
+        setCommandsDismissed(true)
         return
       }
       if (e.key === 'Enter') {
         e.preventDefault()
         setValue(filteredCommands[selectedIdx].name + ' ')
-        setShowCommands(false)
         textareaRef.current?.focus()
         return
       }
@@ -402,7 +403,6 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
               key={cmd.name}
               onClick={() => {
                 setValue(cmd.name + ' ')
-                setShowCommands(false)
                 textareaRef.current?.focus()
               }}
               style={{
