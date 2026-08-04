@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
-import type { PermissionRequest } from '../../hooks/useChat'
+import type { PermissionRequest, QuestionRequest } from '../../hooks/useChat'
 import { llmApi, type PermissionMode, type CustomLLMProviderInfo } from '../../api/client'
 import { useSettingsStore } from '../../stores/useSettingsStore'
+import QuestionCard from './QuestionCard'
 
 interface Props {
   onSend: (prompt: string) => void
@@ -14,6 +15,10 @@ interface Props {
   permissionRequest: PermissionRequest | null
   // 用户做出权限决策时回调
   onResolve: (decision: 'allow' | 'deny' | 'always_allow') => void
+  // 当前待回答的提问请求（AskUserQuestion），为 null 时不显示卡片
+  questionRequest: QuestionRequest | null
+  // 用户提交提问回答时回调
+  onAnswer: (answer: string) => void
   // 当前权限模式
   permissionMode: PermissionMode
   // 切换权限模式
@@ -32,9 +37,10 @@ const BUILTIN_COMMANDS = [
   { name: '/spec', desc: '查看规格' },
 ]
 
-function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, onResolve, permissionMode, onPermissionModeChange }: Props) {
+function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, onResolve, questionRequest, onAnswer, permissionMode, onPermissionModeChange }: Props) {
   const [value, setValue] = useState('')
-  const [showCommands, setShowCommands] = useState(false)
+  // 用户手动关闭补全后置 true，阻止自动弹出，直到下次输入变化
+  const [commandsDismissed, setCommandsDismissed] = useState(false)
   const [selectedIdx, setSelectedIdx] = useState(0)
   const [isFocused, setIsFocused] = useState(false)
   const [commands, setCommands] = useState(BUILTIN_COMMANDS)
@@ -112,13 +118,15 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
 
   const filteredCommands = commands.filter(c => c.name.startsWith(value))
 
+  // 补全列表是否展示：直接从输入值派生，不用 effect 回写状态。
+  // 旧实现用 useEffect 监听 value 并回写 showCommands，且依赖里缺少 filteredCommands，
+  // 会在发送清空输入与自动回写之间形成反馈环，触发 Maximum update depth exceeded。
+  const showCommands = value.startsWith('/') && filteredCommands.length > 0 && !commandsDismissed
+
+  // 输入变化时重置选中项和手动关闭标记（新的一轮输入视为重新打开补全）
   useEffect(() => {
-    if (value.startsWith('/') && filteredCommands.length > 0) {
-      setShowCommands(true)
-      setSelectedIdx(0)
-    } else {
-      setShowCommands(false)
-    }
+    setSelectedIdx(0)
+    setCommandsDismissed(false)
   }, [value])
 
   const handleSend = () => {
@@ -126,7 +134,6 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
     if (!trimmed || disabled) return
     onSend(trimmed)
     setValue('')
-    setShowCommands(false)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -143,13 +150,12 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
       }
       if (e.key === 'Escape') {
         e.preventDefault()
-        setShowCommands(false)
+        setCommandsDismissed(true)
         return
       }
       if (e.key === 'Enter') {
         e.preventDefault()
         setValue(filteredCommands[selectedIdx].name + ' ')
-        setShowCommands(false)
         textareaRef.current?.focus()
         return
       }
@@ -203,6 +209,11 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
 
   return (
     <div style={{ position: 'relative' }}>
+      {/* 提问卡片 - 模型主动提问时内嵌在输入框上方 */}
+      {questionRequest && (
+        <QuestionCard questionRequest={questionRequest} onAnswer={onAnswer} />
+      )}
+
       {/* 权限确认卡片 - 内嵌在输入框上方，不是全屏遮罩 */}
       {permissionRequest && (
         <div
@@ -392,7 +403,6 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
               key={cmd.name}
               onClick={() => {
                 setValue(cmd.name + ' ')
-                setShowCommands(false)
                 textareaRef.current?.focus()
               }}
               style={{

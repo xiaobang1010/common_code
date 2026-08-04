@@ -153,6 +153,14 @@ def get_tools(context_filter: ToolContextFilter | None = None) -> list[Tool]:
     except ImportError:
         pass
 
+    # 9. AskUserQuestion 工具（仅主循环可用，子代理/teammate 不能向用户提问）
+    if context_filter is None or (not context_filter.is_subagent and not context_filter.is_teammate):
+        try:
+            from tools.implementations.ask_user_question import get_ask_user_question_tool
+            tools.append(get_ask_user_question_tool())
+        except ImportError:
+            pass
+
     # 7. 上下文过滤：子代理按代理定义过滤工具
     if context_filter is not None and context_filter.is_subagent:
         tools = _filter_for_subagent(tools, context_filter)

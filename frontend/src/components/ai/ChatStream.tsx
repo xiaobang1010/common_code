@@ -1,20 +1,21 @@
 import { useRef, useEffect } from 'react'
-import ChatMessage from './ChatMessage'
-import type { ChatMessage as ChatMessageType } from '../../hooks/useChat'
+import WorkBlockView from './WorkBlock'
+import type { WorkBlock } from '../../hooks/useChat'
 
 interface Props {
-  messages: ChatMessageType[]
+  blocks: WorkBlock[]
+  formatDuration: (ms: number) => string
 }
 
-function ChatStream({ messages }: Props) {
+function ChatStream({ blocks, formatDuration }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
 
-  // 消息列表变化时自动滚动到底部
+  // 内容变化时自动滚动到底部
   useEffect(() => {
     if (containerRef.current) {
       containerRef.current.scrollTop = containerRef.current.scrollHeight
     }
-  }, [messages])
+  }, [blocks])
 
   return (
     <div
@@ -24,12 +25,12 @@ function ChatStream({ messages }: Props) {
         overflowY: 'auto',
         display: 'flex',
         flexDirection: 'column',
-        gap: '14px',
+        gap: '20px',
         padding: '20px 24px',
         scrollBehavior: 'smooth',
       }}
     >
-      {messages.length === 0 ? (
+      {blocks.length === 0 ? (
         <div
           style={{
             flex: 1,
@@ -41,7 +42,6 @@ function ChatStream({ messages }: Props) {
             color: 'var(--text-tertiary)',
           }}
         >
-          {/* 装饰性图标 */}
           <div
             style={{
               width: '56px',
@@ -83,17 +83,8 @@ function ChatStream({ messages }: Props) {
           </div>
         </div>
       ) : (
-        messages.map(msg => (
-          <div
-            key={msg.id}
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              animation: 'fade-in-up 280ms ease-out',
-            }}
-          >
-            <ChatMessage message={msg} />
-          </div>
+        blocks.map(block => (
+          <WorkBlockView key={block.id} block={block} formatDuration={formatDuration} />
         ))
       )}
     </div>

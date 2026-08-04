@@ -61,7 +61,7 @@ async def run_agent(
     from query.engine import QueryEngine, build_engine_config
     from query.config import build_query_config
     from query.loop import query_loop
-    from startup.constants.prompts import SystemPromptSection
+    from prompts import SystemPromptSection
     from tools.subagent.transcript import (
         record_sidechain_transcript,
         write_agent_metadata,

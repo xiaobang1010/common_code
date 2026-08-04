@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import random
-from typing import Any
 
 from tools.commands.commands_context import CommandContext
 from tools.commands.commands import Command, get_commands, find_command
@@ -57,11 +56,11 @@ async def cmd_clear(context: CommandContext) -> str:
 
     # 重置成本状态
     if context.app_state is not None:
-        try:
-            from startup.bootstrap.state import reset_cost_state
-            reset_cost_state()
-        except ImportError:
-            pass
+        from startup.state.app_state import TokenUsage
+
+        state = context.app_state.get_state()
+        state.total_cost_usd = 0.0
+        state.token_usage = TokenUsage()
 
     return "Conversation cleared."
 
@@ -132,24 +131,22 @@ async def cmd_config(context: CommandContext) -> str:
     if not args:
         lines: list[str] = ["Current configuration:", ""]
 
-        # 从 app_state 读取
         if context.app_state is not None:
             state = context.app_state.get_state()
             lines.append(f"  model: {state.model or 'default'}")
-            lines.append(f"  verbose: {state.verbose}")
-            lines.append(f"  theme: {state.theme}")
-            lines.append(f"  permission_mode: {state.permission_mode}")
-            lines.append(f"  auto_compact: {state.auto_compact_config.enabled}")
-            lines.append(f"  context_collapse: {state.context_collapse_enabled}")
 
-        # 从 config 读取
         if context.config is not None:
             lines.append(f"  max_tokens: {context.config.max_tokens}")
             lines.append(f"  temperature: {context.config.temperature}")
 
-        # 从全局配置文件读取
         try:
-            from startup.utils.config import get_global_config
+            from startup.bootstrap.state import get_permission_mode
+            lines.append(f"  permission_mode: {get_permission_mode()}")
+        except ImportError:
+            pass
+
+        try:
+            from startup.config import get_global_config
             gcfg = get_global_config()
             lines.append(f"  llm_base_url: {gcfg.llm_base_url or 'default'}")
             lines.append(f"  llm_model: {gcfg.llm_model or 'default'}")
@@ -157,10 +154,7 @@ async def cmd_config(context: CommandContext) -> str:
             lines.append("  (global config not available)")
 
         lines.append("")
-        lines.append("Usage: /config <key> <value>")
-        lines.append("  /config model <name>  — Change model")
-        lines.append("  /config verbose <on|off>  — Toggle verbose mode")
-        lines.append("  /config theme <dark|light>  — Change theme")
+        lines.append("Usage: /config model <name>  - Change model")
 
         return "\n".join(lines)
 
@@ -171,7 +165,7 @@ async def cmd_config(context: CommandContext) -> str:
 
     if key == "model" and value:
         if context.app_state is not None:
-            context.app_state.set_state(lambda s: _set_field(s, "model", value))
+            context.app_state.get_state().model = value
         try:
             from startup.bootstrap.state import set_model
             set_model(value)
@@ -179,30 +173,7 @@ async def cmd_config(context: CommandContext) -> str:
             pass
         return f"Model changed to: {value}"
 
-    elif key == "verbose":
-        verbose_val = value.lower() in ("on", "true", "1", "yes")
-        if context.app_state is not None:
-            context.app_state.set_state(lambda s: _set_field(s, "verbose", verbose_val))
-        try:
-            from startup.bootstrap.state import set_verbose
-            set_verbose(verbose_val)
-        except ImportError:
-            pass
-        return f"Verbose mode: {'on' if verbose_val else 'off'}"
-
-    elif key == "theme" and value.lower() in ("dark", "light"):
-        if context.app_state is not None:
-            context.app_state.set_state(lambda s: _set_field(s, "theme", value.lower()))
-        return f"Theme changed to: {value.lower()}"
-
-    else:
-        return f"Unknown config key: {key}. Type /config to see available options."
-
-
-def _set_field(state: Any, field_name: str, value: Any) -> Any:
-    """AppState 更新辅助函数。"""
-    setattr(state, field_name, value)
-    return state
+    return f"Unknown config key: {key}. Type /config to see available options."
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +204,7 @@ async def cmd_model(context: CommandContext) -> str:
     # 有参数：切换模型
     new_model = args.strip()
     if context.app_state is not None:
-        context.app_state.set_state(lambda s: _set_field(s, "model", new_model))
+        context.app_state.get_state().model = new_model
     try:
         from startup.bootstrap.state import set_model
         set_model(new_model)
@@ -313,8 +284,8 @@ async def cmd_spec(context: CommandContext) -> str:
     project_root = context.project_root
     if not project_root:
         try:
-            from startup.bootstrap.state import get_cwd
-            project_root = get_cwd()
+            from startup.bootstrap.state import get_cwd_state
+            project_root = get_cwd_state()
         except ImportError:
             project_root = "."
 

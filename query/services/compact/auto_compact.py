@@ -92,7 +92,7 @@ def get_auto_compact_threshold(model: str) -> int:
     Returns:
         自动压缩阈值（token 数）
     """
-    from startup.utils.model.config import get_effective_context_window
+    from startup.model.config import get_effective_context_window
 
     effective_window = get_effective_context_window(model)
     threshold = effective_window - AUTOCOMPACT_BUFFER_TOKENS
@@ -187,7 +187,7 @@ async def compact_conversation(
     if not messages:
         raise RuntimeError("Not enough messages to compact.")
 
-    from startup.utils.model.config import get_effective_context_window
+    from startup.model.config import get_effective_context_window
 
     context_window = get_effective_context_window(model)
 
@@ -290,6 +290,25 @@ async def _generate_compact_summary(
 
     # 构建压缩提示词
     compact_prompt = build_compact_prompt(messages)
+
+    # PreCompact hooks：收集压缩指导信息，拼入提示词
+    try:
+        from startup.bootstrap.state import get_cwd_state
+        from startup.hooks import run_pre_compact_hooks
+        from startup.setup import get_hooks_snapshot
+
+        hook_snapshot = get_hooks_snapshot()
+        if hook_snapshot is not None:
+            guidance = await run_pre_compact_hooks(
+                hook_snapshot,
+                trigger="auto",
+                session_id="",
+                cwd=get_cwd_state(),
+            )
+            if guidance.strip():
+                compact_prompt += f"\n\n## Additional compact guidance\n{guidance}"
+    except Exception:
+        pass  # hook 失败不阻断压缩
 
     # 构建 LLM 请求消息
     request_messages = [

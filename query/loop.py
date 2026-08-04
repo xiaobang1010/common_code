@@ -228,7 +228,7 @@ async def _run_inline_compression(
         context_collapse_messages,
         should_context_collapse,
     )
-    from startup.utils.model.config import get_effective_context_window
+    from startup.model.config import get_effective_context_window
     from query.utils.messages import get_messages_after_compact_boundary
 
     # token 估算基于切片后的活跃窗口（最后一个 boundary 之后的消息），
@@ -432,7 +432,7 @@ async def query_loop(
         # ---- 2. 用户/系统上下文（由调用方传入，无需此处获取） ----
 
         # ---- 3. 构建 API 请求 ----
-        from startup.constants.prompts import build_system_messages, get_system_prompt_sections
+        from prompts import build_system_messages, get_system_prompt_sections
 
         sections = engine_config.system_prompt_sections or get_system_prompt_sections()
         system_messages = build_system_messages(sections)
@@ -449,7 +449,7 @@ async def query_loop(
         try:
             from tools.skills.bundled import get_model_invocable_skills
             from tools.skills.listing import get_skill_listing_attachment
-            from startup.utils.model.config import get_effective_context_window
+            from startup.model.config import get_effective_context_window
 
             invocable_skills = get_model_invocable_skills()
             if invocable_skills:
@@ -473,12 +473,14 @@ async def query_loop(
 
         # 创建流式工具执行器
         from tools.protocol import ToolUseContext
+        from startup.setup import get_hooks_snapshot
         tool_executor = StreamingToolExecutor(
             tools=engine_config.tools,
-            context=ToolUseContext(),
+            context=ToolUseContext(question_callback=engine_config.question_prompt),
             permission_check=engine_config.permission_check,
             permission_prompt=engine_config.permission_prompt,
             always_allowed=engine.always_allowed,
+            hook_config=get_hooks_snapshot(),
         )
         tool_result_messages: list[dict] = []
 
@@ -551,6 +553,8 @@ async def query_loop(
                 error=e,
                 content=str(e),
             )
+            # 回滚引擎消息历史
+            engine.mutable_messages = messages
             yield LoopResult(reason="model_error", error=e)
             return
 
@@ -660,6 +664,9 @@ async def query_loop(
                 error=error_occurred,
                 content=str(error_occurred),
             )
+            # 回滚引擎消息历史：错误时不保留这一轮的不完整 assistant 消息，
+            # 避免坏历史导致下次请求又报错
+            engine.mutable_messages = messages
             yield LoopResult(reason="model_error", error=error_occurred)
             return
 

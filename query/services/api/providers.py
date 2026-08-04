@@ -14,7 +14,7 @@ import threading
 from typing import Any
 
 from startup.plugins.manifest import LLMProviderConfig
-from startup.utils.config import CustomLLMProvider
+from startup.config import CustomLLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -329,7 +329,7 @@ def load_llm_provider_plugins() -> None:
 
     # 2. 加载自定义供应商（来自配置文件）
     try:
-        from startup.utils.config import get_global_config
+        from startup.config import get_global_config
 
         config = get_global_config()
         if config.llm_providers:

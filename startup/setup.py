@@ -1,11 +1,9 @@
-"""会话级状态搭建，参考原始 setup.ts 的设计。
+"""启动入口：基础设施初始化 + 会话状态搭建。
 
-在交互式/非交互式会话启动时执行，完成以下步骤：
-  1. setCwd — 设置工作目录到 bootstrap state
-  2. find_git_root — 查找 git 根目录
-  3. capture_hooks_config_snapshot — 捕获 hooks 快照
-  4. 初始化权限模式
-  5. 设置初始 AppState
+合并了原 init() 与 setup() 的职责，server 启动时调用一次即可。
+依次完成：加载环境变量 -> 开启配置系统 -> 应用配置环境变量 ->
+确保 embedding 模型 -> 设置工作目录 -> 查找 git 根 -> 捕获 hooks 快照 ->
+设置权限模式 -> 构造 AppState。
 """
 
 from __future__ import annotations
@@ -15,17 +13,23 @@ import os
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
+
 from startup.bootstrap.state import (
-    get_cwd_state,
     get_model,
-    get_session_id,
     set_cwd_state,
     set_original_cwd,
     set_permission_mode,
     set_project_root,
 )
+from startup.config import (
+    _ensure_config_file,
+    apply_config_environment_variables,
+    enable_configs,
+    get_project_settings_path,
+)
+from startup.hooks import HookConfig, capture_hooks_config_snapshot
 from startup.state.app_state import AppState, AppStateProvider
-from startup.utils.hooks import capture_hooks_config_snapshot, HookConfig
 
 logger = logging.getLogger(__name__)
 
@@ -33,58 +37,51 @@ logger = logging.getLogger(__name__)
 _hooks_snapshot: HookConfig | None = None
 
 
-# ---------------------------------------------------------------------------
-# set_cwd — 设置工作目录
-# ---------------------------------------------------------------------------
+def _load_env() -> None:
+    """从项目根目录加载 .env 文件，不覆盖已有环境变量。"""
+    env_path = Path.cwd() / ".env"
+    if env_path.exists():
+        load_dotenv(env_path, override=False)
+        return
+    # 回退：从脚本所在目录的上级查找
+    project_root = Path(__file__).resolve().parent.parent
+    env_path = project_root / ".env"
+    if env_path.exists():
+        load_dotenv(env_path, override=False)
 
 
-def set_cwd(cwd: str) -> None:
-    """设置工作目录到 bootstrap state。
+def _ensure_embedding_model() -> None:
+    """检查 Jasper embedding 模型是否已下载，未下载则自动下载。
 
-    同时更新 os.getcwd() 和 bootstrap state 中的 cwd/original_cwd/project_root。
-
-    Args:
-        cwd: 目标工作目录路径
+    失败则降级为纯 BM25 模式，不阻断启动。
     """
-    normalized = os.path.normpath(cwd)
-    set_cwd_state(normalized)
-    set_original_cwd(normalized)
-    set_project_root(normalized)
     try:
-        os.chdir(normalized)
-    except OSError as e:
-        logger.warning("chdir 失败: %s — %s", normalized, e)
+        from memory.embedding.download import download_model, is_model_downloaded
 
+        if is_model_downloaded():
+            return
 
-# ---------------------------------------------------------------------------
-# find_git_root — 查找 git 根目录
-# ---------------------------------------------------------------------------
+        logger.info("Jasper embedding 模型未下载，开始自动下载...")
+        success = download_model()
+        if not success:
+            logger.warning(
+                "Jasper 模型自动下载失败，embedding 将降级为纯 BM25 模式。"
+                "可稍后运行 download-embedding-model 命令手动下载。"
+            )
+    except Exception as e:
+        logger.warning("embedding 模型检查失败: %s", e)
 
 
 def find_git_root(path: str) -> str | None:
-    """从 path 向上查找 .git 目录，返回 git 仓库根路径。
-
-    Args:
-        path: 起始查找路径
-
-    Returns:
-        git 根目录路径，如果未找到返回 None
-    """
+    """从 path 向上查找 .git 目录，返回 git 仓库根路径。"""
     current = Path(path).resolve()
     while True:
-        git_dir = current / ".git"
-        if git_dir.exists():
+        if (current / ".git").exists():
             return str(current)
         parent = current.parent
         if parent == current:
-            # 已到文件系统根
             return None
         current = parent
-
-
-# ---------------------------------------------------------------------------
-# setup — 会话级状态搭建
-# ---------------------------------------------------------------------------
 
 
 async def setup(
@@ -92,44 +89,43 @@ async def setup(
     permission_mode: str = "default",
     **kwargs: Any,
 ) -> AppStateProvider:
-    """会话级状态搭建。
-
-    执行顺序：
-      1. setCwd(cwd or os.getcwd()) — 设置工作目录
-      2. find_git_root() — 查找 git 根目录
-      3. capture_hooks_config_snapshot() — 捕获 hooks 快照
-      4. 初始化权限模式
-      5. 设置初始 AppState
+    """启动入口：基础设施初始化 + 会话状态搭建。
 
     Args:
         cwd: 工作目录，默认为 os.getcwd()
         permission_mode: 权限模式，默认 "default"
-        **kwargs: 额外参数（预留扩展）
+        **kwargs: 预留扩展
 
     Returns:
         初始化后的 AppStateProvider 实例
     """
     global _hooks_snapshot
 
-    # 1. 设置工作目录
-    resolved_cwd = cwd or os.getcwd()
-    set_cwd(resolved_cwd)
-    logger.info("工作目录设置为: %s", resolved_cwd)
+    # ---- 基础设施初始化 ----
+    _load_env()
+    enable_configs()
+    for key, value in apply_config_environment_variables().items():
+        os.environ.setdefault(key, value)
+    _ensure_embedding_model()
 
-    # 2. 查找 git 根目录
-    git_root = find_git_root(resolved_cwd)
+    # ---- 工作目录 ----
+    normalized = os.path.normpath(cwd or os.getcwd())
+    set_cwd_state(normalized)
+    set_original_cwd(normalized)
+    set_project_root(normalized)
+    try:
+        os.chdir(normalized)
+    except OSError as e:
+        logger.warning("chdir 失败: %s - %s", normalized, e)
+    logger.info("工作目录设置为: %s", normalized)
+
+    # ---- git 根 ----
+    git_root = find_git_root(normalized)
     if git_root:
         logger.info("Git 根目录: %s", git_root)
-    else:
-        logger.info("未找到 Git 仓库")
 
-    # 3. 捕获 hooks 配置快照
-    #    IMPORTANT: 必须在 setCwd() 之后调用，确保 hooks 从正确目录加载
-
-    # 确保项目设置文件存在
-    from startup.utils.config import get_project_settings_path, _ensure_config_file
+    # ---- hooks 快照（必须在 set_cwd 之后，确保从正确目录加载）----
     _ensure_config_file(get_project_settings_path())
-
     _hooks_snapshot = capture_hooks_config_snapshot()
     logger.info(
         "Hooks 快照已捕获: pre=%d, post=%d",
@@ -137,24 +133,9 @@ async def setup(
         len(_hooks_snapshot.post_tool_use),
     )
 
-    # 4. 初始化权限模式
+    # ---- 权限模式 + AppState ----
     set_permission_mode(permission_mode)
-    logger.info("权限模式: %s", permission_mode)
-
-    # 5. 设置初始 AppState
-    app_state = AppState(
-        session_id=get_session_id(),
-        model=get_model(),
-        permission_mode=permission_mode,
-    )
-    provider = AppStateProvider(app_state)
-
-    return provider
-
-
-# ---------------------------------------------------------------------------
-# Hooks 快照访问
-# ---------------------------------------------------------------------------
+    return AppStateProvider(AppState(model=get_model()))
 
 
 def get_hooks_snapshot() -> HookConfig | None:
@@ -163,6 +144,6 @@ def get_hooks_snapshot() -> HookConfig | None:
 
 
 def update_hooks_snapshot() -> None:
-    """重新捕获 hooks 配置快照（工作目录变更后调用）。"""
+    """重新捕获 hooks 配置快照（插件加载后或工作目录变更后调用）。"""
     global _hooks_snapshot
     _hooks_snapshot = capture_hooks_config_snapshot()

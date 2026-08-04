@@ -290,13 +290,16 @@ function App() {
         {/* AI 面板：占据剩余空间（主角） */}
         <div style={{ flex: 1, minWidth: 0 }}>
           <AIPanel
-            messages={chat.messages}
+            blocks={chat.blocks}
+            formatDuration={chat.formatDuration}
             isStreaming={chat.isStreaming}
             sendMessage={chat.sendMessage}
             abort={chat.abort}
             tokenUsage={chat.tokenUsage}
             permissionRequest={chat.permissionRequest}
             resolvePermission={chat.resolvePermission}
+            questionRequest={chat.questionRequest}
+            answerQuestion={chat.answerQuestion}
             permissionMode={chat.permissionMode}
             onPermissionModeChange={chat.setPermissionMode}
             workspaceSelector={

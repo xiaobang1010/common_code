@@ -3,33 +3,38 @@ import ChatStream from './ai/ChatStream'
 import ChatInput from './ai/ChatInput'
 import ContextPanel from './ai/ContextPanel'
 import ModifiedFilesPanel from './ai/ModifiedFilesPanel'
-import type { ChatMessage as ChatMessageType, PermissionRequest, TokenUsage } from '../hooks/useChat'
+import type { WorkBlock, PermissionRequest, QuestionRequest, TokenUsage } from '../hooks/useChat'
 import type { PermissionMode } from '../api/client'
 
 interface AIPanelProps {
-  messages: ChatMessageType[]
+  blocks: WorkBlock[]
+  formatDuration: (ms: number) => string
   isStreaming: boolean
   sendMessage: (prompt: string) => void
   abort: () => void
   tokenUsage: TokenUsage
   permissionRequest: PermissionRequest | null
   resolvePermission: (decision: 'allow' | 'deny' | 'always_allow') => void
+  questionRequest: QuestionRequest | null
+  answerQuestion: (answer: string) => void
   permissionMode: PermissionMode
   onPermissionModeChange: (mode: PermissionMode) => void
-  // 顶部栏的工作区选择器和分支选择器，由 App.tsx 传入组合好的组件
   workspaceSelector: React.ReactNode
   branchSelector: React.ReactNode
   onNewSession: () => void
 }
 
 function AIPanel({
-  messages,
+  blocks,
+  formatDuration,
   isStreaming,
   sendMessage,
   abort,
   tokenUsage,
   permissionRequest,
   resolvePermission,
+  questionRequest,
+  answerQuestion,
   permissionMode,
   onPermissionModeChange,
   workspaceSelector,
@@ -133,7 +138,7 @@ function AIPanel({
       </div>
 
       {/* 对话流 */}
-      <ChatStream messages={messages} />
+      <ChatStream blocks={blocks} formatDuration={formatDuration} />
 
       {/* 信息子面板（可折叠） */}
       <div
@@ -192,6 +197,8 @@ function AIPanel({
           onStop={abort}
           permissionRequest={permissionRequest}
           onResolve={resolvePermission}
+          questionRequest={questionRequest}
+          onAnswer={answerQuestion}
           permissionMode={permissionMode}
           onPermissionModeChange={onPermissionModeChange}
         />
