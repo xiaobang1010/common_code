@@ -163,6 +163,9 @@ class ToolUseContext:
     file_state_cache: dict = field(default_factory=dict)
     abort_controller: Any = None
     tool_use_id: str = ""
+    # 提问回调：AskUserQuestion 工具用它挂起等待用户回答，
+    # 签名 async (question: str, options: list[dict]) -> str，None 表示无前端可问
+    question_callback: Any = None
 
 
 # ---------------------------------------------------------------------------

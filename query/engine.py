@@ -38,6 +38,8 @@ class QueryEngineConfig:
         permission_check: 工具调用前的权限检查回调，None 表示跳过权限检查
         permission_prompt: 权限确认弹窗回调，当 permission_check 返回 ask 决策时调用。
             签名 (tool_name, tool_input, reason) -> "allow"|"deny"|"always_allow"，None 表示无弹窗
+        question_prompt: AskUserQuestion 提问回调，模型主动提问时调用。
+            签名 async (question, options) -> 用户回答文本，None 表示无提问通道
         deps: I/O 依赖
     """
 
@@ -51,6 +53,7 @@ class QueryEngineConfig:
     max_turns: int | None = None
     permission_check: Callable | None = None
     permission_prompt: Callable | None = None
+    question_prompt: Callable | None = None
     deps: QueryDeps = field(default_factory=production_deps)
 
 

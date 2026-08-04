@@ -3,7 +3,7 @@ import ChatStream from './ai/ChatStream'
 import ChatInput from './ai/ChatInput'
 import ContextPanel from './ai/ContextPanel'
 import ModifiedFilesPanel from './ai/ModifiedFilesPanel'
-import type { WorkBlock, PermissionRequest, TokenUsage } from '../hooks/useChat'
+import type { WorkBlock, PermissionRequest, QuestionRequest, TokenUsage } from '../hooks/useChat'
 import type { PermissionMode } from '../api/client'
 
 interface AIPanelProps {
@@ -15,6 +15,8 @@ interface AIPanelProps {
   tokenUsage: TokenUsage
   permissionRequest: PermissionRequest | null
   resolvePermission: (decision: 'allow' | 'deny' | 'always_allow') => void
+  questionRequest: QuestionRequest | null
+  answerQuestion: (answer: string) => void
   permissionMode: PermissionMode
   onPermissionModeChange: (mode: PermissionMode) => void
   workspaceSelector: React.ReactNode
@@ -31,6 +33,8 @@ function AIPanel({
   tokenUsage,
   permissionRequest,
   resolvePermission,
+  questionRequest,
+  answerQuestion,
   permissionMode,
   onPermissionModeChange,
   workspaceSelector,
@@ -193,6 +197,8 @@ function AIPanel({
           onStop={abort}
           permissionRequest={permissionRequest}
           onResolve={resolvePermission}
+          questionRequest={questionRequest}
+          onAnswer={answerQuestion}
           permissionMode={permissionMode}
           onPermissionModeChange={onPermissionModeChange}
         />

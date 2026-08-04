@@ -22,6 +22,7 @@ from query.engine import QueryEngine, build_engine_config
 from server import app as app_module
 from server import state as server_state
 from server.permission_bridge import PermissionBridge
+from server.question_bridge import QuestionBridge
 from startup.setup import setup
 
 
@@ -59,15 +60,20 @@ async def main() -> None:
 
     update_hooks_snapshot()
 
-    # 3. 构造权限桥和引擎
+    # 3. 构造权限桥、提问桥和引擎
     bridge = PermissionBridge()
-    config = build_engine_config(permission_prompt=bridge.request_permission)
+    q_bridge = QuestionBridge()
+    config = build_engine_config(
+        permission_prompt=bridge.request_permission,
+        question_prompt=q_bridge.ask_question,
+    )
     engine = QueryEngine(config)
 
     # 装配全局变量和会话存储，供路由访问
     server_state.app_state = app_state
     server_state.engine = engine
     server_state.permission_bridge = bridge
+    server_state.question_bridge = q_bridge
 
     from session.store import SessionStore
 

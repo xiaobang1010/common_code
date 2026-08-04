@@ -104,16 +104,18 @@ async def chat_event_stream(prompt: str, session_id: str = ""):
     """SSE 事件生成器。
 
     引擎的 submitMessage 是 async generator，当它挂起在 permission_prompt 回调时
-    （await future 等待前端决策），生成器需要能继续推 permission_request 事件。
+    （await future 等待前端决策），生成器需要能继续推 permission_request 事件；
+    同理，引擎挂起在 AskUserQuestion 提问回调时要推 question_request 事件。
 
     实现方式：用后台任务消费引擎事件放入队列，SSE 生成器从队列出队。
-    队列空时（引擎可能挂起在权限回调），轮询权限桥推 permission_request 事件。
+    队列空时（引擎可能挂起在权限/提问回调），轮询权限桥和问题桥推对应事件。
     """
     from query.services.pricing import calculate_cost
 
     app_state = server.state.app_state
     engine = server.state.engine
     permission_bridge = server.state.permission_bridge
+    question_bridge = server.state.question_bridge
     session_store = server.state.session_store
 
     queue: asyncio.Queue = asyncio.Queue()
@@ -157,13 +159,17 @@ async def chat_event_stream(prompt: str, session_id: str = ""):
                 # 短超时轮询，让生成器有机会在引擎挂起时推权限请求
                 ev = await asyncio.wait_for(queue.get(), timeout=0.2)
             except asyncio.TimeoutError:
-                # 队列空，检查有没有待推送的权限请求
+                # 队列空，检查有没有待推送的权限请求或提问请求
                 req = permission_bridge.get_pending_permission_request()
                 if req is not None:
                     yield f"data: {json.dumps(req, ensure_ascii=False, default=str)}\n\n"
                 else:
-                    # 推心跳，让前端知道后端还活着（AI 可能在思考或执行工具）
-                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+                    q = question_bridge.get_pending_question() if question_bridge else None
+                    if q is not None:
+                        yield f"data: {json.dumps(q, ensure_ascii=False, default=str)}\n\n"
+                    else:
+                        # 推心跳，让前端知道后端还活着（AI 可能在思考或执行工具）
+                        yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
                 continue
 
             if ev is None:
@@ -177,10 +183,13 @@ async def chat_event_stream(prompt: str, session_id: str = ""):
 
             yield f"data: {json.dumps(serialize_event(ev), ensure_ascii=False, default=str)}\n\n"
 
-            # 每个事件后也检查权限请求
+            # 每个事件后也检查权限请求和提问请求
             req = permission_bridge.get_pending_permission_request()
             if req is not None:
                 yield f"data: {json.dumps(req, ensure_ascii=False, default=str)}\n\n"
+            q = question_bridge.get_pending_question() if question_bridge else None
+            if q is not None:
+                yield f"data: {json.dumps(q, ensure_ascii=False, default=str)}\n\n"
     finally:
         # 客户端断开或引擎结束，清理后台任务
         if not task.done():

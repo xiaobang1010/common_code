@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { useSettingsStore } from '../stores/useSettingsStore'
-import { permissionsApi, type PermissionMode } from '../api/client'
+import { permissionsApi, questionApi, type PermissionMode } from '../api/client'
 
 // 工作块中的中间步骤：工具调用
 export interface WorkStep {
@@ -50,6 +50,13 @@ export interface PermissionRequest {
   reason: string
 }
 
+// 提问请求（AskUserQuestion 工具）
+export interface QuestionRequest {
+  request_id: string
+  question: string
+  options: Array<{ label: string; description: string }>
+}
+
 // SSE 事件结构
 interface SSEEvent {
   type: string
@@ -77,6 +84,9 @@ interface SSEEvent {
   tool_name?: string
   tool_input?: unknown
   reason?: string
+  // 提问请求字段
+  question?: string
+  options?: Array<{ label: string; description: string }>
 }
 
 // 自增 id 生成器
@@ -108,6 +118,7 @@ export function useChat() {
   const [totalCost, setTotalCost] = useState(0)
   const [model, setModel] = useState('')
   const [permissionRequest, setPermissionRequest] = useState<PermissionRequest | null>(null)
+  const [questionRequest, setQuestionRequest] = useState<QuestionRequest | null>(null)
   const [permissionMode, setPermissionModeState] = useState<PermissionMode>('default')
 
   // 当前工作块 id
@@ -229,6 +240,12 @@ export function useChat() {
         tool_name: evt.tool_name || '',
         tool_input: evt.tool_input,
         reason: evt.reason || '',
+      })
+    } else if (evt.type === 'question_request') {
+      setQuestionRequest({
+        request_id: evt.request_id || '',
+        question: evt.question || '',
+        options: evt.options || [],
       })
     } else if (evt.type === 'error') {
       // 引擎级错误：标记工作块为 done，保留已收到的 finalReply
@@ -430,6 +447,21 @@ export function useChat() {
     [permissionRequest]
   )
 
+  // 回传提问回答
+  const answerQuestion = useCallback(
+    async (answer: string) => {
+      if (!questionRequest) return
+      const reqId = questionRequest.request_id
+      setQuestionRequest(null)
+      try {
+        await questionApi.answer(reqId, answer)
+      } catch {
+        // 忽略
+      }
+    },
+    [questionRequest]
+  )
+
   // 停止当前对话
   const abort = useCallback(async () => {
     try {
@@ -548,6 +580,8 @@ export function useChat() {
     model,
     permissionRequest,
     resolvePermission,
+    questionRequest,
+    answerQuestion,
     permissionMode,
     setPermissionMode,
     sessionId,
