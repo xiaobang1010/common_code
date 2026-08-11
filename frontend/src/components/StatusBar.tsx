@@ -1,14 +1,15 @@
-import type { TokenUsage } from '../hooks/useChat'
+import { useChatStore } from '../stores/useChatStore'
 
-interface Props {
-  tokenUsage: TokenUsage
-  totalCost: number
-  isStreaming: boolean
-  model: string
-  windowSize?: number
-}
+// 窗口大小上限（展示"当前上下文/窗口"用，无后端来源时用默认值）
+const DEFAULT_WINDOW_SIZE = 200000
 
-function StatusBar({ tokenUsage, totalCost, isStreaming, model, windowSize = 200000 }: Props) {
+function StatusBar() {
+  // 局部订阅：token 用量/成本/模型/流式状态变化时才重渲
+  const tokenUsage = useChatStore(s => s.tokenUsage)
+  const totalCost = useChatStore(s => s.totalCost)
+  const isStreaming = useChatStore(s => s.isStreaming)
+  const model = useChatStore(s => s.model)
+
   return (
     <div
       style={{
@@ -60,7 +61,7 @@ function StatusBar({ tokenUsage, totalCost, isStreaming, model, windowSize = 200
         <span title="当前上下文大小 / 窗口大小">
           <span style={{ color: 'var(--text-tertiary)' }}>上下文</span>{' '}
           <span style={{ color: 'var(--text-primary)' }}>
-            {tokenUsage.last_prompt_tokens.toLocaleString()} / {windowSize.toLocaleString()}
+            {tokenUsage.last_prompt_tokens.toLocaleString()} / {DEFAULT_WINDOW_SIZE.toLocaleString()}
           </span>
         </span>
         <span

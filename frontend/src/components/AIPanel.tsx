@@ -1,21 +1,8 @@
 import ChatStream from './ai/ChatStream'
 import ChatInput from './ai/ChatInput'
-import type { WorkBlock, PermissionRequest, QuestionRequest, TokenUsage } from '../hooks/useChat'
-import type { PermissionMode } from '../api/client'
+import { useChatStore } from '../stores/useChatStore'
 
 interface AIPanelProps {
-  blocks: WorkBlock[]
-  formatDuration: (ms: number) => string
-  isStreaming: boolean
-  sendMessage: (prompt: string) => void
-  abort: () => void
-  tokenUsage: TokenUsage
-  permissionRequest: PermissionRequest | null
-  resolvePermission: (decision: 'allow' | 'deny' | 'always_allow') => void
-  questionRequest: QuestionRequest | null
-  answerQuestion: (answer: string) => void
-  permissionMode: PermissionMode
-  onPermissionModeChange: (mode: PermissionMode) => void
   workspaceSelector: React.ReactNode
   branchSelector: React.ReactNode
   onNewSession: () => void
@@ -28,18 +15,6 @@ interface AIPanelProps {
 }
 
 function AIPanel({
-  blocks,
-  formatDuration,
-  isStreaming,
-  sendMessage,
-  abort,
-  tokenUsage,
-  permissionRequest,
-  resolvePermission,
-  questionRequest,
-  answerQuestion,
-  permissionMode,
-  onPermissionModeChange,
   workspaceSelector,
   branchSelector,
   onNewSession,
@@ -47,6 +22,17 @@ function AIPanel({
   onToggleInspector,
   onOpenSettings,
 }: AIPanelProps) {
+  // 局部订阅：流式更新只影响当前工作块，本面板只在关联状态变化时重渲
+  const isStreaming = useChatStore(s => s.isStreaming)
+  const sendMessage = useChatStore(s => s.sendMessage)
+  const abort = useChatStore(s => s.abort)
+  const permissionRequest = useChatStore(s => s.permissionRequest)
+  const resolvePermission = useChatStore(s => s.resolvePermission)
+  const questionRequest = useChatStore(s => s.questionRequest)
+  const answerQuestion = useChatStore(s => s.answerQuestion)
+  const permissionMode = useChatStore(s => s.permissionMode)
+  const setPermissionMode = useChatStore(s => s.setPermissionMode)
+
   return (
     <div
       style={{
@@ -212,7 +198,7 @@ function AIPanel({
       </div>
 
       {/* 对话流 */}
-      <ChatStream blocks={blocks} formatDuration={formatDuration} />
+      <ChatStream />
 
       {/* 底部输入区 */}
       <div
@@ -233,7 +219,7 @@ function AIPanel({
           questionRequest={questionRequest}
           onAnswer={answerQuestion}
           permissionMode={permissionMode}
-          onPermissionModeChange={onPermissionModeChange}
+          onPermissionModeChange={setPermissionMode}
         />
       </div>
     </div>

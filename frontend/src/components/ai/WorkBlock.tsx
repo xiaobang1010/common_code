@@ -1,31 +1,32 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, memo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 // @ts-ignore
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
-import type { WorkBlock, WorkStep } from '../../hooks/useChat'
+import { useChatStore, formatDuration, type WorkBlock, type WorkStep } from '../../stores/useChatStore'
 
 interface Props {
-  block: WorkBlock
-  formatDuration: (ms: number) => string
+  // 只订阅自己的工作块：流式更新只触发本组件重渲
+  blockId: string
 }
 
-// 计算工作块耗时
-function useDuration(block: WorkBlock) {
+// 计算工作块耗时（容忍 block 尚未就绪的防御）
+function useDuration(block: WorkBlock | undefined) {
   const [, force] = useState(0)
   useEffect(() => {
-    if (block.status === 'running') {
+    if (block?.status === 'running') {
       const timer = setInterval(() => force((n) => n + 1), 1000)
       return () => clearInterval(timer)
     }
-  }, [block.status, block.startTime])
-  const end = block.endTime || Date.now()
-  return end - block.startTime
+  }, [block?.status, block?.startTime])
+  const end = block ? block.endTime || Date.now() : 0
+  return block ? end - block.startTime : 0
 }
 
 // 工具步骤卡片（复用原 ChatMessage 的 ToolStepCard 逻辑）
-function ToolStepView({ step }: { step: WorkStep }) {
+// memo：步骤对象引用稳定时跳过重渲，避免父块更新时全部步骤重绘
+const ToolStepView = memo(function ToolStepView({ step }: { step: WorkStep }) {
   const [expanded, setExpanded] = useState(false)
   const isRunning = step.isRunning
   const isError = step.toolName === 'error'
@@ -133,13 +134,36 @@ function ToolStepView({ step }: { step: WorkStep }) {
       )}
     </div>
   )
-}
+})
 
 // Markdown 渲染配置（复用）
 const markdownComponents = {
   code({ className, children }: { className?: string; children?: React.ReactNode }) {
     const match = /language-(\w+)/.exec(className || '')
+    const codeText = String(children).replace(/\n$/, '')
     if (match) {
+      // 超长代码块不做 Prism 高亮：tokenize 会生成海量 span，页面容易卡死
+      if (codeText.split('\n').length > 300 || codeText.length > 20000) {
+        return (
+          <pre
+            style={{
+              background: 'var(--bg-base)',
+              borderRadius: 'var(--radius-md)',
+              border: '1px solid var(--border-subtle)',
+              fontSize: '12px',
+              margin: '8px 0',
+              padding: '12px',
+              overflow: 'auto',
+              fontFamily: 'var(--font-mono)',
+              color: 'var(--text-primary)',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+            }}
+          >
+            {codeText}
+          </pre>
+        )
+      }
       return (
         <SyntaxHighlighter
           language={match[1]}
@@ -153,7 +177,7 @@ const markdownComponents = {
             margin: '8px 0',
           }}
         >
-          {String(children).replace(/\n$/, '')}
+          {codeText}
         </SyntaxHighlighter>
       )
     }
@@ -192,18 +216,66 @@ const markdownComponents = {
   },
 }
 
-function WorkBlockView({ block, formatDuration }: Props) {
-  const [expanded, setExpanded] = useState(block.status === 'running')
+// 流式期间的轻量 Markdown 渲染配置：代码块不做 Prism 高亮。
+// 回复未完成时每帧全量 tokenize 会随内容变长越来越卡，等完成后切回完整高亮渲染
+const lightMarkdownComponents = {
+  ...markdownComponents,
+  code({ className, children }: { className?: string; children?: React.ReactNode }) {
+    const match = /language-(\w+)/.exec(className || '')
+    if (match) {
+      return (
+        <pre
+          style={{
+            background: 'var(--bg-base)',
+            borderRadius: 'var(--radius-md)',
+            border: '1px solid var(--border-subtle)',
+            fontSize: '12px',
+            margin: '8px 0',
+            padding: '12px',
+            overflow: 'auto',
+            fontFamily: 'var(--font-mono)',
+            color: 'var(--text-primary)',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+          }}
+        >
+          {String(children).replace(/\n$/, '')}
+        </pre>
+      )
+    }
+    return (
+      <code
+        style={{
+          backgroundColor: 'var(--bg-tertiary)',
+          padding: '1px 5px',
+          borderRadius: '3px',
+          fontFamily: 'var(--font-mono)',
+          fontSize: '12px',
+          color: 'var(--accent)',
+        }}
+      >
+        {children}
+      </code>
+    )
+  },
+}
+
+function WorkBlockView({ blockId }: Props) {
+  // 局部订阅：只监听自己的工作块，其他 block 更新时不重渲
+  const block = useChatStore(s => s.blocksById[blockId])
+  const [expanded, setExpanded] = useState(block?.status === 'running')
   const duration = useDuration(block)
-  const isRunning = block.status === 'running'
-  const toolCount = block.steps.filter(s => s.toolName !== 'error').length
+  const isRunning = block?.status === 'running'
+  const toolCount = block ? block.steps.filter(s => s.toolName !== 'error').length : 0
 
   // 状态变化时自动折叠
   useEffect(() => {
-    if (block.status === 'done') {
+    if (block?.status === 'done') {
       setExpanded(false)
     }
-  }, [block.status])
+  }, [block?.status])
+
+  if (!block) return null
 
   // 退出原因文案
   const exitText = (() => {
@@ -216,7 +288,7 @@ function WorkBlockView({ block, formatDuration }: Props) {
   })()
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', animation: 'fade-in-up 280ms ease-out' }}>
+    <div className="work-block" style={{ display: 'flex', flexDirection: 'column', gap: '10px', animation: 'fade-in-up 280ms ease-out' }}>
       {/* 用户消息 */}
       <div
         style={{
@@ -316,12 +388,22 @@ function WorkBlockView({ block, formatDuration }: Props) {
             wordBreak: 'break-word',
           }}
         >
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            components={markdownComponents}
-          >
-            {block.finalReply}
-          </ReactMarkdown>
+          {block.finalReplyStreaming ? (
+            // 流式期间用轻量渲染（代码块不高亮），完成后切回完整 Markdown + 高亮
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={lightMarkdownComponents}
+            >
+              {block.finalReply}
+            </ReactMarkdown>
+          ) : (
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={markdownComponents}
+            >
+              {block.finalReply}
+            </ReactMarkdown>
+          )}
           {block.finalReplyStreaming && (
             <span
               style={{
@@ -342,4 +424,5 @@ function WorkBlockView({ block, formatDuration }: Props) {
   )
 }
 
-export default WorkBlockView
+// memo：流式更新时只有当前块的对象引用变化，历史块跳过重渲
+export default memo(WorkBlockView)
