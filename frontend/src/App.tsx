@@ -1,8 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
-import ActivityBar from './components/ActivityBar'
 import Sidebar from './components/Sidebar'
 import EditorArea, { type EditorAreaHandle } from './components/EditorArea'
 import AIPanel from './components/AIPanel'
+import InspectorPanel, { type CardId, type PanelMode } from './components/inspector/InspectorPanel'
 import StatusBar from './components/StatusBar'
 import Resizer from './components/Resizer'
 import SettingsModal from './components/settings/SettingsModal'
@@ -12,9 +12,6 @@ import { useChat } from './hooks/useChat'
 import { useSessions } from './hooks/useSessions'
 import { gitApi } from './api/client'
 
-// 活动栏可选的视图类型（设置已升级为独立 Modal，不再走侧边栏视图）
-export type ViewType = 'files' | 'search' | 'git' | 'sessions'
-
 // 面板宽度范围约束
 const SIDEBAR_MIN = 180
 const SIDEBAR_MAX = 500
@@ -22,9 +19,17 @@ const EDITOR_MIN = 200
 const EDITOR_MAX_RATIO = 0.85 // 编辑器最多占窗口 85%
 
 function App() {
-  const [activeView, setActiveView] = useState<ViewType>('sessions')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [editorCollapsed, setEditorCollapsed] = useState(false)
+  // 编辑器按需显示：默认隐藏，打开文件时才出现
+  const [editorCollapsed, setEditorCollapsed] = useState(true)
+
+  // 右侧检查器面板（概要/终端/文件/审查卡片）显隐，默认隐藏
+  const [inspectorVisible, setInspectorVisible] = useState(false)
+  // 检查器面板形态与选中卡：由 App 持有，面板隐藏再打开时能恢复
+  const [inspectorMode, setInspectorMode] = useState<PanelMode>('list')
+  const [inspectorCard, setInspectorCard] = useState<CardId>('summary')
+  // 面板是否被打开过：首次打开后保持挂载（隐藏仅 CSS 隐藏），终端会话不丢
+  const [inspectorEverShown, setInspectorEverShown] = useState(false)
 
   // 设置 Modal 开关
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -104,6 +109,18 @@ function App() {
       return !prev
     })
   }, [editorWidth])
+
+  // 显隐右侧检查器面板
+  const toggleInspector = useCallback(() => {
+    setInspectorVisible((prev) => !prev)
+    setInspectorEverShown(true)
+  }, [])
+
+  // 进入聚焦态：选中卡片并切换形态
+  const enterInspectorFocus = useCallback((id: CardId) => {
+    setInspectorCard(id)
+    setInspectorMode('focus')
+  }, [])
 
   // ---- 会话管理相关回调 ----
 
@@ -238,23 +255,15 @@ function App() {
         overflow: 'hidden',
       }}
     >
-      {/* 主体行：活动栏 + 侧边栏 + AI面板 + 编辑器 */}
+      {/* 主体行：会话栏 + AI面板 + 编辑器 + 检查器面板 */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-        <ActivityBar
-          activeView={activeView}
-          onViewChange={setActiveView}
-          onOpenSettings={() => setSettingsOpen(true)}
-        />
-
-        {/* 侧边栏：折叠时不占位，展开时固定宽度 + 可拖拽 */}
+        {/* 会话栏：折叠时不占位，展开时固定宽度 + 可拖拽 */}
         {!sidebarCollapsed && (
           <>
             <div style={{ width: sidebarWidth, flexShrink: 0 }}>
               <Sidebar
-                activeView={activeView}
                 collapsed={false}
                 onToggleCollapse={toggleSidebar}
-                onFileOpen={(path) => editorRef.current?.openFile(path)}
                 groups={sessions.allGroups}
                 currentWorkspacePath={sessions.currentWorkspace?.path ?? null}
                 currentSessionId={sessions.currentSessionId}
@@ -271,10 +280,8 @@ function App() {
         )}
         {sidebarCollapsed && (
           <Sidebar
-            activeView={activeView}
             collapsed={true}
             onToggleCollapse={toggleSidebar}
-            onFileOpen={(path) => editorRef.current?.openFile(path)}
             groups={sessions.allGroups}
             currentWorkspacePath={sessions.currentWorkspace?.path ?? null}
             currentSessionId={sessions.currentSessionId}
@@ -318,33 +325,47 @@ function App() {
               />
             }
             onNewSession={handleCreateSession}
+            inspectorVisible={inspectorVisible}
+            onToggleInspector={toggleInspector}
+            onOpenSettings={() => setSettingsOpen(true)}
           />
         </div>
 
-        {/* 编辑器：折叠时不占位，展开时固定宽度 + 可拖拽 */}
-        {editorCollapsed ? (
+        {/* 编辑器：按需显示（有打开文件才出现）。
+            树位置保持恒定（折叠时仅隐藏分隔条、宽度交给内容），
+            避免折叠/展开切换导致 EditorArea 重建丢失已打开标签 */}
+        <div style={{ display: editorCollapsed ? 'none' : 'flex', height: '100%', flexShrink: 0 }}>
+          <Resizer direction="horizontal" onResize={handleEditorResize} />
+        </div>
+        <div
+          style={{
+            width: editorCollapsed ? undefined : editorWidth === 0 ? '40%' : editorWidth,
+            flexShrink: 0,
+            minWidth: editorCollapsed ? 0 : EDITOR_MIN,
+          }}
+        >
           <EditorArea
             ref={editorRef}
-            collapsed={true}
+            collapsed={editorCollapsed}
             onToggleCollapse={toggleEditor}
           />
-        ) : (
-          <>
-            <Resizer direction="horizontal" onResize={handleEditorResize} />
-            <div
-              style={{
-                width: editorWidth === 0 ? '40%' : editorWidth,
-                flexShrink: 0,
-                minWidth: EDITOR_MIN,
-              }}
-            >
-              <EditorArea
-                ref={editorRef}
-                collapsed={false}
-                onToggleCollapse={toggleEditor}
-              />
-            </div>
-          </>
+        </div>
+
+        {/* 右侧检查器面板：首次打开后保持挂载，隐藏时仅 CSS 隐藏（保活终端会话） */}
+        {(inspectorVisible || inspectorEverShown) && (
+          <div style={{ display: inspectorVisible ? 'flex' : 'none', height: '100%', flexShrink: 0 }}>
+            <InspectorPanel
+              blockCount={chat.blocks.length}
+              tokenUsage={chat.tokenUsage}
+              onFileOpen={(path) => editorRef.current?.openFile(path)}
+              workspacePath={sessions.currentWorkspace?.path ?? null}
+              mode={inspectorMode}
+              activeCard={inspectorCard}
+              onEnterFocus={enterInspectorFocus}
+              onBackToList={() => setInspectorMode('list')}
+              onCardChange={setInspectorCard}
+            />
+          </div>
         )}
       </div>
 
