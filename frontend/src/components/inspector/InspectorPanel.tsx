@@ -6,7 +6,7 @@ import FilesCard from './cards/FilesCard'
 import ReviewCard from './cards/ReviewCard'
 import SearchPanel from '../sidebar/SearchPanel'
 import Resizer from '../Resizer'
-import type { TokenUsage } from '../../hooks/useChat'
+import { useChatStore } from '../../stores/useChatStore'
 
 // 五张卡片的标识（App 层也需要持有选中卡状态，故导出）
 export type CardId = 'summary' | 'terminal' | 'files' | 'search' | 'review'
@@ -15,10 +15,6 @@ export type CardId = 'summary' | 'terminal' | 'files' | 'search' | 'review'
 export type PanelMode = 'list' | 'focus'
 
 interface InspectorPanelProps {
-  // 当前会话工作块数量（概要卡"进展"用）
-  blockCount: number
-  // token 用量（概要卡"引用"用）
-  tokenUsage: TokenUsage
   // 点击文件在编辑器打开
   onFileOpen: (path: string) => void
   // 当前工作区路径，null 表示未选择工作区
@@ -142,7 +138,10 @@ function CardEntry({ title, icon, onOpen }: { title: string; icon: ReactNode; on
 // - 列表态：200px 窄栏，五行卡片入口，点击任一卡片进入聚焦态
 // - 聚焦态：宽面板（默认 45% 窗口宽，可拖拽），顶部标签页切换卡片，内容铺满
 // 卡片内容一旦挂载就保持挂载（切卡/回列表用 CSS 隐藏），终端会话不丢失
-function InspectorPanel({ blockCount, tokenUsage, onFileOpen, workspacePath, mode, activeCard, onEnterFocus, onBackToList, onCardChange }: InspectorPanelProps) {
+function InspectorPanel({ onFileOpen, workspacePath, mode, activeCard, onEnterFocus, onBackToList, onCardChange }: InspectorPanelProps) {
+  // 局部订阅：工作块数量与 token 用量变化时才重渲
+  const blockCount = useChatStore(s => s.blockIds.length)
+  const tokenUsage = useChatStore(s => s.tokenUsage)
   // 聚焦态宽度，0 表示首次进入时用默认值
   const [focusWidth, setFocusWidth] = useState(0)
 

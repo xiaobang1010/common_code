@@ -150,3 +150,9 @@ body {
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+
+/* 工作块：屏外块跳过布局/绘制，长会话滚动更顺（渐进增强，不支持则忽略） */
+.work-block {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
+}

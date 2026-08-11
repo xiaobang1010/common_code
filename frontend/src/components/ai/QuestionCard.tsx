@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { QuestionRequest } from '../../hooks/useChat'
+import type { QuestionRequest } from '../../stores/useChatStore'
 
 interface Props {
   // 当前待回答的提问请求，为 null 时不显示卡片

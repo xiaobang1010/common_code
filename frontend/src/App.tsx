@@ -8,7 +8,8 @@ import Resizer from './components/Resizer'
 import SettingsModal from './components/settings/SettingsModal'
 import WorkspaceSelector from './components/ai/WorkspaceSelector'
 import BranchSelector from './components/ai/BranchSelector'
-import { useChat } from './hooks/useChat'
+import { useChatStore } from './stores/useChatStore'
+import { useSettingsStore } from './stores/useSettingsStore'
 import { useSessions } from './hooks/useSessions'
 import { gitApi } from './api/client'
 
@@ -38,7 +39,12 @@ function App() {
   const [sidebarWidth, setSidebarWidth] = useState(240)
   const [editorWidth, setEditorWidth] = useState(0) // 0 表示用 flex 比例
 
-  const chat = useChat()
+  // 聊天状态从 store 订阅：action 引用稳定，不会因流式更新引起本组件重渲
+  const chatSessionId = useChatStore(s => s.sessionId)
+  const setSessionId = useChatStore(s => s.setSessionId)
+  const loadMessages = useChatStore(s => s.loadMessages)
+  const clearMessages = useChatStore(s => s.clearMessages)
+  const fetchState = useChatStore(s => s.fetchState)
   const sessions = useSessions()
   const editorRef = useRef<EditorAreaHandle>(null)
 
@@ -63,6 +69,15 @@ function App() {
       })
   }, [sessions.currentWorkspace?.path]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // 初始拉取后端汇总状态；改 LLM 配置后刷新 model 显示（原 useChat 内部逻辑）
+  useEffect(() => {
+    fetchState()
+  }, [fetchState])
+  const modelVersion = useSettingsStore((s) => s.modelVersion)
+  useEffect(() => {
+    if (modelVersion > 0) fetchState()
+  }, [modelVersion, fetchState])
+
   // 初始会话加载：第一次有会话时加载消息
   useEffect(() => {
     if (initialSessionLoaded.current) return
@@ -70,8 +85,8 @@ function App() {
     initialSessionLoaded.current = true
     const id = sessions.currentSessionId
     sessions.switchSession(id).then(messages => {
-      chat.setSessionId(id)
-      if (messages) chat.loadMessages(messages)
+      setSessionId(id)
+      if (messages) loadMessages(messages)
     })
   }, [sessions.currentSessionId]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -128,48 +143,48 @@ function App() {
   const handleCreateSession = useCallback(async () => {
     const id = await sessions.createSession()
     if (id) {
-      chat.setSessionId(id)
-      chat.clearMessages()
+      setSessionId(id)
+      clearMessages()
     }
-  }, [sessions, chat])
+  }, [sessions, setSessionId, clearMessages])
 
   // 切换会话：加载消息到聊天面板
   const handleSwitchSession = useCallback(async (sessionId: string) => {
     const messages = await sessions.switchSession(sessionId)
-    chat.setSessionId(sessionId)
+    setSessionId(sessionId)
     if (messages) {
-      chat.loadMessages(messages)
+      loadMessages(messages)
     } else {
-      chat.clearMessages()
+      clearMessages()
     }
-  }, [sessions, chat])
+  }, [sessions, setSessionId, loadMessages, clearMessages])
 
   // 删除会话：如果删的是当前会话，加载新的当前会话
   const handleDeleteSession = useCallback(async (sessionId: string) => {
-    const wasCurrent = sessionId === chat.sessionId
+    const wasCurrent = sessionId === chatSessionId
     const newSessionId = await sessions.deleteSession(sessionId)
     if (wasCurrent) {
-      chat.setSessionId(newSessionId)
+      setSessionId(newSessionId)
       if (newSessionId) {
         // 加载新当前会话的消息
         const messages = await sessions.switchSession(newSessionId)
-        if (messages) chat.loadMessages(messages)
-        else chat.clearMessages()
+        if (messages) loadMessages(messages)
+        else clearMessages()
       } else {
-        chat.clearMessages()
+        clearMessages()
       }
     }
-  }, [sessions, chat])
+  }, [sessions, setSessionId, loadMessages, clearMessages])
 
   // 跨工作区切换会话：可能需要先切换工作区
   const handleSwitchInWorkspace = useCallback(async (sessionId: string, workspacePath: string) => {
     const result = await sessions.switchToSessionInWorkspace(sessionId, workspacePath)
     if (result) {
-      chat.setSessionId(sessionId)
+      setSessionId(sessionId)
       if (result.messages) {
-        chat.loadMessages(result.messages)
+        loadMessages(result.messages)
       } else {
-        chat.clearMessages()
+        clearMessages()
       }
       // 更新分支信息
       if (result.branch !== undefined) {
@@ -185,7 +200,7 @@ function App() {
           .catch(() => {})
       }
     }
-  }, [sessions, chat])
+  }, [sessions, setSessionId, loadMessages, clearMessages])
 
   // 切换工作区：更新分支，加载新当前会话
   const handleSwitchWorkspace = useCallback(async (path: string) => {
@@ -195,14 +210,14 @@ function App() {
       // 加载新当前会话的消息
       if (result.sessionId) {
         const messages = await sessions.switchSession(result.sessionId)
-        chat.setSessionId(result.sessionId)
-        if (messages) chat.loadMessages(messages)
+        setSessionId(result.sessionId)
+        if (messages) loadMessages(messages)
       } else {
-        chat.setSessionId(null)
-        chat.clearMessages()
+        setSessionId(null)
+        clearMessages()
       }
     }
-  }, [sessions, chat])
+  }, [sessions, setSessionId, loadMessages, clearMessages])
 
   // 浏览选择目录
   const handleBrowse = useCallback(async () => {
@@ -229,12 +244,12 @@ function App() {
     await sessions.deleteWorkspace(workspacePath)
     if (isCurrent) {
       // 删的是当前工作区，清空聊天和会话状态
-      chat.setSessionId(null)
-      chat.clearMessages()
+      setSessionId(null)
+      clearMessages()
       setCurrentBranch('')
       setBranches([])
     }
-  }, [sessions, chat])
+  }, [sessions, setSessionId, clearMessages])
 
   // 打开工作区：弹出目录选择对话框
   const handleOpenWorkspace = useCallback(async () => {
@@ -297,18 +312,6 @@ function App() {
         {/* AI 面板：占据剩余空间（主角） */}
         <div style={{ flex: 1, minWidth: 0 }}>
           <AIPanel
-            blocks={chat.blocks}
-            formatDuration={chat.formatDuration}
-            isStreaming={chat.isStreaming}
-            sendMessage={chat.sendMessage}
-            abort={chat.abort}
-            tokenUsage={chat.tokenUsage}
-            permissionRequest={chat.permissionRequest}
-            resolvePermission={chat.resolvePermission}
-            questionRequest={chat.questionRequest}
-            answerQuestion={chat.answerQuestion}
-            permissionMode={chat.permissionMode}
-            onPermissionModeChange={chat.setPermissionMode}
             workspaceSelector={
               <WorkspaceSelector
                 currentWorkspace={sessions.currentWorkspace}
@@ -355,8 +358,6 @@ function App() {
         {(inspectorVisible || inspectorEverShown) && (
           <div style={{ display: inspectorVisible ? 'flex' : 'none', height: '100%', flexShrink: 0 }}>
             <InspectorPanel
-              blockCount={chat.blocks.length}
-              tokenUsage={chat.tokenUsage}
               onFileOpen={(path) => editorRef.current?.openFile(path)}
               workspacePath={sessions.currentWorkspace?.path ?? null}
               mode={inspectorMode}
@@ -370,12 +371,7 @@ function App() {
       </div>
 
       {/* 状态栏 */}
-      <StatusBar
-        tokenUsage={chat.tokenUsage}
-        totalCost={chat.totalCost}
-        isStreaming={chat.isStreaming}
-        model={chat.model}
-      />
+      <StatusBar />
 
       {/* 设置 Modal */}
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />

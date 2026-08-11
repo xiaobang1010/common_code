@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import type { PermissionRequest, QuestionRequest } from '../../hooks/useChat'
+import type { PermissionRequest, QuestionRequest } from '../../stores/useChatStore'
 import { llmApi, type PermissionMode, type CustomLLMProviderInfo } from '../../api/client'
 import { useSettingsStore } from '../../stores/useSettingsStore'
 import QuestionCard from './QuestionCard'

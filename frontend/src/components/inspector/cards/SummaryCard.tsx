@@ -1,4 +1,4 @@
-import type { TokenUsage } from '../../../hooks/useChat'
+import type { TokenUsage } from '../../../stores/useChatStore'
 import { useGitStatus, dedupeChanges } from '../useGitStatus'
 
 interface SummaryCardProps {
