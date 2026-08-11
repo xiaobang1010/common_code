@@ -95,17 +95,20 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(({ collapsed, o
 
   useImperativeHandle(ref, () => ({ openFile }), [openFile])
 
-  // 关闭文件标签
+  // 关闭文件标签；关掉最后一个时自动收起编辑器（编辑器按需显示，不常驻）
   const handleClose = (path: string) => {
-    updateTabs((prev) => {
-      const next = prev.filter((t) => t.path !== path)
-      if (path === activePath) {
-        const idx = prev.findIndex((t) => t.path === path)
-        const neighbor = next[idx] || next[idx - 1]
-        setActivePath(neighbor ? neighbor.path : '')
-      }
-      return next
-    })
+    const prev = openTabsRef.current
+    const next = prev.filter((t) => t.path !== path)
+    updateTabs(() => next)
+    if (path === activePath) {
+      const idx = prev.findIndex((t) => t.path === path)
+      const neighbor = next[idx] || next[idx - 1]
+      setActivePath(neighbor ? neighbor.path : '')
+    }
+    // 最后一个标签关闭且当前展开 → 自动收起
+    if (next.length === 0 && !collapsed) {
+      onToggleCollapse()
+    }
   }
 
   const activeTab = openTabs.find((t) => t.path === activePath)
@@ -152,8 +155,9 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(({ collapsed, o
     )
   }, [])
 
-  // 折叠时渲染展开按钮
+  // 折叠时：没有打开标签则完全不渲染（编辑器按需显示）；有标签才渲染展开窄条
   if (collapsed) {
+    if (openTabs.length === 0) return null
     return (
       <div
         style={{
@@ -246,27 +250,14 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(({ collapsed, o
         </button>
       </div>
 
-      {/* 代码编辑区 */}
-      {activeTab ? (
+      {/* 代码编辑区（无激活标签时不渲染空态，编辑器只在有文件时展示） */}
+      {activeTab && (
         <div style={{ flex: 1, overflow: 'hidden' }}>
           <CodeEditor
             path={activeTab.path}
             content={activeTab.content}
             language={activeTab.language}
           />
-        </div>
-      ) : (
-        <div
-          style={{
-            flex: 1,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            color: 'var(--text-secondary)',
-            fontSize: '14px',
-          }}
-        >
-          Common Code — 选择文件查看内容
         </div>
       )}
 

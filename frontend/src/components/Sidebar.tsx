@@ -1,23 +1,11 @@
-import type { ViewType } from '../App'
-import FileTree from './sidebar/FileTree'
-import GitStatus from './sidebar/GitStatus'
-import SearchPanel from './sidebar/SearchPanel'
 import SessionList from './sidebar/SessionList'
 import type { SessionGroup } from '../api/client'
 
-// 各视图对应的标题
-const viewTitles: Record<ViewType, string> = {
-  files: '文件资源管理器',
-  search: '搜索',
-  git: '源代码管理',
-  sessions: '会话历史',
-}
-
+// 会话栏：左侧唯一的侧边区域，只承载会话列表
+// 文件/搜索/Git 视图已移入右侧检查器面板，此处不再有视图切换
 interface SidebarProps {
-  activeView: ViewType
   collapsed: boolean
   onToggleCollapse: () => void
-  onFileOpen: (path: string) => void
   // 会话列表相关 props
   groups: SessionGroup[]
   currentWorkspacePath: string | null
@@ -30,7 +18,7 @@ interface SidebarProps {
   onOpenWorkspace: () => void
 }
 
-function Sidebar({ activeView, collapsed, onToggleCollapse, onFileOpen, groups, currentWorkspacePath, currentSessionId, onCreateSession, onSwitchSession, onSwitchInWorkspace, onDeleteSession, onRemoveWorkspace, onOpenWorkspace }: SidebarProps) {
+function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, currentSessionId, onCreateSession, onSwitchSession, onSwitchInWorkspace, onDeleteSession, onRemoveWorkspace, onOpenWorkspace }: SidebarProps) {
   // 折叠状态下渲染一个窄条展开按钮
   if (collapsed) {
     return (
@@ -46,7 +34,7 @@ function Sidebar({ activeView, collapsed, onToggleCollapse, onFileOpen, groups, 
           transition: 'background var(--transition-fast)',
         }}
         onClick={onToggleCollapse}
-        title="展开侧边栏"
+        title="展开会话栏"
         onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg-tertiary)')}
         onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--bg-base)')}
       >
@@ -61,36 +49,10 @@ function Sidebar({ activeView, collapsed, onToggleCollapse, onFileOpen, groups, 
             fontWeight: 500,
           }}
         >
-          » {viewTitles[activeView]}
+          » 会话历史
         </span>
       </div>
     )
-  }
-
-  // 根据活动视图渲染对应内容
-  const renderContent = () => {
-    switch (activeView) {
-      case 'files':
-        return <FileTree onFileOpen={onFileOpen} />
-      case 'search':
-        return <SearchPanel onFileOpen={onFileOpen} />
-      case 'git':
-        return <GitStatus />
-      case 'sessions':
-        return (
-          <SessionList
-            groups={groups}
-            currentWorkspacePath={currentWorkspacePath}
-            currentSessionId={currentSessionId}
-            onCreate={onCreateSession}
-            onSwitch={onSwitchSession}
-            onSwitchInWorkspace={onSwitchInWorkspace}
-            onDelete={onDeleteSession}
-            onRemoveWorkspace={onRemoveWorkspace}
-            onOpenWorkspace={onOpenWorkspace}
-          />
-        )
-    }
   }
 
   return (
@@ -104,18 +66,40 @@ function Sidebar({ activeView, collapsed, onToggleCollapse, onFileOpen, groups, 
         overflow: 'hidden',
       }}
     >
-      {/* 顶部标题栏 + 折叠按钮 */}
+      {/* 顶部标题栏：品牌标识 + 标题 + 折叠按钮 */}
       <div
         style={{
           height: '44px',
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: '0 8px 0 16px',
+          gap: '10px',
+          padding: '0 8px 0 12px',
           borderBottom: '1px solid var(--border)',
           flexShrink: 0,
         }}
       >
+        {/* 品牌标识（迁移自原活动栏） */}
+        <div
+          style={{
+            width: '24px',
+            height: '24px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            borderRadius: 'var(--radius-sm)',
+            background: 'linear-gradient(135deg, var(--accent), #ff7a45)',
+            color: '#1a1a1a',
+            fontWeight: 700,
+            fontSize: '12px',
+            fontFamily: 'var(--font-display)',
+            boxShadow: '0 2px 8px rgba(245, 166, 35, 0.3)',
+            letterSpacing: '-0.5px',
+            flexShrink: 0,
+          }}
+          title="Common Code"
+        >
+          C
+        </div>
         <span
           style={{
             fontSize: '11px',
@@ -124,13 +108,14 @@ function Sidebar({ activeView, collapsed, onToggleCollapse, onFileOpen, groups, 
             fontFamily: 'var(--font-ui)',
             fontWeight: 600,
             letterSpacing: '1.2px',
+            flex: 1,
           }}
         >
-          {viewTitles[activeView]}
+          会话历史
         </span>
         <button
           onClick={onToggleCollapse}
-          title="折叠侧边栏"
+          title="折叠会话栏"
           style={{
             border: 'none',
             background: 'transparent',
@@ -157,7 +142,7 @@ function Sidebar({ activeView, collapsed, onToggleCollapse, onFileOpen, groups, 
           </svg>
         </button>
       </div>
-      {/* 视图内容区 */}
+      {/* 会话列表 */}
       <div
         style={{
           flex: 1,
@@ -166,7 +151,17 @@ function Sidebar({ activeView, collapsed, onToggleCollapse, onFileOpen, groups, 
           flexDirection: 'column',
         }}
       >
-        {renderContent()}
+        <SessionList
+          groups={groups}
+          currentWorkspacePath={currentWorkspacePath}
+          currentSessionId={currentSessionId}
+          onCreate={onCreateSession}
+          onSwitch={onSwitchSession}
+          onSwitchInWorkspace={onSwitchInWorkspace}
+          onDelete={onDeleteSession}
+          onRemoveWorkspace={onRemoveWorkspace}
+          onOpenWorkspace={onOpenWorkspace}
+        />
       </div>
     </div>
   )

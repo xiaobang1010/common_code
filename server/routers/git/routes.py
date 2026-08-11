@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 
 from fastapi import APIRouter
@@ -35,6 +36,8 @@ def _parse_porcelain_line(line: str) -> list[dict]:
     }
 
     changes: list[dict] = []
+    # 未跟踪文件：X 列为问号
+    untracked = x == "?"
     # 暂存区状态 X：空格或问号表示无暂存改动
     if x not in (" ", "?"):
         changes.append(
@@ -43,18 +46,73 @@ def _parse_porcelain_line(line: str) -> list[dict]:
     # 工作区状态 Y：空格表示无未暂存改动
     if y != " ":
         changes.append(
-            {"path": file_path, "status": status_map.get(y, "unknown"), "staged": False}
+            {
+                "path": file_path,
+                "status": status_map.get(y, "unknown"),
+                "staged": False,
+                "untracked": untracked,
+            }
         )
     return changes
+
+
+def _numstat_stats(root: str) -> dict[str, tuple[int, int]]:
+    """执行 git diff HEAD --numstat，返回 {路径: (新增行数, 删除行数)}。
+
+    对比 HEAD 同时覆盖已暂存与未暂存的改动；二进制文件无行数统计按 0 处理。
+    执行失败或不在 git 仓库时返回空字典。
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "diff", "HEAD", "--numstat"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return {}
+    if proc.returncode != 0:
+        return {}
+
+    stats: dict[str, tuple[int, int]] = {}
+    for line in proc.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        # 路径可能含制表符，剩余部分拼回
+        path = "\t".join(parts[2:])
+        try:
+            adds = int(parts[0])
+        except ValueError:
+            # 二进制文件输出 "-"，按 0 处理
+            adds = 0
+        try:
+            dels = int(parts[1])
+        except ValueError:
+            dels = 0
+        stats[path] = (adds, dels)
+    return stats
+
+
+def _count_file_lines(root: str, rel_path: str) -> int:
+    """统计未跟踪文件的总行数，作为新增行数统计。读取失败返回 0。"""
+    try:
+        with open(os.path.join(root, rel_path), "rb") as f:
+            return sum(1 for _ in f)
+    except OSError:
+        return 0
 
 
 @router.get("/api/git/status")
 async def git_status() -> dict:
     """Git 状态接口。
 
-    返回 {"branch": "...", "changes": [{"path", "status", "staged"}]}。
-    其中 staged 为 True 表示已暂存，False 表示未暂存。
-    不在 git 仓库或调用失败时返回空分支和空变更列表。
+    返回 {"branch": "...", "changes": [{"path", "status", "staged", "additions", "deletions"}],
+    "totals": {"files", "additions", "deletions"}}。
+    其中 staged 为 True 表示已暂存，False 表示未暂存；
+    additions/deletions 为该文件的变更行数统计（未跟踪文件按文件总行数计新增）；
+    totals 按去重后的文件路径汇总。不在 git 仓库或调用失败时返回空分支和空变更列表。
     """
     root = project_root()
 
@@ -83,7 +141,36 @@ async def git_status() -> dict:
                 if parsed:
                     changes.extend(parsed)
 
-        return {"branch": branch, "changes": changes}
+        # 逐文件行数统计：已跟踪文件用 numstat，未跟踪文件数总行数
+        stats = _numstat_stats(root)
+        seen_paths: set[str] = set()
+        total_adds = 0
+        total_dels = 0
+        for change in changes:
+            path = change["path"]
+            if change.get("untracked"):
+                adds = _count_file_lines(root, path)
+                dels = 0
+            else:
+                adds, dels = stats.get(path, (0, 0))
+            change["additions"] = adds
+            change["deletions"] = dels
+            # 同一文件可能同时有暂存/未暂存两项，总计只算一次；
+            # 新增目录（路径以 / 结尾）不计入文件数
+            if path not in seen_paths and not path.endswith("/"):
+                seen_paths.add(path)
+                total_adds += adds
+                total_dels += dels
+
+        return {
+            "branch": branch,
+            "changes": changes,
+            "totals": {
+                "files": len(seen_paths),
+                "additions": total_adds,
+                "deletions": total_dels,
+            },
+        }
     except (subprocess.SubprocessError, OSError):
         return {"branch": "", "changes": []}
 

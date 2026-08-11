@@ -1,8 +1,5 @@
-import { useState } from 'react'
 import ChatStream from './ai/ChatStream'
 import ChatInput from './ai/ChatInput'
-import ContextPanel from './ai/ContextPanel'
-import ModifiedFilesPanel from './ai/ModifiedFilesPanel'
 import type { WorkBlock, PermissionRequest, QuestionRequest, TokenUsage } from '../hooks/useChat'
 import type { PermissionMode } from '../api/client'
 
@@ -22,6 +19,12 @@ interface AIPanelProps {
   workspaceSelector: React.ReactNode
   branchSelector: React.ReactNode
   onNewSession: () => void
+  // 右侧检查器面板是否可见
+  inspectorVisible: boolean
+  // 切换右侧检查器面板显隐
+  onToggleInspector: () => void
+  // 打开设置 Modal
+  onOpenSettings: () => void
 }
 
 function AIPanel({
@@ -40,9 +43,10 @@ function AIPanel({
   workspaceSelector,
   branchSelector,
   onNewSession,
+  inspectorVisible,
+  onToggleInspector,
+  onOpenSettings,
 }: AIPanelProps) {
-  const [infoExpanded, setInfoExpanded] = useState(false)
-
   return (
     <div
       style={{
@@ -90,8 +94,78 @@ function AIPanel({
           {workspaceSelector}
           {branchSelector}
         </div>
-        {/* 右侧：新建任务按钮 + 快捷键提示 */}
+        {/* 右侧：面板开关 + 设置 + 新建任务按钮 + 快捷键提示 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {/* 检查器面板开关：打开/隐藏右侧概要、终端、文件、审查卡片 */}
+          <button
+            onClick={onToggleInspector}
+            title={inspectorVisible ? '隐藏面板' : '打开面板'}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: '28px',
+              height: '28px',
+              border: '1px solid',
+              borderColor: inspectorVisible ? 'var(--accent)' : 'var(--border)',
+              borderRadius: 'var(--radius-sm)',
+              background: inspectorVisible ? 'var(--accent-soft)' : 'transparent',
+              color: inspectorVisible ? 'var(--accent)' : 'var(--text-secondary)',
+              cursor: 'pointer',
+              transition: 'all var(--transition-fast)',
+              flexShrink: 0,
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.borderColor = 'var(--accent)'
+              e.currentTarget.style.color = 'var(--accent)'
+            }}
+            onMouseLeave={(e) => {
+              if (!inspectorVisible) {
+                e.currentTarget.style.borderColor = 'var(--border)'
+                e.currentTarget.style.color = 'var(--text-secondary)'
+              }
+            }}
+          >
+            {/* 侧边面板图标：主区 + 右侧栏 */}
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="4" width="18" height="16" rx="2" />
+              <path d="M15 4v16" />
+            </svg>
+          </button>
+          {/* 设置按钮：打开设置 Modal（入口从原活动栏迁移至此） */}
+          <button
+            onClick={onOpenSettings}
+            title="设置"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: '28px',
+              height: '28px',
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-sm)',
+              background: 'transparent',
+              color: 'var(--text-secondary)',
+              cursor: 'pointer',
+              transition: 'all var(--transition-fast)',
+              flexShrink: 0,
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.borderColor = 'var(--accent)'
+              e.currentTarget.style.color = 'var(--accent)'
+              e.currentTarget.style.backgroundColor = 'var(--accent-soft)'
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.borderColor = 'var(--border)'
+              e.currentTarget.style.color = 'var(--text-secondary)'
+              e.currentTarget.style.backgroundColor = 'transparent'
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+          </button>
           <button
             onClick={onNewSession}
             title="新建任务"
@@ -139,47 +213,6 @@ function AIPanel({
 
       {/* 对话流 */}
       <ChatStream blocks={blocks} formatDuration={formatDuration} />
-
-      {/* 信息子面板（可折叠） */}
-      <div
-        style={{
-          borderTop: '1px solid var(--border)',
-          flexShrink: 0,
-          backgroundColor: 'var(--bg-base)',
-        }}
-      >
-        <button
-          onClick={() => setInfoExpanded(!infoExpanded)}
-          style={{
-            width: '100%',
-            padding: '8px 16px',
-            border: 'none',
-            backgroundColor: 'transparent',
-            color: 'var(--text-secondary)',
-            fontSize: '11px',
-            cursor: 'pointer',
-            textAlign: 'left',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            fontFamily: 'var(--font-ui)',
-            letterSpacing: '0.5px',
-            textTransform: 'uppercase',
-            transition: 'color var(--transition-fast)',
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--text-primary)')}
-          onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-secondary)')}
-        >
-          <span>上下文 & 变更</span>
-          <span style={{ fontSize: '10px' }}>{infoExpanded ? '▾' : '▸'}</span>
-        </button>
-        {infoExpanded && (
-          <>
-            <ContextPanel usage={tokenUsage} />
-            <ModifiedFilesPanel />
-          </>
-        )}
-      </div>
 
       {/* 底部输入区 */}
       <div
