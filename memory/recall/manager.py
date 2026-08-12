@@ -12,6 +12,9 @@ from memory.palace.bm25 import bm25_scores
 
 logger = logging.getLogger(__name__)
 
+# 降级路径拉取候选的上限：防止 drawer 全量扫描拖垮检索（数据量增长后尤其重要）
+MAX_CANDIDATES = 2000
+
 
 class RecallManager:
     """查记忆管理器。
@@ -110,9 +113,13 @@ class RecallManager:
             if self.closet_indexer is not None:
                 source_file = metadata.get("source_file", "")
                 if source_file not in boost_cache:
-                    boost_cache[source_file] = self.closet_indexer.get_boost_for_source(
-                        source_file, query, query_vec
-                    )
+                    try:
+                        boost_cache[source_file] = self.closet_indexer.get_boost_for_source(
+                            source_file, query, query_vec
+                        )
+                    except Exception:
+                        # 壁橱索引器存储未接线（ChromaStore 无壁橱方法）：跳过加分，不阻断检索
+                        boost_cache[source_file] = 0.0
                 closet_boost = boost_cache[source_file]
 
             # 最终分数
@@ -237,14 +244,15 @@ class RecallManager:
         return {"$and": conditions}
 
     def _get_all_drawers(self, wing: str | None, room: str | None) -> list[dict]:
-        """获取所有抽屉（降级场景用）。
+        """获取候选抽屉（降级场景用）。
 
-        embedding 不可用时，通过 list_drawers_by_importance 获取全部记录，
-        再在内存中做 room 过滤。
+        embedding 不可用时，通过 list_drawers_by_importance 拉取
+        wing 过滤后的记录，数量限制在 MAX_CANDIDATES 以内，
+        再在内存中做 room 过滤，避免全量扫描。
         """
-        # 设置大 limit 获取所有记录
+        # 带上限拉取，只取最近的候选（按重要性排序）
         candidates = self.chroma_store.list_drawers_by_importance(
-            limit=100000, wing=wing
+            limit=MAX_CANDIDATES, wing=wing
         )
         # room 过滤（list_drawers_by_importance 不支持 room 参数）
         if room is not None:

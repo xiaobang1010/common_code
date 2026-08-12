@@ -11,6 +11,11 @@ dependencies = [
     "fastapi>=0.100",
     "uvicorn[standard]>=0.20",
     "chromadb>=0.5",
+]
+
+# 语义向量检索可选依赖：不安装时自动降级为纯 BM25
+[project.optional-dependencies]
+vector = [
     "sentence-transformers>=3.0",
     "torch",
 ]

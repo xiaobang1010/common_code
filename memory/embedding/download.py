@@ -1,7 +1,7 @@
 """Jasper embedding 模型下载脚本。
 
-在安装时或首次启动时下载 Jasper 模型到 memory/embedding/jasper-model/ 目录。
-可通过 CLI 命令 download-embedding-model 手动触发，也会在 init() 时自动检查。
+在需要语义检索时下载 Jasper 模型到 memory/embedding/jasper-model/ 目录。
+下载是显式触发（CLI 命令），启动时只探测不下载。
 
 下载方式就是 git clone，简单直接。
 默认用 hf-mirror.com 镜像加速。

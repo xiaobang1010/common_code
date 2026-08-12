@@ -51,23 +51,21 @@ def _load_env() -> None:
 
 
 def _ensure_embedding_model() -> None:
-    """检查 Jasper embedding 模型是否已下载，未下载则自动下载。
+    """检查 Jasper embedding 模型是否已下载。
 
-    失败则降级为纯 BM25 模式，不阻断启动。
+    未下载时不自动下载（避免启动时静默拉取约 1.2GB 模型），
+    仅提示显式下载入口；缺失时降级为纯 BM25 模式，不阻断启动。
     """
     try:
-        from memory.embedding.download import download_model, is_model_downloaded
+        from memory.embedding.download import is_model_downloaded
 
         if is_model_downloaded():
             return
 
-        logger.info("Jasper embedding 模型未下载，开始自动下载...")
-        success = download_model()
-        if not success:
-            logger.warning(
-                "Jasper 模型自动下载失败，embedding 将降级为纯 BM25 模式。"
-                "可稍后运行 download-embedding-model 命令手动下载。"
-            )
+        logger.info(
+            "Jasper embedding 模型未下载，语义检索降级为纯 BM25。"
+            "需要语义检索时请运行 download-embedding-model 命令下载（约 1.2GB）。"
+        )
     except Exception as e:
         logger.warning("embedding 模型检查失败: %s", e)
 
