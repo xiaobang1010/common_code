@@ -150,8 +150,9 @@ async def chat_event_stream(prompt: str, session_id: str = ""):
             await queue.put(None)
 
     task = asyncio.create_task(consume_engine())
-    # 记录到全局变量，供 /api/abort 取消
+    # 记录到全局变量，供 /api/abort 取消；同时记录所属会话，供列表 API 透出运行态
     server.state.current_task = task
+    server.state.current_session_id = session_id
 
     try:
         while True:
@@ -200,6 +201,7 @@ async def chat_event_stream(prompt: str, session_id: str = ""):
                 pass
         # 清理全局引用
         server.state.current_task = None
+        server.state.current_session_id = None
         # 会话持久化：把完整消息列表存到 SQLite
         if session_id and session_store is not None:
             try:
@@ -254,5 +256,6 @@ async def abort_query() -> JSONResponse:
         except asyncio.CancelledError:
             pass
         server.state.current_task = None
+        server.state.current_session_id = None
         return JSONResponse(content={"ok": True})
     return JSONResponse(content={"ok": False, "error": "no running task"})

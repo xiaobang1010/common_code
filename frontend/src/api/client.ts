@@ -328,6 +328,7 @@ export interface SessionInfo {
   created_at: string
   updated_at: string
   message_count: number
+  pinned: boolean
 }
 
 /** 会话详情（含消息） */
@@ -342,6 +343,8 @@ export interface WorkspaceInfo {
   name: string
   last_used_at: string
   session_count: number
+  pinned: boolean
+  alias: string
 }
 
 /** 工作区分组（含会话列表） */
@@ -362,10 +365,12 @@ export const sessionsApi = {
     apiDelete<{ ok: boolean }>(`/api/sessions/${session_id}`),
   rename: (session_id: string, title: string) =>
     apiPatch<{ ok: boolean }>(`/api/sessions/${session_id}`, { title }),
+  pin: (session_id: string, pinned: boolean) =>
+    apiPatch<{ ok: boolean }>(`/api/sessions/${session_id}`, { pinned }),
   switch: (session_id: string) =>
     apiPost<{ ok: boolean; messages: Record<string, unknown>[]; workspace_path: string }>(`/api/sessions/${session_id}/switch`),
   grouped: () =>
-    apiGet<{ groups: SessionGroup[] }>('/api/sessions/grouped'),
+    apiGet<{ groups: SessionGroup[]; current_task: { session_id: string; state: string } | null }>('/api/sessions/grouped'),
 }
 
 /** 工作区管理 */
@@ -378,6 +383,8 @@ export const workspacesApi = {
     apiPost<{ ok: boolean; workspace: WorkspaceInfo; current_branch: string }>('/api/workspaces/switch', { path }),
   remove: (path: string) =>
     apiPost<{ ok: boolean; workspaces: WorkspaceInfo[] }>('/api/workspaces/delete', { path }),
+  update: (path: string, data: { alias?: string; pinned?: boolean }) =>
+    apiPost<{ ok: boolean }>('/api/workspaces/update', { path, ...data }),
 }
 
 /** Git 分支管理 */
