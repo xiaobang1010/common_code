@@ -5,7 +5,13 @@ import { useChatStore } from '../../stores/useChatStore'
 // 距底部小于该值视为"贴底"，继续自动跟随
 const NEAR_BOTTOM_PX = 120
 
-function ChatStream() {
+interface Props {
+  // 是否已打开工作区：无工作区时显示引导空态
+  hasWorkspace: boolean
+  onOpenWorkspace: () => void
+}
+
+function ChatStream({ hasWorkspace, onOpenWorkspace }: Props) {
   // 只订阅 id 列表：新增/删除块时更新，单块内容变化不触发本组件重渲
   const blockIds = useChatStore(s => s.blockIds)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -59,6 +65,7 @@ function ChatStream() {
         }}
       >
         {blockIds.length === 0 ? (
+          hasWorkspace ? (
           <div
             style={{
               flex: 1,
@@ -110,6 +117,92 @@ function ChatStream() {
               描述你想做什么，AI 会读代码、改文件、跑命令
             </div>
           </div>
+          ) : (
+          <div
+            style={{
+              flex: 1,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '16px',
+              color: 'var(--text-tertiary)',
+            }}
+          >
+            <div
+              style={{
+                width: '56px',
+                height: '56px',
+                borderRadius: '50%',
+                background: 'linear-gradient(135deg, var(--accent), #ff7a45)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: '0 8px 24px rgba(245, 166, 35, 0.25)',
+                marginBottom: '4px',
+              }}
+            >
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#1a1a1a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+                <path d="M9 13h6" />
+              </svg>
+            </div>
+            <div
+              style={{
+                fontSize: '15px',
+                fontWeight: 500,
+                color: 'var(--text-secondary)',
+                letterSpacing: '0.3px',
+              }}
+            >
+              打开一个工作区开始使用
+            </div>
+            <div
+              style={{
+                fontSize: '12px',
+                color: 'var(--text-tertiary)',
+                fontFamily: 'var(--font-mono)',
+                maxWidth: '320px',
+                textAlign: 'center',
+                lineHeight: 1.6,
+              }}
+            >
+              AI 会在你选定的项目里读代码、改文件、跑命令
+            </div>
+            <button
+              onClick={onOpenWorkspace}
+              style={{
+                padding: '9px 20px',
+                border: '1px solid var(--accent)',
+                borderRadius: 'var(--radius-md)',
+                backgroundColor: 'var(--accent-soft)',
+                color: 'var(--accent)',
+                fontSize: '13px',
+                fontFamily: 'var(--font-ui)',
+                fontWeight: 500,
+                cursor: 'pointer',
+                transition: 'all var(--transition-fast)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = 'var(--accent)'
+                e.currentTarget.style.color = '#1a1a1a'
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = 'var(--accent-soft)'
+                e.currentTarget.style.color = 'var(--accent)'
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+                <path d="M9 13h6" />
+              </svg>
+              打开工作区
+            </button>
+          </div>
+          )
         ) : (
           blockIds.map(id => (
             <WorkBlockView key={id} blockId={id} />

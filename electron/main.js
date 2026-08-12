@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, Menu } = require('electron')
 const { spawn } = require('child_process')
 const path = require('path')
 const pty = require('node-pty')
@@ -70,15 +70,99 @@ function spawnPython() {
   return child
 }
 
+// 应用菜单策略（分平台）：
+// - macOS：保留符合系统规范的最小菜单（App/Edit/Window/Help），Edit 含剪贴板 role
+// - Windows/Linux：保留带 edit role 的菜单但隐藏（setMenuBarVisibility(false)），
+//   编辑快捷键（Ctrl+C/V/A/Z）天然可用，不丢能力
+function setupMenu() {
+  if (process.platform === 'darwin') {
+    const template = [
+      {
+        label: app.name,
+        submenu: [
+          { role: 'about' },
+          { type: 'separator' },
+          { role: 'services' },
+          { type: 'separator' },
+          { role: 'hide' },
+          { role: 'hideOthers' },
+          { role: 'unhide' },
+          { type: 'separator' },
+          { role: 'quit' },
+        ],
+      },
+      {
+        label: 'Edit',
+        submenu: [
+          { role: 'undo' },
+          { role: 'redo' },
+          { type: 'separator' },
+          { role: 'cut' },
+          { role: 'copy' },
+          { role: 'paste' },
+          { role: 'selectAll' },
+        ],
+      },
+      { role: 'windowMenu' },
+      { role: 'help', submenu: [] },
+    ]
+    Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+  } else {
+    Menu.setApplicationMenu(
+      Menu.buildFromTemplate([
+        {
+          label: 'Edit',
+          submenu: [
+            { role: 'undo' },
+            { role: 'redo' },
+            { type: 'separator' },
+            { role: 'cut' },
+            { role: 'copy' },
+            { role: 'paste' },
+            { role: 'selectAll' },
+          ],
+        },
+      ])
+    )
+  }
+}
+
 // 根据后端端口创建主窗口
 function createWindow(port) {
-  win = new BrowserWindow({
+  const isWindows = process.platform === 'win32'
+  const isMac = process.platform === 'darwin'
+
+  const windowOptions = {
     width: 1400,
     height: 900,
+    // 深色背景，避免加载时白闪（对齐前端 --bg-base）
+    backgroundColor: '#0f1115',
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js')
+      preload: path.join(__dirname, 'preload.js'),
+    },
+  }
+
+  if (isWindows) {
+    // Windows：隐藏原生标题栏，窗口按钮用系统 overlay（深色配色），
+    // 前端自绘标题栏负责拖拽与业务内容，前端不重复绘制窗口按钮
+    windowOptions.titleBarStyle = 'hidden'
+    windowOptions.titleBarOverlay = {
+      color: '#0f1115',
+      symbolColor: '#8b919e',
+      height: 38,
     }
-  })
+  } else if (isMac) {
+    // macOS：隐藏标题栏但保留左上角交通灯按钮
+    windowOptions.titleBarStyle = 'hiddenInset'
+  }
+  // Linux：保持默认 frame（Wayland/X11 差异大，titleBarOverlay 行为需单独验证）
+
+  win = new BrowserWindow(windowOptions)
+
+  // Windows/Linux 隐藏菜单栏（菜单仍在，快捷键不丢）
+  if (!isMac) {
+    win.setMenuBarVisibility(false)
+  }
 
   // 开发模式加载 Vite dev server，生产模式加载后端提供的静态文件
   if (process.env.ELECTRON_DEV === '1') {
@@ -135,6 +219,14 @@ function createTerminal(cwd) {
 // 应用就绪后拉起后端
 app.whenReady().then(() => {
   pythonProcess = spawnPython()
+
+  // 菜单栏隐藏后，调试入口（重载/DevTools）由前端溢出菜单通过 IPC 触发
+  ipcMain.on('window:reload', () => {
+    if (win && !win.isDestroyed()) win.webContents.reload()
+  })
+  ipcMain.on('window:toggleDevTools', () => {
+    if (win && !win.isDestroyed()) win.webContents.toggleDevTools()
+  })
 
   // 终端 IPC
   ipcMain.handle('terminal:create', (_event, cwd) => createTerminal(cwd))
