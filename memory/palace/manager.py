@@ -69,8 +69,10 @@ class PalaceManager:
         from memory.forget import ForgetManager
 
         self.remember = RememberManager(chroma_store, embedding_provider, closet_indexer)
-        self.recall = RecallManager(chroma_store, embedding_provider, closet_indexer)
-        self.rethink = RethinkManager(chroma_store, self.remember)
+        # 注意：属性名不能与下方委托方法同名（如 recall/rethink），
+        # 否则实例属性会遮蔽方法，导致 palace.recall(...) 不可调用
+        self.recall_manager = RecallManager(chroma_store, embedding_provider, closet_indexer)
+        self.rethink_manager = RethinkManager(chroma_store, self.remember)
         self.forget = ForgetManager(chroma_store, closet_indexer)
 
     # --- remember 类（存）---
@@ -87,41 +89,41 @@ class PalaceManager:
 
     def recall(self, query: str, **kwargs):
         """语义搜索 - 委托到 RecallManager。"""
-        return self.recall.recall(query, **kwargs)
+        return self.recall_manager.recall(query, **kwargs)
 
     def get_drawer(self, drawer_id: str):
         """按 ID 查 - 委托到 RecallManager。"""
-        return self.recall.get_drawer(drawer_id)
+        return self.recall_manager.get_drawer(drawer_id)
 
     def get_drawers_by_source(self, source_file: str):
         """按来源查 - 委托到 RecallManager。"""
-        return self.recall.get_drawers_by_source(source_file)
+        return self.recall_manager.get_drawers_by_source(source_file)
 
     def list_wings(self):
         """列出 Wing - 委托到 RecallManager。"""
-        return self.recall.list_wings()
+        return self.recall_manager.list_wings()
 
     def list_rooms(self, wing: str):
         """列出 Room - 委托到 RecallManager。"""
-        return self.recall.list_rooms(wing)
+        return self.recall_manager.list_rooms(wing)
 
     def get_taxonomy(self):
         """获取分类树 - 委托到 RecallManager。"""
-        return self.recall.get_taxonomy()
+        return self.recall_manager.get_taxonomy()
 
     def status(self):
         """获取状态 - 委托到 RecallManager。"""
-        return self.recall.status()
+        return self.recall_manager.status()
 
     def list_drawers_by_importance(self, limit: int = 15, wing: str | None = None):
         """按重要性排序 - 委托到 RecallManager。"""
-        return self.recall.list_drawers_by_importance(limit, wing)
+        return self.recall_manager.list_drawers_by_importance(limit, wing)
 
     # --- rethink 类（改）---
 
     def rethink(self, drawer_id: str, **kwargs):
         """改记忆 - 委托到 RethinkManager。"""
-        return self.rethink.rethink(drawer_id, **kwargs)
+        return self.rethink_manager.rethink(drawer_id, **kwargs)
 
     # --- forget 类（删）---
 
