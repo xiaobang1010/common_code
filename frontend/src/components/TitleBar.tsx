@@ -9,6 +9,8 @@ interface TitleBarProps {
   onToggleInspector: () => void
   onOpenSettings: () => void
   onNewSession: () => void
+  // 当前任务标题（侧栏折叠时仍可见）
+  currentTaskTitle: string
 }
 
 // WebKit 私有属性（CSSProperties 未收录），用类型断言封装
@@ -157,6 +159,7 @@ function TitleBar({
   onToggleInspector,
   onOpenSettings,
   onNewSession,
+  currentTaskTitle,
 }: TitleBarProps) {
   const isStreaming = useChatStore(s => s.isStreaming)
 
@@ -195,6 +198,28 @@ function TitleBar({
       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, ...appRegion('no-drag') }}>
         {workspaceSelector}
         {branchSelector}
+        {/* 当前任务名：中间弹性区，侧栏折叠时仍可见，长标题省略号截断 */}
+        {currentTaskTitle && (
+          <span
+            title={currentTaskTitle}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              marginLeft: '8px',
+              paddingLeft: '8px',
+              borderLeft: '1px solid var(--border)',
+              fontSize: '12px',
+              fontFamily: 'var(--font-ui)',
+              fontWeight: 500,
+              color: 'var(--text-primary)',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {currentTaskTitle}
+          </span>
+        )}
       </div>
 
       {/* 右侧：业务图标 + 溢出菜单（no-drag，点击不被拖拽吞掉） */}

@@ -32,6 +32,8 @@ async def list_workspaces() -> dict:
                 "name": w.name,
                 "last_used_at": w.last_used_at,
                 "session_count": w.session_count,
+                "pinned": w.pinned,
+                "alias": w.alias,
             }
             for w in workspaces
         ]
@@ -133,7 +135,7 @@ async def switch_workspace(body: dict) -> dict:
 
 @router.post("/api/workspaces/delete")
 async def delete_workspace(body: dict) -> dict:
-    """删除工作区及其所有会话。
+    """删除工作区及其所有任务。
 
     请求体：{"path": "..."}
     如果删除的是当前工作区，删除后清空当前工作区状态。
@@ -160,3 +162,20 @@ async def delete_workspace(body: dict) -> dict:
             for w in workspaces
         ],
     }
+
+
+@router.post("/api/workspaces/update")
+async def update_workspace(body: dict) -> dict:
+    """更新工作区：支持 alias（别名重命名）与 pinned（置顶）。
+
+    请求体：{"path": "...", "alias": "...", "pinned": true}
+    """
+    path = body.get("path", "")
+    if not path:
+        return {"ok": False, "error": "path is required"}
+
+    if "alias" in body:
+        server.state.session_store.update_workspace_alias(path, str(body["alias"]))
+    if "pinned" in body:
+        server.state.session_store.update_workspace_pinned(path, bool(body["pinned"]))
+    return {"ok": True}

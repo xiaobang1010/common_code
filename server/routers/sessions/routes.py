@@ -99,6 +99,8 @@ async def list_sessions_grouped() -> dict:
                     "path": workspace.path,
                     "name": workspace.name,
                     "last_used_at": workspace.last_used_at,
+                    "pinned": workspace.pinned,
+                    "alias": workspace.alias,
                 },
                 "sessions": [
                     {
@@ -109,11 +111,22 @@ async def list_sessions_grouped() -> dict:
                         "created_at": s.created_at,
                         "updated_at": s.updated_at,
                         "message_count": s.message_count,
+                        "pinned": s.pinned,
                     }
                     for s in sessions
                 ],
             })
-        return {"groups": groups}
+        # 透出当前运行任务（实时读取不落库，供列表标记"正在运行"）
+        current_task = None
+        if (
+            server.state.current_task is not None
+            and not server.state.current_task.done()
+        ):
+            current_task = {
+                "session_id": server.state.current_session_id,
+                "state": "running",
+            }
+        return {"groups": groups, "current_task": current_task}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
@@ -151,12 +164,11 @@ async def delete_session(session_id: str) -> dict:
 
 @router.patch("/api/sessions/{session_id}")
 async def update_session(session_id: str, body: dict) -> dict:
-    """更新会话标题。
-
-    请求体：{"title": "..."}
-    """
-    title = body.get("title", "")
-    server.state.session_store.update_session_title(session_id, title)
+    """更新会话：支持 title（重命名）与 pinned（置顶）。"""
+    if "title" in body:
+        server.state.session_store.update_session_title(session_id, str(body["title"]))
+    if "pinned" in body:
+        server.state.session_store.update_session_pinned(session_id, bool(body["pinned"]))
     return {"ok": True}
 
 

@@ -1,6 +1,33 @@
 import SessionList from './sidebar/SessionList'
 import type { SessionGroup } from '../api/client'
 
+// 入口区按钮统一样式（竖排：图标 + 文字居左，快捷键居右，无边框）
+const entryButtonStyle: React.CSSProperties = {
+  width: '100%',
+  display: 'flex',
+  alignItems: 'center',
+  gap: '8px',
+  padding: '7px 10px',
+  border: 'none',
+  borderRadius: 'var(--radius-sm)',
+  background: 'transparent',
+  color: 'var(--text-secondary)',
+  fontSize: '12px',
+  fontFamily: 'var(--font-ui)',
+  cursor: 'pointer',
+  transition: 'all var(--transition-fast)',
+  textAlign: 'left',
+}
+
+// 快捷键提示统一样式（居右）
+const entryShortcutStyle: React.CSSProperties = {
+  marginLeft: 'auto',
+  fontSize: '10px',
+  fontFamily: 'var(--font-mono)',
+  color: 'var(--text-tertiary)',
+  letterSpacing: '0.3px',
+}
+
 // 会话栏：左侧唯一的侧边区域，只承载会话列表
 // 文件/搜索/Git 视图已移入右侧检查器面板，此处不再有视图切换
 interface SidebarProps {
@@ -10,15 +37,22 @@ interface SidebarProps {
   groups: SessionGroup[]
   currentWorkspacePath: string | null
   currentSessionId: string | null
+  // 当前运行任务所属会话（列表显示运行指示）
+  runningSessionId: string | null
   onCreateSession: () => void
   onSwitchSession: (sessionId: string) => void
   onSwitchInWorkspace: (sessionId: string, workspacePath: string) => void
   onDeleteSession: (sessionId: string) => void
   onRemoveWorkspace: (workspacePath: string) => void
   onOpenWorkspace: () => void
+  // 打开搜索：打开检查器并切到搜索 tab
+  onOpenSearch: () => void
+  onRenameSession: (sessionId: string, title: string) => void
+  onToggleSessionPin: (sessionId: string, pinned: boolean) => void
+  onUpdateWorkspace: (path: string, data: { alias?: string; pinned?: boolean }) => void
 }
 
-function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, currentSessionId, onCreateSession, onSwitchSession, onSwitchInWorkspace, onDeleteSession, onRemoveWorkspace, onOpenWorkspace }: SidebarProps) {
+function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, currentSessionId, runningSessionId, onCreateSession, onSwitchSession, onSwitchInWorkspace, onDeleteSession, onRemoveWorkspace, onOpenWorkspace, onOpenSearch, onRenameSession, onToggleSessionPin, onUpdateWorkspace }: SidebarProps) {
   // 折叠状态下渲染一个窄条展开按钮
   if (collapsed) {
     return (
@@ -49,7 +83,7 @@ function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, cu
             fontWeight: 500,
           }}
         >
-          » 会话历史
+          » 项目
         </span>
       </div>
     )
@@ -111,7 +145,7 @@ function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, cu
             flex: 1,
           }}
         >
-          会话历史
+          项目
         </span>
         <button
           onClick={onToggleCollapse}
@@ -142,6 +176,75 @@ function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, cu
           </svg>
         </button>
       </div>
+      {/* 常驻入口区：新建任务 / 搜索 / 打开工作区（竖排，分组折叠与否均可见） */}
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '6px',
+          padding: '8px',
+          borderBottom: '1px solid var(--border)',
+          flexShrink: 0,
+        }}
+      >
+        <button
+          onClick={onCreateSession}
+          title="新建任务 (Ctrl+N)"
+          style={entryButtonStyle}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = 'var(--accent)'
+            e.currentTarget.style.backgroundColor = 'var(--accent-soft)'
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color = 'var(--text-secondary)'
+            e.currentTarget.style.backgroundColor = 'transparent'
+          }}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+          新建任务
+          <span style={entryShortcutStyle}>Ctrl+N</span>
+        </button>
+        <button
+          onClick={onOpenSearch}
+          title="搜索 (Ctrl+K)"
+          style={entryButtonStyle}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = 'var(--accent)'
+            e.currentTarget.style.backgroundColor = 'var(--accent-soft)'
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color = 'var(--text-secondary)'
+            e.currentTarget.style.backgroundColor = 'transparent'
+          }}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="11" cy="11" r="7" />
+            <path d="M21 21l-4.3-4.3" />
+          </svg>
+          搜索
+          <span style={entryShortcutStyle}>Ctrl+K</span>
+        </button>
+        <button
+          onClick={onOpenWorkspace}
+          title="打开工作区"
+          style={entryButtonStyle}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = 'var(--accent)'
+            e.currentTarget.style.backgroundColor = 'var(--accent-soft)'
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color = 'var(--text-secondary)'
+            e.currentTarget.style.backgroundColor = 'transparent'
+          }}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+          </svg>
+          打开工作区
+        </button>
+      </div>
       {/* 会话列表 */}
       <div
         style={{
@@ -155,12 +258,16 @@ function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, cu
           groups={groups}
           currentWorkspacePath={currentWorkspacePath}
           currentSessionId={currentSessionId}
+          runningSessionId={runningSessionId}
           onCreate={onCreateSession}
           onSwitch={onSwitchSession}
           onSwitchInWorkspace={onSwitchInWorkspace}
           onDelete={onDeleteSession}
           onRemoveWorkspace={onRemoveWorkspace}
           onOpenWorkspace={onOpenWorkspace}
+          onRename={onRenameSession}
+          onTogglePin={onToggleSessionPin}
+          onUpdateWorkspace={onUpdateWorkspace}
         />
       </div>
     </div>

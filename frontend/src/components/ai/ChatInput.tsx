@@ -24,6 +24,8 @@ interface Props {
   permissionMode: PermissionMode
   // 切换权限模式
   onPermissionModeChange: (mode: PermissionMode) => void
+  // 当前运行任务所属会话（并发约束提示用），null 表示无任务运行
+  currentTaskSessionId: string | null
 }
 
 // 内置斜杠命令列表
@@ -38,7 +40,7 @@ const BUILTIN_COMMANDS = [
   { name: '/spec', desc: '查看规格' },
 ]
 
-function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, onResolve, questionRequest, onAnswer, permissionMode, onPermissionModeChange }: Props) {
+function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, onResolve, questionRequest, onAnswer, permissionMode, onPermissionModeChange, currentTaskSessionId }: Props) {
   const [value, setValue] = useState('')
   // 用户手动关闭补全后置 true，阻止自动弹出，直到下次输入变化
   const [commandsDismissed, setCommandsDismissed] = useState(false)
@@ -48,6 +50,8 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
   const [showPermMenu, setShowPermMenu] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const permMenuRef = useRef<HTMLDivElement>(null)
+  // 当前会话 id：区分"本会话在跑"与"其他会话在跑"
+  const currentSessionId = useChatStore(s => s.sessionId)
 
   // ---- 模型快速切换相关状态 ----
   // modelVersion 来自 store，外部（如设置面板）切换模型时会变化，触发重新拉取供应商列表
@@ -453,7 +457,13 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
           disabled={disabled}
           onFocus={() => setIsFocused(true)}
           onBlur={() => setIsFocused(false)}
-          placeholder={disabled ? 'AI 正在思考...' : '描述你想做什么，或输入 / 命令'}
+          placeholder={
+            disabled && currentTaskSessionId && currentSessionId !== currentTaskSessionId
+              ? '当前有任务运行中，可继续输入草稿'
+              : disabled
+                ? 'AI 正在思考...'
+                : '描述你想做什么，或输入 / 命令'
+          }
           rows={2}
           style={{
             width: '100%',

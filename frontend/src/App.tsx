@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import Sidebar from './components/Sidebar'
 import EditorArea, { type EditorAreaHandle } from './components/EditorArea'
 import AIPanel from './components/AIPanel'
@@ -45,8 +45,25 @@ function App() {
   const loadMessages = useChatStore(s => s.loadMessages)
   const clearMessages = useChatStore(s => s.clearMessages)
   const fetchState = useChatStore(s => s.fetchState)
+  const isStreaming = useChatStore(s => s.isStreaming)
   const sessions = useSessions()
   const editorRef = useRef<EditorAreaHandle>(null)
+
+  // 当前任务标题（标题栏展示）：从分组数据找当前会话，侧栏折叠时仍可见
+  const currentTaskTitle = useMemo(() => {
+    for (const g of sessions.allGroups) {
+      const found = g.sessions.find(s => s.id === chatSessionId)
+      if (found) return found.title || '新任务'
+    }
+    return ''
+  }, [sessions.allGroups, chatSessionId])
+
+  // 任务运行态刷新：流式开始/结束时重新拉取分组列表。
+  // grouped 的 current_task 是快照，不发消息就没有刷新时机，必须由
+  // isStreaming 变化驱动，运行指示才能出现与消失
+  useEffect(() => {
+    sessions.loadAllSessions()
+  }, [isStreaming]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // 当前 Git 分支和分支列表
   const [currentBranch, setCurrentBranch] = useState('')
@@ -136,6 +153,13 @@ function App() {
     setInspectorCard(id)
     setInspectorMode('focus')
   }, [])
+
+  // 打开搜索：显示检查器并切到搜索 tab（复用检查器 SearchPanel）
+  const handleOpenSearch = useCallback(() => {
+    setInspectorVisible(true)
+    setInspectorEverShown(true)
+    enterInspectorFocus('search')
+  }, [enterInspectorFocus])
 
   // ---- 会话管理相关回调 ----
 
@@ -260,6 +284,24 @@ function App() {
     }
   }, [handleSwitchWorkspace])
 
+  // 全局快捷键：Ctrl/⌘+N 新建任务，Ctrl/⌘+K 搜索
+  // Electron 中这两组快捷键无默认系统行为，全局拦截安全
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey
+      if (!mod) return
+      if (e.key.toLowerCase() === 'n') {
+        e.preventDefault()
+        handleCreateSession()
+      } else if (e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        handleOpenSearch()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [handleCreateSession, handleOpenSearch])
+
   return (
     <div
       style={{
@@ -291,6 +333,7 @@ function App() {
         onToggleInspector={toggleInspector}
         onOpenSettings={() => setSettingsOpen(true)}
         onNewSession={handleCreateSession}
+        currentTaskTitle={currentTaskTitle}
       />
 
       {/* 主体行：会话栏 + AI面板 + 编辑器 + 检查器面板 */}
@@ -311,6 +354,11 @@ function App() {
                 onDeleteSession={handleDeleteSession}
                 onRemoveWorkspace={handleRemoveWorkspace}
                 onOpenWorkspace={handleOpenWorkspace}
+                onOpenSearch={handleOpenSearch}
+                runningSessionId={sessions.currentTask?.session_id ?? null}
+                onRenameSession={sessions.renameSession}
+                onToggleSessionPin={sessions.toggleSessionPin}
+                onUpdateWorkspace={sessions.updateWorkspaceMeta}
               />
             </div>
             <Resizer direction="horizontal" onResize={handleSidebarResize} />
@@ -329,6 +377,11 @@ function App() {
             onDeleteSession={handleDeleteSession}
             onRemoveWorkspace={handleRemoveWorkspace}
             onOpenWorkspace={handleOpenWorkspace}
+            onOpenSearch={handleOpenSearch}
+            runningSessionId={sessions.currentTask?.session_id ?? null}
+            onRenameSession={sessions.renameSession}
+            onToggleSessionPin={sessions.toggleSessionPin}
+            onUpdateWorkspace={sessions.updateWorkspaceMeta}
           />
         )}
 
@@ -337,6 +390,7 @@ function App() {
           <AIPanel
             hasWorkspace={!!sessions.currentWorkspace}
             onOpenWorkspace={handleOpenWorkspace}
+            currentTaskSessionId={sessions.currentTask?.session_id ?? null}
           />
         </div>
 

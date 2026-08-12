@@ -6,12 +6,14 @@ interface AIPanelProps {
   // 是否已打开工作区：控制对话流空态（无工作区时显示引导）
   hasWorkspace: boolean
   onOpenWorkspace: () => void
+  // 当前运行任务所属会话（并发约束提示用），null 表示无任务运行
+  currentTaskSessionId: string | null
 }
 
 // AI 面板：对话流 + 输入区。
 // 原顶部 44px 工具条（工作区/分支选择、业务图标、状态点、新建任务）已上提
 // 合并进自绘标题栏（TitleBar），此处不再保留
-function AIPanel({ hasWorkspace, onOpenWorkspace }: AIPanelProps) {
+function AIPanel({ hasWorkspace, onOpenWorkspace, currentTaskSessionId }: AIPanelProps) {
   // 局部订阅：流式更新只影响当前工作块，本面板只在关联状态变化时重渲
   const isStreaming = useChatStore(s => s.isStreaming)
   const sendMessage = useChatStore(s => s.sendMessage)
@@ -62,6 +64,7 @@ function AIPanel({ hasWorkspace, onOpenWorkspace }: AIPanelProps) {
           onAnswer={answerQuestion}
           permissionMode={permissionMode}
           onPermissionModeChange={setPermissionMode}
+          currentTaskSessionId={currentTaskSessionId}
         />
       </div>
     </div>

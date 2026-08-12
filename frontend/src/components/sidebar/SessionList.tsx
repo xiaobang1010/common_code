@@ -5,12 +5,17 @@ interface SessionListProps {
   groups: SessionGroup[]
   currentWorkspacePath: string | null
   currentSessionId: string | null
+  // 当前运行任务所属会话（列表显示运行指示）
+  runningSessionId: string | null
   onCreate: () => void
   onSwitch: (sessionId: string) => void
   onSwitchInWorkspace: (sessionId: string, workspacePath: string) => void
   onDelete: (sessionId: string) => void
   onRemoveWorkspace: (workspacePath: string) => void
   onOpenWorkspace: () => void
+  onRename: (sessionId: string, title: string) => void
+  onTogglePin: (sessionId: string, pinned: boolean) => void
+  onUpdateWorkspace: (path: string, data: { alias?: string; pinned?: boolean }) => void
 }
 
 // 把 ISO 时间字符串转成相对时间描述，如"3分钟前"
@@ -36,47 +41,132 @@ function basename(path: string): string {
   return parts[parts.length - 1] || path
 }
 
-// 单个会话项，用自身 hover 状态控制删除按钮的显隐
+// 工作区显示名：别名优先，其次 name，最后路径末段
+function displayName(ws: { alias: string; name: string; path: string }): string {
+  return ws.alias || ws.name || basename(ws.path)
+}
+
+// 任务排序：置顶优先，再按 updated_at 降序
+function sortSessions(sessions: SessionInfo[]): SessionInfo[] {
+  return [...sessions].sort((a, b) => {
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
+    return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+  })
+}
+
+// 菜单项统一样式
+const menuItemStyle: React.CSSProperties = {
+  width: '100%',
+  padding: '7px 12px',
+  border: 'none',
+  background: 'transparent',
+  color: 'var(--text-secondary)',
+  fontSize: '12px',
+  fontFamily: 'var(--font-ui)',
+  cursor: 'pointer',
+  textAlign: 'left',
+  display: 'flex',
+  alignItems: 'center',
+  gap: '6px',
+  transition: 'all var(--transition-fast)',
+}
+
+// 单个任务条目（单行：状态图标 + 标题 + 右对齐相对时间）
 function SessionItem({
   session,
   isActive,
+  isRunning,
   onSwitch,
   onDelete,
+  onRename,
+  onTogglePin,
 }: {
   session: SessionInfo
   isActive: boolean
+  isRunning: boolean
   onSwitch: (id: string) => void
   onDelete: (id: string) => void
+  onRename: (id: string, title: string) => void
+  onTogglePin: (id: string, pinned: boolean) => void
 }) {
   const [hovered, setHovered] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(session.title)
+
+  const commitRename = () => {
+    const trimmed = draft.trim()
+    if (trimmed && trimmed !== session.title) onRename(session.id, trimmed)
+    setEditing(false)
+  }
+
+  // 重命名编辑态：整行变为输入框
+  if (editing) {
+    return (
+      <div style={{ padding: '4px 10px 4px 14px' }}>
+        <input
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commitRename}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commitRename()
+            if (e.key === 'Escape') setEditing(false)
+          }}
+          style={{
+            width: '100%',
+            padding: '3px 6px',
+            border: '1px solid var(--accent)',
+            borderRadius: 'var(--radius-sm)',
+            background: 'var(--bg-base)',
+            color: 'var(--text-primary)',
+            fontSize: '12px',
+            fontFamily: 'var(--font-ui)',
+            outline: 'none',
+          }}
+        />
+      </div>
+    )
+  }
 
   return (
     <div
       onClick={() => onSwitch(session.id)}
       onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      onMouseLeave={() => { setHovered(false); setMenuOpen(false) }}
       style={{
         position: 'relative',
-        padding: '8px 10px 8px 14px',
+        padding: '6px 10px 6px 14px',
         cursor: 'pointer',
         borderRadius: 'var(--radius-sm)',
-        marginBottom: '2px',
+        marginBottom: '1px',
         backgroundColor: isActive
           ? 'var(--accent-soft)'
           : hovered
             ? 'var(--bg-tertiary)'
             : 'transparent',
         transition: 'background var(--transition-fast)',
-        // 当前会话左侧 accent 色边条
+        // 当前任务左侧 accent 色边条
         borderLeft: isActive
           ? '3px solid var(--accent)'
           : '3px solid transparent',
       }}
     >
-      {/* 标题行 */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      {/* 单行：状态图标 + 标题 + 右对齐相对时间 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+        {/* 运行中转圈 / 置顶图钉 */}
+        {isRunning ? (
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }}>
+            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+          </svg>
+        ) : session.pinned ? (
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="var(--accent)" style={{ flexShrink: 0 }}>
+            <path d="M16 3l5 5-8 2-4 4-2-2 4-4 2-8z" transform="rotate(45 12 12)" />
+          </svg>
+        ) : null}
         <span
           style={{
+            flex: 1,
             color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
             fontSize: '12px',
             fontFamily: 'var(--font-ui)',
@@ -84,78 +174,108 @@ function SessionItem({
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
-            flex: 1,
+            minWidth: 0,
+          }}
+          title={`${session.title || '新任务'}${session.message_count > 0 ? ` · ${session.message_count} 条消息` : ''}`}
+        >
+          {session.title || '新任务'}
+        </span>
+        <span
+          style={{
+            flexShrink: 0,
+            color: 'var(--text-tertiary)',
+            fontSize: '10px',
+            fontFamily: 'var(--font-mono)',
           }}
         >
-          {session.title || '新对话'}
+          {relativeTime(session.updated_at)}
         </span>
-        {/* 删除按钮 - 行悬停时显示 */}
+        {/* hover 菜单按钮 */}
         <button
           onClick={(e) => {
             e.stopPropagation()
-            onDelete(session.id)
+            setMenuOpen(prev => !prev)
           }}
-          title="删除会话"
+          title="更多操作"
           style={{
             flexShrink: 0,
-            padding: '2px',
+            padding: '2px 4px',
             border: 'none',
             background: 'transparent',
             color: 'var(--text-tertiary)',
             cursor: 'pointer',
             borderRadius: 'var(--radius-sm)',
-            transition: 'all var(--transition-fast)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            marginLeft: '6px',
             opacity: hovered ? 1 : 0,
           }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.color = 'var(--error)'
-            e.currentTarget.style.backgroundColor = 'rgba(255, 107, 107, 0.1)'
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.color = 'var(--text-tertiary)'
-            e.currentTarget.style.backgroundColor = 'transparent'
-          }}
         >
-          {/* 垃圾桶图标 */}
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6h14z" />
-            <path d="M10 11v6M14 11v6" />
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+            <circle cx="5" cy="12" r="1.5" />
+            <circle cx="12" cy="12" r="1.5" />
+            <circle cx="19" cy="12" r="1.5" />
           </svg>
         </button>
-      </div>
-
-      {/* 底部信息行：更新时间 + 消息数 */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px',
-          marginTop: '3px',
-        }}
-      >
-        <span
-          style={{
-            color: 'var(--text-tertiary)',
-            fontSize: '10px',
-            fontFamily: 'var(--font-ui)',
-          }}
-        >
-          {relativeTime(session.updated_at)}
-        </span>
-        {session.message_count > 0 && (
-          <span
+        {/* 下拉菜单：重命名 / 置顶 / 删除 */}
+        {menuOpen && (
+          <div
+            onClick={(e) => e.stopPropagation()}
             style={{
-              color: 'var(--text-tertiary)',
-              fontSize: '10px',
-              fontFamily: 'var(--font-ui)',
+              position: 'absolute',
+              top: '100%',
+              right: '0',
+              marginTop: '2px',
+              backgroundColor: 'var(--bg-elevated)',
+              border: '1px solid var(--border-strong)',
+              borderRadius: 'var(--radius-sm)',
+              boxShadow: 'var(--shadow-lg)',
+              zIndex: 100,
+              minWidth: '120px',
+              overflow: 'hidden',
             }}
           >
-            {session.message_count} 条消息
-          </span>
+            <button
+              onClick={() => { setMenuOpen(false); setDraft(session.title); setEditing(true) }}
+              style={menuItemStyle}
+              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)')}
+              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+              </svg>
+              重命名
+            </button>
+            <button
+              onClick={() => { setMenuOpen(false); onTogglePin(session.id, !session.pinned) }}
+              style={menuItemStyle}
+              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)')}
+              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 17v5M5 9h14M7 9V4h10v5M8 9l1 8h6l1-8" />
+              </svg>
+              {session.pinned ? '取消置顶' : '置顶'}
+            </button>
+            <button
+              onClick={() => { setMenuOpen(false); onDelete(session.id) }}
+              style={menuItemStyle}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = 'rgba(255, 107, 107, 0.1)'
+                e.currentTarget.style.color = 'var(--error)'
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = 'transparent'
+                e.currentTarget.style.color = 'var(--text-secondary)'
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6h14z" />
+                <path d="M10 11v6M14 11v6" />
+              </svg>
+              删除任务
+            </button>
+          </div>
         )}
       </div>
     </div>
@@ -167,25 +287,47 @@ function WorkspaceGroup({
   group,
   isCurrent,
   currentSessionId,
+  runningSessionId,
   onCreate,
   onSwitch,
   onSwitchInWorkspace,
   onDelete,
   onRemoveWorkspace,
+  onRename,
+  onTogglePin,
+  onUpdateWorkspace,
 }: {
   group: SessionGroup
   isCurrent: boolean
   currentSessionId: string | null
+  runningSessionId: string | null
   onCreate: () => void
   onSwitch: (sessionId: string) => void
   onSwitchInWorkspace: (sessionId: string, workspacePath: string) => void
   onDelete: (sessionId: string) => void
   onRemoveWorkspace: (workspacePath: string) => void
+  onRename: (sessionId: string, title: string) => void
+  onTogglePin: (sessionId: string, pinned: boolean) => void
+  onUpdateWorkspace: (path: string, data: { alias?: string; pinned?: boolean }) => void
 }) {
   // 当前工作区默认展开，其他默认折叠
   const [expanded, setExpanded] = useState(isCurrent)
   const [headerHovered, setHeaderHovered] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [aliasEditing, setAliasEditing] = useState(false)
+  const [aliasDraft, setAliasDraft] = useState(group.workspace.alias || '')
+
+  const ws = group.workspace
+  const commitAlias = () => {
+    const trimmed = aliasDraft.trim()
+    if (trimmed !== ws.alias) onUpdateWorkspace(ws.path, { alias: trimmed })
+    setAliasEditing(false)
+  }
+
+  const copyPath = () => {
+    navigator.clipboard?.writeText(ws.path).catch(() => {})
+    setMenuOpen(false)
+  }
 
   return (
     <div style={{ marginBottom: '2px' }}>
@@ -219,11 +361,17 @@ function WorkspaceGroup({
             color: isCurrent ? 'var(--accent)' : 'var(--text-tertiary)',
             transition: 'transform var(--transition-fast)',
             transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)',
+            flexShrink: 0,
           }}
         >
           {'\u25B8'}
         </span>
-        {/* 工作区名称 */}
+        {/* 置顶图钉 + 工作区显示名 */}
+        {ws.pinned && (
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="var(--accent)" style={{ flexShrink: 0, marginRight: '2px' }}>
+            <path d="M16 3l5 5-8 2-4 4-2-2 4-4 2-8z" transform="rotate(45 12 12)" />
+          </svg>
+        )}
         <span
           style={{
             flex: 1,
@@ -234,12 +382,25 @@ function WorkspaceGroup({
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
+            minWidth: 0,
           }}
-          title={group.workspace.path}
+          title={ws.path}
         >
-          {basename(group.workspace.path)}
+          {displayName(ws)}
         </span>
-        {/* 会话数量 */}
+        {/* 最后活跃相对时间 */}
+        <span
+          style={{
+            fontSize: '10px',
+            color: 'var(--text-tertiary)',
+            fontFamily: 'var(--font-mono)',
+            flexShrink: 0,
+            marginLeft: '6px',
+          }}
+        >
+          {relativeTime(ws.last_used_at)}
+        </span>
+        {/* 任务数量 */}
         <span
           style={{
             fontSize: '10px',
@@ -249,7 +410,7 @@ function WorkspaceGroup({
             marginLeft: '6px',
           }}
         >
-          {group.sessions.length} 个会话
+          {group.sessions.length} 个任务
         </span>
         {/* 省略号按钮 - hover 时显示 */}
         {headerHovered && (
@@ -280,7 +441,6 @@ function WorkspaceGroup({
               e.currentTarget.style.color = 'var(--text-tertiary)'
             }}
           >
-            {/* 三个点图标 */}
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
               <circle cx="5" cy="12" r="1.5" />
               <circle cx="12" cy="12" r="1.5" />
@@ -288,7 +448,7 @@ function WorkspaceGroup({
             </svg>
           </button>
         )}
-        {/* 下拉菜单 */}
+        {/* 下拉菜单：置顶 / 别名重命名 / 复制路径 / 移除 */}
         {menuOpen && (
           <div
             onClick={(e) => e.stopPropagation()}
@@ -297,52 +457,96 @@ function WorkspaceGroup({
               top: '100%',
               right: '0',
               marginTop: '2px',
-              backgroundColor: 'var(--bg-secondary)',
-              border: '1px solid var(--border)',
+              backgroundColor: 'var(--bg-elevated)',
+              border: '1px solid var(--border-strong)',
               borderRadius: 'var(--radius-sm)',
-              boxShadow: '0 4px 12px rgba(0, 0, 0, 0.3)',
+              boxShadow: 'var(--shadow-lg)',
               zIndex: 100,
-              minWidth: '120px',
+              minWidth: '130px',
               overflow: 'hidden',
             }}
           >
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                setMenuOpen(false)
-                onRemoveWorkspace(group.workspace.path)
-              }}
-              style={{
-                width: '100%',
-                padding: '7px 12px',
-                border: 'none',
-                background: 'transparent',
-                color: 'var(--text-secondary)',
-                fontSize: '12px',
-                fontFamily: 'var(--font-ui)',
-                cursor: 'pointer',
-                textAlign: 'left',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                transition: 'all var(--transition-fast)',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = 'rgba(255, 107, 107, 0.1)'
-                e.currentTarget.style.color = 'var(--error)'
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = 'transparent'
-                e.currentTarget.style.color = 'var(--text-secondary)'
-              }}
-            >
-              {/* 垃圾桶图标 */}
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6h14z" />
-                <path d="M10 11v6M14 11v6" />
-              </svg>
-              移除工作区
-            </button>
+            {aliasEditing ? (
+              <div style={{ padding: '6px 8px' }}>
+                <input
+                  autoFocus
+                  value={aliasDraft}
+                  onChange={(e) => setAliasDraft(e.target.value)}
+                  onBlur={commitAlias}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitAlias()
+                    if (e.key === 'Escape') setAliasEditing(false)
+                  }}
+                  placeholder="别名（留空取消）"
+                  style={{
+                    width: '100%',
+                    padding: '3px 6px',
+                    border: '1px solid var(--accent)',
+                    borderRadius: 'var(--radius-sm)',
+                    background: 'var(--bg-base)',
+                    color: 'var(--text-primary)',
+                    fontSize: '12px',
+                    fontFamily: 'var(--font-ui)',
+                    outline: 'none',
+                  }}
+                />
+              </div>
+            ) : (
+              <>
+                <button
+                  onClick={() => { setMenuOpen(false); onUpdateWorkspace(ws.path, { pinned: !ws.pinned }) }}
+                  style={menuItemStyle}
+                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 17v5M5 9h14M7 9V4h10v5M8 9l1 8h6l1-8" />
+                  </svg>
+                  {ws.pinned ? '取消置顶' : '置顶'}
+                </button>
+                <button
+                  onClick={() => { setAliasDraft(ws.alias); setAliasEditing(true) }}
+                  style={menuItemStyle}
+                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+                  </svg>
+                  重命名别名
+                </button>
+                <button
+                  onClick={copyPath}
+                  style={menuItemStyle}
+                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="9" y="9" width="13" height="13" rx="2" />
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                  </svg>
+                  复制路径
+                </button>
+                <button
+                  onClick={() => { setMenuOpen(false); onRemoveWorkspace(ws.path) }}
+                  style={menuItemStyle}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.backgroundColor = 'rgba(255, 107, 107, 0.1)'
+                    e.currentTarget.style.color = 'var(--error)'
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.backgroundColor = 'transparent'
+                    e.currentTarget.style.color = 'var(--text-secondary)'
+                  }}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6h14z" />
+                    <path d="M10 11v6M14 11v6" />
+                  </svg>
+                  移除工作区及其项目
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -383,7 +587,6 @@ function WorkspaceGroup({
                   e.currentTarget.style.backgroundColor = 'transparent'
                 }}
               >
-                {/* + 图标 */}
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M12 5v14M5 12h14" />
                 </svg>
@@ -392,7 +595,7 @@ function WorkspaceGroup({
             </div>
           )}
 
-          {/* 会话列表 */}
+          {/* 任务列表（置顶优先排序） */}
           {group.sessions.length === 0 ? (
             <div
               style={{
@@ -402,14 +605,15 @@ function WorkspaceGroup({
                 fontFamily: 'var(--font-ui)',
               }}
             >
-              暂无会话
+              暂无项目
             </div>
           ) : (
-            group.sessions.map((session) => (
+            sortSessions(group.sessions).map((session) => (
               <SessionItem
                 key={session.id}
                 session={session}
                 isActive={session.id === currentSessionId}
+                isRunning={session.id === runningSessionId}
                 onSwitch={(id) => {
                   if (isCurrent) {
                     onSwitch(id)
@@ -418,6 +622,8 @@ function WorkspaceGroup({
                   }
                 }}
                 onDelete={onDelete}
+                onRename={onRename}
+                onTogglePin={onTogglePin}
               />
             ))
           )}
@@ -431,12 +637,16 @@ function SessionList({
   groups,
   currentWorkspacePath,
   currentSessionId,
+  runningSessionId,
   onCreate,
   onSwitch,
   onSwitchInWorkspace,
   onDelete,
   onRemoveWorkspace,
   onOpenWorkspace,
+  onRename,
+  onTogglePin,
+  onUpdateWorkspace,
 }: SessionListProps) {
   return (
     <div
@@ -473,7 +683,7 @@ function SessionList({
               还没有打开任何工作区
             </div>
             <div style={{ color: 'var(--text-tertiary)', fontSize: '11px', lineHeight: 1.6 }}>
-              打开一个项目后，AI 会在其中读代码、改文件、跑命令
+              打开一个工作区后，AI 会在其中读代码、改文件、跑命令
             </div>
             <button
               onClick={onOpenWorkspace}
@@ -501,7 +711,6 @@ function SessionList({
                 e.currentTarget.style.color = 'var(--accent)'
               }}
             >
-              {/* 文件夹打开图标 */}
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
                 <path d="M9 13h6" />
@@ -516,11 +725,15 @@ function SessionList({
               group={group}
               isCurrent={group.workspace.path === currentWorkspacePath}
               currentSessionId={currentSessionId}
+              runningSessionId={runningSessionId}
               onCreate={onCreate}
               onSwitch={onSwitch}
               onSwitchInWorkspace={onSwitchInWorkspace}
               onDelete={onDelete}
               onRemoveWorkspace={onRemoveWorkspace}
+              onRename={onRename}
+              onTogglePin={onTogglePin}
+              onUpdateWorkspace={onUpdateWorkspace}
             />
           ))
         )}
