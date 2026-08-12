@@ -15,8 +15,43 @@ from tools.implementations.runtime.errors import path_outside_workspace_error
 
 
 def get_workspace_root() -> Path:
-    """获取工作区根目录 — 后端进程的工作目录即当前打开的工作区。"""
-    return Path.cwd()
+    """获取工作区根目录 — 统一读取 server.paths.project_root()。
+
+    不使用进程 cwd：工作区切换时 server.paths 的 project_root 会被更新，
+    而进程 cwd 是启动时的静态值，两者会在切换后分叉。
+    """
+    from server.paths import project_root
+
+    return Path(project_root())
+
+
+def _allowed_roots(workspace_root: Path) -> list[Path]:
+    """允许的根目录列表：工作区根 + additional_directories 白名单。
+
+    配置的额外目录可扩大文件工具的访问范围（多源合并结果，
+    见 startup.config.get_initial_settings）。
+    """
+    roots = [workspace_root]
+    try:
+        from startup.config import get_initial_settings
+
+        additional = get_initial_settings(workspace_root).permissions.additional_directories
+        for d in additional:
+            p = Path(d).resolve()
+            if p not in roots:
+                roots.append(p)
+    except Exception:
+        pass  # 配置读取失败时仅工作区根
+    return roots
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    """判断 path 是否在 root 内（含 root 本身）。"""
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def resolve_workspace_path(
@@ -46,10 +81,9 @@ def resolve_workspace_path(
     # 相对路径基于工作区根解析，绝对路径原样使用
     resolved = (root / raw).resolve() if not raw.is_absolute() else raw.resolve()
 
-    # 边界校验：normalize 后必须仍在工作区内（拦截 ../../ 穿越）
-    try:
-        resolved.relative_to(root)
-    except ValueError:
+    # 边界校验：normalize 后必须落在任一允许根内（拦截 ../../ 穿越）
+    # 允许根 = 工作区根 + additional_directories 白名单
+    if not any(_is_within(resolved, r) for r in _allowed_roots(root)):
         raise path_outside_workspace_error(input_path, str(root))
 
     if must_exist and not resolved.exists():

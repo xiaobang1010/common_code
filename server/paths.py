@@ -30,9 +30,21 @@ def project_root() -> str:
 
 
 def set_project_root(path: str) -> None:
-    """切换工作区根目录。"""
+    """切换工作区根目录。
+
+    同步更新 startup.bootstrap.state 的 cwd（UserPromptSubmit hooks、
+    engine 构造读取的就是它），保证切换后文件沙箱、Bash、hooks 与 UI
+    指向同一工作区，避免三处根分叉。
+    """
     global _project_root_value
     _project_root_value = path
+    try:
+        from startup.bootstrap.state import set_cwd_state
+
+        set_cwd_state(path)
+    except Exception:
+        # 状态同步失败不阻断切换
+        pass
 
 
 def is_within_root(target: str, root: str) -> bool:

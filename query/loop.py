@@ -54,11 +54,66 @@ def _project_wing_name() -> str:
 
     用路径哈希保证同名不同路径的项目互不串味，显示名保留 basename。
     注入/摄取/中途召回统一走这个命名，口径一致。
+    根目录统一读 server.paths.project_root()（工作区切换后已更新），
+    不使用进程 cwd（切换后不更新，会导致记忆归属错误的工作区）。
     """
-    cwd = os.getcwd()
-    name = os.path.basename(cwd)
-    digest = hashlib.sha1(os.path.abspath(cwd).encode("utf-8")).hexdigest()[:12]
+    from server.paths import project_root
+
+    root = project_root()
+    name = os.path.basename(root)
+    digest = hashlib.sha1(os.path.abspath(root).encode("utf-8")).hexdigest()[:12]
     return f"{name}:{digest}"
+
+
+# git 分支缓存：workspace 路径 → 分支（切换工作区后按新路径重新读取）
+_branch_cache: dict[str, str] = {}
+
+
+def _current_git_branch(root: str) -> str:
+    """读取工作区当前 git 分支，失败返回空串；按工作区缓存避免每轮跑 git。"""
+    cached = _branch_cache.get(root)
+    if cached is not None:
+        return cached
+    branch = ""
+    try:
+        import subprocess
+
+        result = subprocess.run(
+            ["git", "-C", root, "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode == 0:
+            branch = result.stdout.strip()
+    except Exception:
+        branch = ""
+    _branch_cache[root] = branch
+    return branch
+
+
+def _build_project_info() -> str:
+    """构造注入系统提示词的工作区信息段。
+
+    让 agent 明确知晓当前工作区与访问边界（工作区根、git 分支、
+    额外允许目录），不必靠 pwd/试错推断；随会话动态构建。
+    """
+    from server.paths import project_root
+
+    root = project_root()
+    lines = [f"当前工作区根目录: {root}"]
+    branch = _current_git_branch(root)
+    if branch:
+        lines.append(f"当前 Git 分支: {branch}")
+    # 额外允许目录（additional_directories 多源合并结果）
+    try:
+        from pathlib import Path as _Path
+        from startup.config import get_initial_settings
+
+        additional = get_initial_settings(_Path(root)).permissions.additional_directories
+        if additional:
+            lines.append(f"额外允许目录: {', '.join(additional)}")
+    except Exception:
+        pass  # 配置读取失败不影响注入
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -489,7 +544,9 @@ async def query_loop(
         # ---- 3. 构建 API 请求 ----
         from prompts import build_system_messages, get_system_prompt_sections
 
-        sections = engine_config.system_prompt_sections or get_system_prompt_sections()
+        sections = engine_config.system_prompt_sections or get_system_prompt_sections(
+            project_info=_build_project_info()
+        )
         system_messages = build_system_messages(sections)
 
         if system_context:
