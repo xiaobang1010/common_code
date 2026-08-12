@@ -472,6 +472,9 @@ function SessionList({
             <div style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>
               还没有打开任何工作区
             </div>
+            <div style={{ color: 'var(--text-tertiary)', fontSize: '11px', lineHeight: 1.6 }}>
+              打开一个项目后，AI 会在其中读代码、改文件、跑命令
+            </div>
             <button
               onClick={onOpenWorkspace}
               style={{

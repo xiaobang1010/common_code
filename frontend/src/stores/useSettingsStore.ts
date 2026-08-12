@@ -1,6 +1,6 @@
 // 设置面板的全局状态 store
 // 持有五区需要的数据，提供刷新 action 和"设置变更广播"
-// useChat/StatusBar 订阅 modelVersion，变化时触发 fetchState 刷新显示
+// 订阅 modelVersion，变化时触发 fetchState 刷新显示
 
 import { create } from 'zustand'
 import {
@@ -45,7 +45,7 @@ interface SettingsState {
   error: string
 
   // 设置变更版本号：每次 LLM 配置或供应商变更后 +1
-  // useChat/StatusBar 订阅它，变化时触发 fetchState 刷新 model 显示
+  // 订阅它，变化时触发 fetchState 刷新 model 显示
   modelVersion: number
 
   // 刷新各分区

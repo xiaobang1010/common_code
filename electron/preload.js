@@ -15,5 +15,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
   // 选择目录对话框，返回选中的目录路径或 null
-  selectDirectory: () => ipcRenderer.invoke('dialog:selectDirectory')
+  selectDirectory: () => ipcRenderer.invoke('dialog:selectDirectory'),
+  // 调试入口（溢出菜单使用）：菜单栏隐藏后的重载/DevTools 通道
+  reload: () => ipcRenderer.send('window:reload'),
+  toggleDevTools: () => ipcRenderer.send('window:toggleDevTools')
 })

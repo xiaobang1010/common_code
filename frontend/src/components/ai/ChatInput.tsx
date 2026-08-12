@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import type { PermissionRequest, QuestionRequest } from '../../stores/useChatStore'
+import { useChatStore } from '../../stores/useChatStore'
 import { llmApi, type PermissionMode, type CustomLLMProviderInfo } from '../../api/client'
 import { useSettingsStore } from '../../stores/useSettingsStore'
 import QuestionCard from './QuestionCard'
@@ -52,6 +53,9 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
   // modelVersion 来自 store，外部（如设置面板）切换模型时会变化，触发重新拉取供应商列表
   const modelVersion = useSettingsStore(s => s.modelVersion)
   const notifyModelChanged = useSettingsStore(s => s.notifyModelChanged)
+  // 状态信息（原状态栏并入输入区）：上下文/cost 订阅，模型展示复用下方切换按钮
+  const tokenUsage = useChatStore(s => s.tokenUsage)
+  const totalCost = useChatStore(s => s.totalCost)
   // 供应商列表和当前激活的供应商/模型
   const [providers, setProviders] = useState<CustomLLMProviderInfo[]>([])
   const [activeProvider, setActiveProvider] = useState<string | null>(null)
@@ -168,7 +172,7 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
     }
   }
 
-  // 切换模型：调用激活接口 -> 刷新本地状态 -> 广播变更让 StatusBar 更新
+  // 切换模型：调用激活接口 -> 刷新本地状态 -> 广播变更触发 fetchState 更新
   const handleModelSelect = async (providerId: string, modelId: string) => {
     // 点的就是当前激活项，直接关闭菜单
     if (providerId === activeProvider && modelId === activeModel) {
@@ -184,7 +188,7 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
       setProviders(data.providers)
       setActiveProvider(data.active_provider)
       setActiveModel(data.active_model)
-      // 广播变更，让 StatusBar 等组件更新显示
+      // 广播变更，触发 fetchState 等更新显示
       notifyModelChanged()
     } catch {
       // 切换失败，重新拉取恢复正确状态
@@ -719,6 +723,18 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
                 </div>
               </div>
             )}
+            {/* 状态信息（原状态栏并入输入区）：上下文 / 缓存 / cost */}
+            <span
+              style={{
+                fontSize: '9px',
+                color: 'var(--text-tertiary)',
+                fontFamily: 'var(--font-mono)',
+                letterSpacing: '0.3px',
+                marginRight: '8px',
+              }}
+            >
+              上下文 {tokenUsage.last_prompt_tokens.toLocaleString()} · 缓存 {tokenUsage.last_cache_creation.toLocaleString()} · ${totalCost.toFixed(4)}
+            </span>
             {/* 保留原来的快捷键提示，更小字体 */}
             <span
               style={{

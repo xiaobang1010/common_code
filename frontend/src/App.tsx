@@ -2,8 +2,8 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import Sidebar from './components/Sidebar'
 import EditorArea, { type EditorAreaHandle } from './components/EditorArea'
 import AIPanel from './components/AIPanel'
+import TitleBar from './components/TitleBar'
 import InspectorPanel, { type CardId, type PanelMode } from './components/inspector/InspectorPanel'
-import StatusBar from './components/StatusBar'
 import Resizer from './components/Resizer'
 import SettingsModal from './components/settings/SettingsModal'
 import WorkspaceSelector from './components/ai/WorkspaceSelector'
@@ -270,6 +270,29 @@ function App() {
         overflow: 'hidden',
       }}
     >
+      {/* 自绘标题栏：拖拽窗口 + 工作区/分支选择 + 业务图标 + 溢出菜单（原 AIPanel 工具条上提合并） */}
+      <TitleBar
+        workspaceSelector={
+          <WorkspaceSelector
+            currentWorkspace={sessions.currentWorkspace}
+            workspaces={sessions.workspaces}
+            onSwitch={handleSwitchWorkspace}
+            onBrowse={handleBrowse}
+          />
+        }
+        branchSelector={
+          <BranchSelector
+            currentBranch={currentBranch}
+            branches={branches}
+            onCheckout={handleCheckout}
+          />
+        }
+        inspectorVisible={inspectorVisible}
+        onToggleInspector={toggleInspector}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onNewSession={handleCreateSession}
+      />
+
       {/* 主体行：会话栏 + AI面板 + 编辑器 + 检查器面板 */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         {/* 会话栏：折叠时不占位，展开时固定宽度 + 可拖拽 */}
@@ -312,25 +335,8 @@ function App() {
         {/* AI 面板：占据剩余空间（主角） */}
         <div style={{ flex: 1, minWidth: 0 }}>
           <AIPanel
-            workspaceSelector={
-              <WorkspaceSelector
-                currentWorkspace={sessions.currentWorkspace}
-                workspaces={sessions.workspaces}
-                onSwitch={handleSwitchWorkspace}
-                onBrowse={handleBrowse}
-              />
-            }
-            branchSelector={
-              <BranchSelector
-                currentBranch={currentBranch}
-                branches={branches}
-                onCheckout={handleCheckout}
-              />
-            }
-            onNewSession={handleCreateSession}
-            inspectorVisible={inspectorVisible}
-            onToggleInspector={toggleInspector}
-            onOpenSettings={() => setSettingsOpen(true)}
+            hasWorkspace={!!sessions.currentWorkspace}
+            onOpenWorkspace={handleOpenWorkspace}
           />
         </div>
 
@@ -370,8 +376,7 @@ function App() {
         )}
       </div>
 
-      {/* 状态栏 */}
-      <StatusBar />
+      {/* 状态信息已并入输入区底部行（ChatInput），无独立状态栏 */}
 
       {/* 设置 Modal */}
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
