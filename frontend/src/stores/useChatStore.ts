@@ -34,6 +34,9 @@ export interface WorkBlock {
   endTime?: number
   // 退出原因：completed / model_error / prompt_too_long / aborted 等
   exitReason?: string
+  // 最近一次后端阶段事件（如 memory_ready / model_requested），
+  // 卡片文案按优先级推导时使用；首 token、工具开始的文案由渲染时推导，不写这里
+  phase?: string
 }
 
 // token 用量
@@ -116,6 +119,11 @@ const hasToolStartedRef = { current: false }
 const pendingContentRef = { current: '' }
 let flushTimer: number | null = null
 
+// 最近一次 SSE 活动时间：任意事件（含 heartbeat）都刷新，仅更新 ref 不触发重渲。
+// 供工作卡片占位形态判断「后端还活着」；UI 文案由组件自己的 1s tick 驱动，
+// 不在每个 heartbeat 上 setState，避免 0.2s 一次的高频重渲
+export const lastActivityAtRef = { current: Date.now() }
+
 interface ChatState {
   // 规范化工作块：id 列表 + id 索引（未变 block 对象引用稳定，局部订阅才能生效）
   blockIds: string[]
@@ -141,14 +149,19 @@ interface ChatState {
 }
 
 export const useChatStore = create<ChatState>((set, get) => {
-  // 更新单个工作块：只替换目标对象，其余 block 引用保持不变
+  // 更新单个工作块：只替换目标对象，其余 block 引用保持不变。
+  // 容错：运行中切换会话后 blocksById 被历史替换，旧流的迟到事件会打到不存在的块，
+  // 此时跳过更新，避免 updater 读 undefined 字段抛错或塞进脏块
   const updateBlock = (id: string, updater: (b: WorkBlock) => WorkBlock) => {
-    set(state => ({
-      blocksById: {
-        ...state.blocksById,
-        [id]: updater(state.blocksById[id]),
-      },
-    }))
+    set(state => {
+      if (!state.blocksById[id]) return {}
+      return {
+        blocksById: {
+          ...state.blocksById,
+          [id]: updater(state.blocksById[id]),
+        },
+      }
+    })
   }
 
   // 立即 flush 缓冲中的流式文本：拼到 finalReply 并更新工作块。
@@ -218,6 +231,9 @@ export const useChatStore = create<ChatState>((set, get) => {
             ],
           }
         })
+      } else if (evt.event_type === 'phase' && evt.content) {
+        // 后端阶段事件：只存最近一次，文案由 WorkBlock 按优先级推导
+        updateBlock(blockId, b => ({ ...b, phase: evt.content }))
       } else if (evt.event_type === 'error') {
         updateBlock(blockId, b => ({
           ...b,
@@ -320,6 +336,8 @@ export const useChatStore = create<ChatState>((set, get) => {
         if (!dataStr) continue
         try {
           const evt: SSEEvent = JSON.parse(dataStr)
+          // 任何事件（含 heartbeat）都算连接活动：只刷新 ref，不触发重渲
+          lastActivityAtRef.current = Date.now()
           handleSSEEvent(evt)
         } catch {
           // 解析失败跳过
@@ -335,6 +353,8 @@ export const useChatStore = create<ChatState>((set, get) => {
     pendingReasoningRef.current = ''
     hasToolStartedRef.current = false
     currentBlockId.current = id
+    // 发送即视为活动起点：连接建立前的等待也从这里起算
+    lastActivityAtRef.current = Date.now()
     set(state => ({
       blockIds: [...state.blockIds, id],
       blocksById: {
@@ -515,6 +535,8 @@ export const useChatStore = create<ChatState>((set, get) => {
         endTime: Date.now(),
         exitReason: 'aborted',
         finalReplyStreaming: false,
+        // 占位阶段中止时既无步骤也无文本，兜底显示「已停止」，不留转圈残留
+        finalReply: b.finalReply || (b.steps.length === 0 ? '已停止' : ''),
         // 运行中的工具步骤标记为已停止
         steps: b.steps.map(s =>
           s.isRunning ? { ...s, isRunning: false, result: s.result || '已停止' } : s

@@ -434,16 +434,21 @@ async def query_loop(
     # skill 列表增量注入追踪（跨轮保持，避免重复注入）
     sent_skills: set[str] = set()
 
-    # 首轮记忆注入：若有启用的记忆插件，注入 L0+L1 上下文或历史记忆
-    if not engine.mutable_messages and user_context is None:
+    # 首轮记忆注入：若有启用的记忆插件，注入 L0+L1 上下文或历史记忆。
+    # 首轮判定用「历史仅含当前这条用户消息」：submitMessage 在进循环前已把用户消息
+    # 追加进历史，原先的「历史为空」在 UI 路径上永远不成立，导致注入从未执行
+    if len(engine.mutable_messages) == 1 and user_context is None:
         try:
             from query.services.memory.registry import get_active_memory
             memory = get_active_memory()
             if memory is not None:
-                # 优先使用 MemoryPalaceProvider 的 wake_up（L0+L1 上下文）
+                # 优先使用 MemoryPalaceProvider 的 wake_up（L0+L1 上下文）。
+                # wake_up 是同步调用，丢到线程池避免阻塞事件循环（心跳、权限桥都在上面）
                 if hasattr(memory, 'wake_up'):
                     project_name = _project_wing_name()
-                    wake_up_text = memory.wake_up(wing=project_name)
+                    wake_up_text = await asyncio.to_thread(
+                        memory.wake_up, wing=project_name,
+                    )
                     if wake_up_text and wake_up_text.strip():
                         user_context = {"记忆上下文": wake_up_text}
                 else:
@@ -455,6 +460,8 @@ async def query_loop(
                         )
                         if mem_text:
                             user_context = {"历史记忆": mem_text}
+                # 记忆准备完成：通知前端展示「已加载上下文」阶段
+                yield StreamEvent(type="phase", content="memory_ready")
         except Exception:
             pass  # 记忆检索失败不中断循环
 
@@ -597,6 +604,9 @@ async def query_loop(
         tool_result_messages: list[dict] = []
 
         # ---- 4. 调用模型（流式） ----
+        # 阶段事件：请求已构建、即将发起模型调用。与空 content 的流开始信号并列保留：
+        # 后者维持流启动语义，本事件承载前端「正在调用模型」文案（每轮循环都会发）
+        yield StreamEvent(type="phase", content="model_requested")
         yield StreamEvent(type="content", content="")  # stream_request_start 信号
 
         content_parts: list[str] = []
