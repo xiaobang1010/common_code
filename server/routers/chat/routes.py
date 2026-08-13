@@ -123,8 +123,10 @@ async def chat_event_stream(prompt: str, session_id: str = ""):
     async def consume_engine():
         """后台任务：消费引擎事件入队，同时累加 token 和成本到 AppState。"""
         try:
+            # user_context 必须传 None：引擎在进循环前已追加用户消息，
+            # 循环里以「user_context 为 None」判定首轮记忆注入，传空字典会导致注入永不执行
             async for ev in engine.submitMessage(
-                prompt, user_context={}, system_context={}
+                prompt, user_context=None, system_context=None
             ):
                 # 拦截 usage 事件，累加 token 和成本到 AppState（和 repl.py 逻辑一致）
                 if isinstance(ev, StreamEvent) and ev.type == "usage" and ev.usage:

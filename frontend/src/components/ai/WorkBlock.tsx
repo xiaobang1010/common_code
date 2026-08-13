@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 // @ts-ignore
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
-import { useChatStore, formatDuration, type WorkBlock, type WorkStep } from '../../stores/useChatStore'
+import { useChatStore, formatDuration, lastActivityAtRef, type WorkBlock, type WorkStep } from '../../stores/useChatStore'
 
 interface Props {
   // 只订阅自己的工作块：流式更新只触发本组件重渲
@@ -263,6 +263,7 @@ const lightMarkdownComponents = {
 function WorkBlockView({ blockId }: Props) {
   // 局部订阅：只监听自己的工作块，其他 block 更新时不重渲
   const block = useChatStore(s => s.blocksById[blockId])
+  const abort = useChatStore(s => s.abort)
   const [expanded, setExpanded] = useState(block?.status === 'running')
   const duration = useDuration(block)
   const isRunning = block?.status === 'running'
@@ -275,7 +276,52 @@ function WorkBlockView({ blockId }: Props) {
     }
   }, [block?.status])
 
+  // 流式结束后延迟约 250ms 再升级完整高亮：流式期间与延迟窗口内保持轻量渲染，
+  // 避免长回复完成瞬间从轻量渲染切到 Prism 高亮的可见跳变
+  const [highlightReady, setHighlightReady] = useState(!block?.finalReplyStreaming)
+  useEffect(() => {
+    if (block?.finalReplyStreaming) {
+      setHighlightReady(false)
+      return
+    }
+    const timer = window.setTimeout(() => setHighlightReady(true), 250)
+    return () => clearTimeout(timer)
+  }, [block?.finalReplyStreaming])
+
   if (!block) return null
+
+  // 卡片显示条件：有工具步骤时始终显示；无步骤时仅在运行态且尚未出文本时显示等待占位。
+  // 首 token 一到（finalReply 非空），占位让位给文本流，不出现「工作中」与文本并存
+  const showCard = block.steps.length > 0 || (isRunning && !block.finalReply)
+
+  // 距上次 SSE 活动（含 heartbeat）的间隔。heartbeat 只证明连接活着、不证明模型有产出，
+  // 文案保持保守，不伪装成进展；由 useDuration 的 1s tick 驱动重算，不额外挂状态更新
+  const idleMs = Date.now() - lastActivityAtRef.current
+
+  // 纯计时文案：占位形态在无任何阶段信号时的兜底
+  const waitText = (() => {
+    const secs = Math.floor(duration / 1000)
+    if (secs > 10) return '响应较慢，可停止后重试'
+    if (secs >= 3) return `等待模型响应 · 已等待 ${formatDuration(duration)}`
+    if (secs >= 1) return '等待模型响应'
+    return '工作中'
+  })()
+
+  // 卡片头部状态文案，按固定优先级推导：
+  // 连接健康 > 流式文本 > 运行中步骤 > 后端 phase > 计时文案。
+  // 连接异常仅在 5s+ 无任何事件时触发，此时覆盖一切阶段文案最诚实
+  const statusText = (() => {
+    if (!isRunning) return `已工作 ${formatDuration(duration)}`
+    if (idleMs > 10000) return '连接异常，可停止后重试'
+    if (idleMs > 5000) return '连接不稳定，仍在等待'
+    if (block.finalReplyStreaming && block.finalReply) return '正在生成回复'
+    if (block.steps.some(s => s.isRunning)) return '正在执行工具'
+    if (block.phase === 'memory_ready') return '已加载上下文'
+    if (block.phase === 'model_requested') return '正在调用模型'
+    return waitText
+  })()
+  // 连接异常时突出停止入口，避免卡片永久转圈
+  const connectionAbnormal = idleMs > 10000
 
   // 退出原因文案
   const exitText = (() => {
@@ -309,8 +355,8 @@ function WorkBlockView({ blockId }: Props) {
         {block.userMessage}
       </div>
 
-      {/* 中间过程工作块卡片（有步骤时才显示） */}
-      {block.steps.length > 0 && (
+      {/* 工作块卡片：运行态即显示（无步骤时是等待占位形态），结束后仅保留有步骤的卡片 */}
+      {showCard && (
         <div
           style={{
             borderRadius: 'var(--radius-md)',
@@ -319,21 +365,21 @@ function WorkBlockView({ blockId }: Props) {
             overflow: 'hidden',
           }}
         >
-          {/* 头部 */}
+          {/* 头部：占位形态（无步骤）只展示状态与计时，不可展开 */}
           <div
-            onClick={() => setExpanded(!expanded)}
+            onClick={block.steps.length > 0 ? () => setExpanded(!expanded) : undefined}
             style={{
               display: 'flex',
               alignItems: 'center',
               gap: '8px',
               padding: '8px 12px',
-              cursor: 'pointer',
+              cursor: block.steps.length > 0 ? 'pointer' : 'default',
               fontSize: '12px',
               fontFamily: 'var(--font-ui)',
               color: 'var(--text-secondary)',
               userSelect: 'none',
               transition: 'background var(--transition-fast)',
-              borderBottom: expanded ? '1px solid var(--border-subtle)' : 'none',
+              borderBottom: expanded && block.steps.length > 0 ? '1px solid var(--border-subtle)' : 'none',
             }}
             onMouseOver={(e) => (e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)')}
             onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
@@ -348,7 +394,7 @@ function WorkBlockView({ blockId }: Props) {
               </svg>
             )}
             <span style={{ fontWeight: 500, color: isRunning ? 'var(--accent)' : 'var(--text-secondary)' }}>
-              {isRunning ? '工作中' : '已工作'} {formatDuration(duration)}
+              {statusText}
             </span>
             {toolCount > 0 && (
               <span style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>
@@ -360,13 +406,45 @@ function WorkBlockView({ blockId }: Props) {
                 · {exitText}
               </span>
             )}
-            <span style={{ marginLeft: 'auto', color: 'var(--text-tertiary)', fontSize: '10px' }}>
-              {expanded ? '▾' : '▸'}
-            </span>
+            {/* 运行中的停止入口：占位与步骤形态共用，点击不触发卡片折叠；连接异常时高亮 */}
+            {isRunning && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  abort()
+                }}
+                style={{
+                  marginLeft: 'auto',
+                  background: 'transparent',
+                  border: `1px solid ${connectionAbnormal ? 'var(--error)' : 'var(--border-subtle)'}`,
+                  borderRadius: 'var(--radius-sm)',
+                  color: connectionAbnormal ? 'var(--error)' : 'var(--text-secondary)',
+                  fontSize: '11px',
+                  padding: '2px 10px',
+                  cursor: 'pointer',
+                  transition: 'border-color var(--transition-fast), color var(--transition-fast)',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = 'var(--error)'
+                  e.currentTarget.style.color = 'var(--error)'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = connectionAbnormal ? 'var(--error)' : 'var(--border-subtle)'
+                  e.currentTarget.style.color = connectionAbnormal ? 'var(--error)' : 'var(--text-secondary)'
+                }}
+              >
+                停止
+              </button>
+            )}
+            {block.steps.length > 0 && (
+              <span style={{ marginLeft: 'auto', color: 'var(--text-tertiary)', fontSize: '10px' }}>
+                {expanded ? '▾' : '▸'}
+              </span>
+            )}
           </div>
 
           {/* 展开后的中间步骤 */}
-          {expanded && (
+          {expanded && block.steps.length > 0 && (
             <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
               {block.steps.map(step => (
                 <ToolStepView key={step.id} step={step} />
@@ -388,8 +466,9 @@ function WorkBlockView({ blockId }: Props) {
             wordBreak: 'break-word',
           }}
         >
-          {block.finalReplyStreaming ? (
-            // 流式期间用轻量渲染（代码块不高亮），完成后切回完整 Markdown + 高亮
+          {block.finalReplyStreaming || !highlightReady ? (
+            // 流式期间与结束后的延迟窗口内用轻量渲染（代码块不高亮），
+            // 窗口结束后切回完整 Markdown + 高亮
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               components={lightMarkdownComponents}
