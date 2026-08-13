@@ -75,6 +75,16 @@ class PalaceManager:
         self.rethink_manager = RethinkManager(chroma_store, self.remember)
         self.forget = ForgetManager(chroma_store, closet_indexer)
 
+        # 模型是懒加载的（首次使用时才在后台线程加载），加载窗口内写入的
+        # 记录会以无向量状态落库。模型加载完成后自动触发一次补嵌，恢复
+        # 这些记录的向量召回能力（回调在 event 置位后触发，此时 available
+        # 已为 True，补嵌期间的新写入自带向量，不会产生新的无向量记录）。
+        from memory.backfill import backfill_missing_embeddings
+
+        embedding_provider.add_loaded_callback(
+            lambda: backfill_missing_embeddings(self.chroma_store, embedding_provider)
+        )
+
     # --- remember 类（存）---
 
     def add_drawer(self, wing: str, room: str, content: str, **kwargs):

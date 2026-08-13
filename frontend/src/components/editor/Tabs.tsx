@@ -1,6 +1,7 @@
 interface Tab {
   path: string
   name: string
+  dirty: boolean
 }
 
 interface TabsProps {
@@ -67,6 +68,18 @@ function Tabs({ tabs, activePath, onSwitch, onClose }: TabsProps) {
             }}
           >
             <span style={{ fontWeight: active ? 500 : 400 }}>{tab.name}</span>
+            {tab.dirty && (
+              <span
+                title="未保存"
+                style={{
+                  width: '6px',
+                  height: '6px',
+                  borderRadius: '50%',
+                  background: 'var(--accent)',
+                  flexShrink: 0,
+                }}
+              />
+            )}
             <button
               onClick={(e) => {
                 e.stopPropagation()

@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { filesApi } from '../../api/client'
 
 // 文件列表接口返回的单项
 interface FileItem {
@@ -140,22 +141,70 @@ function FileTree({ onFileOpen }: FileTreeProps) {
   const [rootItems, setRootItems] = useState<FileItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [treeVersion, setTreeVersion] = useState(0)
+  const [creating, setCreating] = useState<'file' | 'dir' | null>(null)
+  const [createValue, setCreateValue] = useState('')
+  const [createError, setCreateError] = useState('')
+
+  const loadRoot = useCallback(async () => {
+    try {
+      const res = await fetch('/api/files/list?path=.')
+      const data = await res.json()
+      setRootItems(data.items || [])
+      setError('')
+    } catch (e) {
+      setError('加载失败')
+      console.error(e)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
 
   useEffect(() => {
-    const loadRoot = async () => {
+    loadRoot()
+  }, [loadRoot])
+
+  // 订阅文件变更事件：AI 写盘后刷新文件树；断线重连时也刷新一次兜底
+  useEffect(() => {
+    const es = new EventSource('/api/files/events')
+    const refresh = () => void loadRoot()
+    es.onopen = refresh
+    es.onmessage = (e) => {
       try {
-        const res = await fetch('/api/files/list?path=.')
-        const data = await res.json()
-        setRootItems(data.items || [])
-      } catch (e) {
-        setError('加载失败')
-        console.error(e)
-      } finally {
-        setLoading(false)
+        const data = JSON.parse(e.data)
+        if (data.type === 'file_changed') refresh()
+      } catch {
+        // 忽略无法解析的事件
       }
     }
-    loadRoot()
-  }, [])
+    return () => es.close()
+  }, [loadRoot])
+
+  // 新建文件/目录：弹出内联输入框
+  const startCreate = (type: 'file' | 'dir') => {
+    setCreating(type)
+    setCreateValue('')
+    setCreateError('')
+  }
+
+  const confirmCreate = async () => {
+    const path = createValue.trim()
+    const type = creating
+    if (!path || !type) return
+    try {
+      await filesApi.create(path, type)
+      setCreating(null)
+      setCreateValue('')
+      // 重建文件树（重置展开态但保证看到新文件）
+      setTreeVersion((v) => v + 1)
+      await loadRoot()
+      if (type === 'file') {
+        onFileOpen(path)
+      }
+    } catch (e) {
+      setCreateError((e as Error).message || '创建失败')
+    }
+  }
 
   if (loading) {
     return (
@@ -172,10 +221,109 @@ function FileTree({ onFileOpen }: FileTreeProps) {
   }
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: '6px 0' }}>
-      {rootItems.map((item) => (
-        <FileTreeNode key={item.path} item={item} depth={0} onFileOpen={onFileOpen} />
-      ))}
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      {/* 顶部新建入口 */}
+      <div
+        style={{
+          display: 'flex',
+          gap: '6px',
+          padding: '8px',
+          borderBottom: '1px solid var(--border-subtle)',
+        }}
+      >
+        <button
+          onClick={() => startCreate('file')}
+          title="新建文件"
+          style={{
+            flex: 1,
+            border: '1px solid var(--border)',
+            background: 'transparent',
+            color: 'var(--text-secondary)',
+            cursor: 'pointer',
+            fontSize: '12px',
+            fontFamily: 'var(--font-ui)',
+            padding: '4px 0',
+            borderRadius: 'var(--radius-sm)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '4px',
+          }}
+        >
+          <FileIcon color="var(--text-secondary)" />
+          新建文件
+        </button>
+        <button
+          onClick={() => startCreate('dir')}
+          title="新建目录"
+          style={{
+            flex: 1,
+            border: '1px solid var(--border)',
+            background: 'transparent',
+            color: 'var(--text-secondary)',
+            cursor: 'pointer',
+            fontSize: '12px',
+            fontFamily: 'var(--font-ui)',
+            padding: '4px 0',
+            borderRadius: 'var(--radius-sm)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '4px',
+          }}
+        >
+          <FolderIcon open={false} />
+          新建目录
+        </button>
+      </div>
+
+      {/* 新建输入框 */}
+      {creating && (
+        <div style={{ padding: '0 8px 8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          <input
+            autoFocus
+            value={createValue}
+            onChange={(e) => setCreateValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void confirmCreate()
+              if (e.key === 'Escape') setCreating(null)
+            }}
+            placeholder={creating === 'file' ? '相对路径，如 src/foo.py' : '相对路径，如 src/utils'}
+            style={{
+              border: '1px solid var(--border)',
+              background: 'var(--bg-elevated)',
+              color: 'var(--text-primary)',
+              fontSize: '12px',
+              fontFamily: 'var(--font-ui)',
+              padding: '5px 8px',
+              borderRadius: 'var(--radius-sm)',
+              outline: 'none',
+            }}
+          />
+          <div style={{ display: 'flex', gap: '6px' }}>
+            <button
+              onClick={() => void confirmCreate()}
+              style={{ padding: '3px 10px', cursor: 'pointer', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 'var(--radius-sm)', fontSize: '12px' }}
+            >
+              确定
+            </button>
+            <button
+              onClick={() => setCreating(null)}
+              style={{ padding: '3px 10px', cursor: 'pointer', background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', fontSize: '12px' }}
+            >
+              取消
+            </button>
+          </div>
+          {createError && <div style={{ color: 'var(--error)', fontSize: '12px' }}>{createError}</div>}
+        </div>
+      )}
+
+      {/* 文件树列表（treeVersion 变化时重建，保证新建后可见） */}
+      <div key={treeVersion} style={{ flex: 1, overflow: 'auto', padding: '6px 0' }}>
+        {rootItems.map((item) => (
+          <FileTreeNode key={item.path} item={item} depth={0} onFileOpen={onFileOpen} />
+        ))}
+      </div>
     </div>
   )
 }

@@ -17,6 +17,27 @@ CHROMA_DIR = Path.home() / ".agent" / "memory" / "chroma"
 # Collection 名称
 COLLECTION_NAME = "drawers"
 
+# 无向量记录标记：chromadb 1.5.9 实测 `embeddings=[None]` 会抛 ValueError，
+# 省略 embeddings 又会被默认 embedding function 自动生成向量，无法表达"无向量"。
+# 因此无向量记录用零向量占位 + metadata 标记，query 时按标记排除。
+_NO_EMBEDDING_KEY = "_no_embedding"
+# 占位向量维度：与 Jasper 截断后输出维度一致（384），保证与 collection 维度匹配
+_PLACEHOLDER_DIM = 384
+
+
+def _mark_if_missing(embedding, metadata: dict) -> tuple[list[float], dict]:
+    """embedding 为 None 时换成零向量占位并附加标记，否则标记为有向量。"""
+    if embedding is None:
+        return [0.0] * _PLACEHOLDER_DIM, {**metadata, _NO_EMBEDDING_KEY: True}
+    return embedding, {**metadata, _NO_EMBEDDING_KEY: False}
+
+
+def _merge_where(base: dict | None, extra: dict) -> dict:
+    """合并 where 条件：base 为空时直接用 extra，否则用 $and 组合。"""
+    if not base:
+        return extra
+    return {"$and": [base, extra]}
+
 
 def _sanitize_metadata(metadata: dict) -> dict:
     """清理元数据，确保所有值都是 ChromaDB 支持的类型。
@@ -83,13 +104,18 @@ class ChromaStore:
         self,
         drawer_id: str,
         content: str,
-        embedding: list[float],
+        embedding: list[float] | None,
         metadata: dict,
     ) -> bool:
-        """将单条文档、向量、元数据原子写入 ChromaDB。"""
+        """将单条文档、向量、元数据原子写入 ChromaDB。
+
+        embedding 为 None 时（模型不可用）用零向量占位并附加
+        _no_embedding 标记，query 时被排除，待模型就绪后补嵌。
+        """
         if not self._available:
             return False
         try:
+            embedding, metadata = _mark_if_missing(embedding, metadata)
             self._collection.upsert(
                 ids=[drawer_id],
                 documents=[content],
@@ -105,18 +131,24 @@ class ChromaStore:
         self,
         ids: list[str],
         contents: list[str],
-        embeddings: list[list[float]],
+        embeddings: list[list[float] | None],
         metadatas: list[dict],
     ) -> bool:
-        """批量 upsert（原子操作）。"""
+        """批量 upsert（原子操作）。None 向量处理同 upsert_drawer。"""
         if not self._available:
             return False
         try:
+            filled_embeddings: list[list[float]] = []
+            filled_metadatas: list[dict] = []
+            for embedding, metadata in zip(embeddings, metadatas):
+                emb, meta = _mark_if_missing(embedding, metadata)
+                filled_embeddings.append(emb)
+                filled_metadatas.append(meta)
             self._collection.upsert(
                 ids=ids,
                 documents=contents,
-                embeddings=embeddings,
-                metadatas=[_sanitize_metadata(m) for m in metadatas],
+                embeddings=filled_embeddings,
+                metadatas=[_sanitize_metadata(m) for m in filled_metadatas],
             )
             return True
         except Exception as e:
@@ -137,10 +169,15 @@ class ChromaStore:
         if not self._available:
             return []
         try:
+            # 排除无向量占位记录，避免零向量污染检索结果。
+            # 注意用 $ne: True 而不是 False：改造前写入的存量记录没有
+            # _no_embedding 键，where {键: False} 不会命中缺键记录，
+            # 会误伤全部历史记忆；$ne 写法能同时命中缺键旧记录与有向量新记录。
+            full_where = _merge_where(where, {_NO_EMBEDDING_KEY: {"$ne": True}})
             result = self._collection.query(
                 query_embeddings=[query_embedding],
                 n_results=n_results,
-                where=where,
+                where=full_where,
                 include=["documents", "metadatas", "distances"],
             )
             # ChromaDB query 返回嵌套 list（支持多查询），取第一个查询结果
@@ -192,6 +229,67 @@ class ChromaStore:
         except Exception as e:
             logger.warning("get_drawer 失败: %s", e)
             return None
+
+    def get_missing_embeddings(self, limit: int = 1000) -> list[dict]:
+        """获取无向量记录（_no_embedding 标记为 True），用于加载完成后补嵌。
+
+        Returns:
+            [{"id": ..., "content": ..., "metadata": ...}, ...]
+        """
+        if not self._available:
+            return []
+        try:
+            result = self._collection.get(
+                where={_NO_EMBEDDING_KEY: True},
+                limit=limit,
+                include=["documents", "metadatas"],
+            )
+            ids_list = result.get("ids", [])
+            documents_list = result.get("documents", [])
+            metadatas_list = result.get("metadatas", [])
+
+            results: list[dict] = []
+            for i, drawer_id in enumerate(ids_list):
+                results.append(
+                    {
+                        "id": drawer_id,
+                        "content": documents_list[i] if i < len(documents_list) else "",
+                        "metadata": metadatas_list[i] if i < len(metadatas_list) else {},
+                    }
+                )
+            return results
+        except Exception as e:
+            logger.warning("get_missing_embeddings 失败: %s", e)
+            return []
+
+    def update_embeddings(
+        self,
+        ids: list[str],
+        embeddings: list[list[float]],
+        metadatas: list[dict],
+    ) -> bool:
+        """给已有记录补挂向量并更新元数据（清除 _no_embedding 标记）。
+
+        Args:
+            ids: 记录 id 列表
+            embeddings: 与 ids 等长的向量列表（不含 None，调用方已过滤）
+            metadatas: 与 ids 等长的元数据列表（调用方需清除 _no_embedding 标记）
+
+        Returns:
+            是否全部成功
+        """
+        if not self._available or not ids:
+            return False
+        try:
+            self._collection.update(
+                ids=ids,
+                embeddings=embeddings,
+                metadatas=[_sanitize_metadata(m) for m in metadatas],
+            )
+            return True
+        except Exception as e:
+            logger.warning("update_embeddings 失败: %s", e)
+            return False
 
     def get_drawers_by_ids(self, drawer_ids: list[str]) -> list[dict]:
         """批量按 ID 获取。"""

@@ -394,3 +394,64 @@ export const gitApi = {
   checkout: (branch: string) =>
     apiPost<{ ok: boolean; branch: string }>('/api/git/checkout', { branch }),
 }
+
+// ---------------------------------------------------------------------------
+// 文件读写
+// ---------------------------------------------------------------------------
+
+/** 读文件返回（含一致性基线） */
+export interface FileReadResult {
+  content: string
+  language: string
+  mtime: number
+  size: number
+  editable: boolean
+}
+
+/** 写文件成功返回 */
+export interface FileWriteResult {
+  path: string
+  mtime: number
+  size: number
+}
+
+/** 写文件冲突详情（409） */
+export interface FileConflict {
+  error: 'file_modified'
+  current_mtime: number
+  current_size: number
+}
+
+/** 写文件错误：带 HTTP 状态码与冲突详情 */
+export interface FileWriteError extends Error {
+  status: number
+  conflict?: FileConflict
+}
+
+/** 文件读写接口 */
+export const filesApi = {
+  read: (path: string) =>
+    apiGet<FileReadResult>(`/api/files/read?path=${encodeURIComponent(path)}`),
+  create: (path: string, type: 'file' | 'dir') =>
+    apiPost<{ path: string; type: string }>('/api/files/create', { path, type }),
+  write: async (body: {
+    path: string
+    content: string
+    base_mtime?: number
+    base_size?: number
+  }): Promise<FileWriteResult> => {
+    const res = await fetch('/api/files/write', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const json = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      const err = new Error(json.error || `写文件失败：${res.status}`) as FileWriteError
+      err.status = res.status
+      if (res.status === 409) err.conflict = json as FileConflict
+      throw err
+    }
+    return json as FileWriteResult
+  },
+}

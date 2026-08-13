@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import logging
 import struct
+import threading
 from pathlib import Path
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -32,14 +34,84 @@ class JasperEmbeddingProvider:
 
     处理流程：
     1. 检查模型是否已下载（不触发下载）
-    2. 用 sentence-transformers 加载已下载的模型
+    2. 首次使用时才用 sentence-transformers 加载模型（懒加载，避免拖慢启动）
     3. 输出 2048 维原始向量 -> Matryoshka 截断到 384 维 -> L2 归一化
     """
 
     def __init__(self) -> None:
         self._model = None
         self._available = False
-        self._load_model()
+        # 是否已启动加载线程：启动后不再重复启动，加载失败也不重试（持久降级）
+        self._load_started = False
+        # 加载完成事件：成功失败都会置位。承载 happens-before（读方通过
+        # is_set() 保证能看到后台线程对 _available 的写入），成功与否看 _available
+        self._loaded_event = threading.Event()
+        # 加载成功后的回调（如补嵌），加载线程遍历前对列表做快照
+        self._on_loaded_callbacks: list[Callable[[], None]] = []
+        # 加载状态锁：保证只启动一个加载线程，回调注册与启动互斥
+        self._load_lock = threading.Lock()
+        # 加载线程引用（测试用 join）
+        self._load_thread: threading.Thread | None = None
+
+    def _ensure_loading(self) -> None:
+        """首次访问时启动后台加载线程，立即返回不阻塞。"""
+        if self._load_started or self._loaded_event.is_set():
+            return
+        with self._load_lock:
+            if self._load_started or self._loaded_event.is_set():
+                return
+            self._load_started = True
+            self._load_thread = threading.Thread(
+                target=self._load_worker,
+                name="jasper-embedding-loader",
+                daemon=True,
+            )
+            self._load_thread.start()
+
+    def _load_worker(self) -> None:
+        """后台加载线程体。
+
+        顺序是关键：加载成功置 _available=True -> finally 中置 _loaded_event
+        （对外宣告"加载结束"）-> event 置位后、成功的前提下才触发 on_loaded
+        回调。这样回调（补嵌）执行期间 available 已对外为 True，新写入自带
+        向量，不会产生新的无向量记录。
+        """
+        success = False
+        try:
+            self._load_model()
+            success = self._available
+        finally:
+            self._loaded_event.set()
+        if success:
+            for callback in list(self._on_loaded_callbacks):
+                try:
+                    callback()
+                except Exception as e:
+                    logger.warning("on_loaded 回调执行失败: %s", e)
+
+    def add_loaded_callback(self, callback: Callable[[], None]) -> None:
+        """注册加载完成回调。
+
+        若模型已加载完成（event 已置位）则立即同步调用；否则追加进列表，
+        由加载线程在成功后调用。加载线程遍历前对列表做快照，与注册无竞态。
+        """
+        if self._loaded_event.is_set():
+            callback()
+            return
+        with self._load_lock:
+            if self._loaded_event.is_set():
+                callback()
+                return
+            self._on_loaded_callbacks.append(callback)
+
+    def wait_loaded(self, timeout: float | None = None) -> bool:
+        """等待模型加载完成（成功或失败），返回是否成功加载。
+
+        供测试同步与外部等待模型就绪：加载中触发加载，完成后返回结果。
+        """
+        self._ensure_loading()
+        self._loaded_event.wait(timeout)
+        return self._available
 
     def _load_model(self) -> None:
         """加载已下载的 Jasper 模型。不触发下载。"""
@@ -80,8 +152,18 @@ class JasperEmbeddingProvider:
 
     @property
     def available(self) -> bool:
-        """嵌入是否可用。"""
-        return self._available
+        """嵌入是否可用（首次访问触发后台加载）。
+
+        event 只保证可见性（happens-before），成功与否看 _available：
+        加载失败时 event 置位但 _available 为 False，对外仍为不可用。
+        """
+        self._ensure_loading()
+        return self._loaded_event.is_set() and self._available
+
+    @property
+    def loading(self) -> bool:
+        """是否正在加载中。纯状态查询，不触发加载。"""
+        return self._load_started and not self._loaded_event.is_set()
 
     @property
     def model_name(self) -> str:
@@ -116,6 +198,7 @@ class JasperEmbeddingProvider:
         Returns:
             384 维归一化向量列表，不可用时返回 None
         """
+        self._ensure_loading()
         if not self._available or not text:
             return None
 
@@ -132,6 +215,7 @@ class JasperEmbeddingProvider:
         Returns:
             向量列表，不可用的条目为 None
         """
+        self._ensure_loading()
         if not self._available:
             return [None] * len(texts)
 
