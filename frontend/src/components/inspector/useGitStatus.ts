@@ -47,9 +47,22 @@ export function useGitStatus(): GitStatusData | null {
 
     fetchStatus()
     const timer = setInterval(fetchStatus, 10000)
+
+    // 文件变更事件到达时即时刷新 git 状态，不必被动等 10 秒轮询
+    const es = new EventSource('/api/files/events')
+    es.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data)
+        if (data.type === 'file_changed') void fetchStatus()
+      } catch {
+        // 忽略无法解析的事件
+      }
+    }
+
     return () => {
       cancelled = true
       clearInterval(timer)
+      es.close()
     }
   }, [])
 

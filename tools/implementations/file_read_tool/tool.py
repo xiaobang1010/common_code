@@ -28,11 +28,11 @@ FILE_READ_PROMPT = """\
 
 使用说明：
 - file_path 支持绝对路径或相对工作区的路径
-- 默认从文件开头读取全部内容
-- 可以指定 offset（起始行号）和 limit（读取行数）来读取大文件的特定部分
+- 默认只读取前 2000 行；文件更大时需用 offset/limit 分段读取
+- offset 为起始行号（从 1 开始），limit 为读取行数
 - 结果使用 cat -n 格式，行号从 1 开始
 - 此工具只能读取文件，不能读取目录
-- 超过 256KB 的文件必须分段读取
+- 返回的 [文件基线] mtime/size 需在后续 Write/Edit 覆盖该文件时作为 base_mtime/base_size 回传
 """
 
 
