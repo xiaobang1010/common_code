@@ -72,6 +72,28 @@ class MemoryPalaceProvider:
         except Exception as e:
             logger.warning("KnowledgeGraph 初始化失败: %s", e)
 
+    # --- 记忆功能开关透传（feature API 使用）---
+
+    def unload(self) -> None:
+        """释放 embedding 模型内存（透传 PalaceManager 的 provider）。"""
+        provider = self.palace.embedding_provider
+        if provider is not None and hasattr(provider, "unload"):
+            provider.unload()
+
+    def embedding_status(self) -> dict:
+        """只读状态快照 {loading, available}（透传，不触发加载）。"""
+        provider = self.palace.embedding_provider
+        if provider is None or not hasattr(provider, "status_snapshot"):
+            return {"loading": False, "available": False}
+        loading, available = provider.status_snapshot()
+        return {"loading": loading, "available": available}
+
+    def start_loading(self) -> None:
+        """触发 embedding 模型后台加载并立即返回（透传 wait_loaded(timeout=0)）。"""
+        provider = self.palace.embedding_provider
+        if provider is not None and hasattr(provider, "wait_loaded"):
+            provider.wait_loaded(timeout=0)
+
     # --- MemoryProvider 协议实现 (async) ---
 
     async def store(self, session_id: str, key: str, content: str) -> None:

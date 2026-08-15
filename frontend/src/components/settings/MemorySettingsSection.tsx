@@ -4,7 +4,7 @@
 import { useEffect, useState } from 'react'
 import { memoryApi } from '../../api/client'
 import { useSettingsStore } from '../../stores/useSettingsStore'
-import { Select, SettingSection, SettingRow, StatusMessage } from '../ui'
+import { Select, SettingSection, SettingRow, StatusMessage, Toggle } from '../ui'
 
 function KGEntities() {
   const [entities, setEntities] = useState<string[]>([])
@@ -122,9 +122,10 @@ function KGEntities() {
 }
 
 function MemorySettingsSection() {
-  const { memoryProviders, activeMemory, refreshMemoryProviders } = useSettingsStore()
+  const { memoryProviders, activeMemory, memoryEnabled, setMemoryEnabled, refreshMemoryProviders } = useSettingsStore()
   const [switching, setSwitching] = useState(false)
   const [clearing, setClearing] = useState(false)
+  const [featureBusy, setFeatureBusy] = useState(false)
   const [sessionId, setSessionId] = useState('default')
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
@@ -134,6 +135,13 @@ function MemorySettingsSection() {
     refreshMemoryProviders()
   }, [refreshMemoryProviders])
 
+  // 挂载时同步记忆功能开关状态（后端 memoryEnabled 的前端镜像）
+  useEffect(() => {
+    memoryApi.feature()
+      .then((f) => setMemoryEnabled(f.enabled))
+      .catch(() => {})
+  }, [setMemoryEnabled])
+
   useEffect(() => {
     if (activeMemory === 'memory-palace') {
       memoryApi.status().then(setPalaceStatus).catch(() => setPalaceStatus(null))
@@ -141,6 +149,24 @@ function MemorySettingsSection() {
       setPalaceStatus(null)
     }
   }, [activeMemory, memoryProviders])
+
+  // 切换记忆功能开关：持久化 + 即时生效，刷新后端列表（两方向都刷新）
+  const handleToggleFeature = async (enabled: boolean) => {
+    setFeatureBusy(true)
+    setError('')
+    setMessage('')
+    try {
+      await memoryApi.setFeature(enabled)
+      setMemoryEnabled(enabled)
+      await refreshMemoryProviders()
+      setMessage(enabled ? '记忆功能已开启，模型后台加载中' : '记忆功能已关闭')
+      setTimeout(() => setMessage(''), 3000)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '切换失败')
+    } finally {
+      setFeatureBusy(false)
+    }
+  }
 
   // 切换激活记忆后端
   const handleSwitch = async (name: string) => {
@@ -177,26 +203,50 @@ function MemorySettingsSection() {
     }
   }
 
-  // 空状态：无记忆后端
+  // 记忆功能开关行（空状态之前渲染，关闭时也能操作）
+  const featureSwitch = (
+    <SettingSection
+      title="记忆功能"
+      description="控制记忆功能的启用状态。关闭时启动不加载向量化模型，省内存省启动时间。"
+    >
+      <SettingRow label="启用记忆功能" description="开启后向量模型后台异步加载，不影响其他功能">
+        <Toggle checked={memoryEnabled} onChange={handleToggleFeature} loading={featureBusy} />
+      </SettingRow>
+    </SettingSection>
+  )
+
+  // 空状态：无记忆后端（默认关闭时后端未注册，需区分"功能关闭"与"未安装"）
   if (memoryProviders.length === 0) {
     return (
-      <div style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--text-tertiary)' }}>
-        <div style={{ fontSize: '32px', marginBottom: '12px' }}>🧠</div>
-        <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
-          未安装任何记忆后端
+      <div>
+        {featureSwitch}
+        <div style={{ padding: '24px 20px', textAlign: 'center', color: 'var(--text-tertiary)' }}>
+          <div style={{ fontSize: '32px', marginBottom: '12px' }}>🧠</div>
+          <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+            {memoryEnabled ? '未安装任何记忆后端' : '记忆功能已关闭'}
+          </div>
+          <div style={{ fontSize: '12px', lineHeight: 1.6, maxWidth: '420px', margin: '0 auto' }}>
+            {memoryEnabled ? (
+              <>
+                记忆插件是 <code style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>memory</code> kind 的插件，
+                在插件目录放 <code style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>memory.py</code>
+                并实现 store/retrieve/search/clear 四个方法即可。
+                没有记忆后端时，对话照常运行，只是不会跨会话保留摘要。
+              </>
+            ) : (
+              '开启后自动加载记忆后端，向量模型将在后台异步加载，不影响其他功能。'
+            )}
+          </div>
         </div>
-        <div style={{ fontSize: '12px', lineHeight: 1.6, maxWidth: '420px', margin: '0 auto' }}>
-          记忆插件是 <code style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>memory</code> kind 的插件，
-          在插件目录放 <code style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>memory.py</code>
-          并实现 store/retrieve/search/clear 四个方法即可。
-          没有记忆后端时，对话照常运行，只是不会跨会话保留摘要。
-        </div>
+        <StatusMessage type="success" message={message} />
+        <StatusMessage type="error" message={error} />
       </div>
     )
   }
 
   return (
     <div>
+      {featureSwitch}
       <SettingSection
         title="记忆后端"
         description="管理记忆存储后端。同一时间只有一个后端激活，切换后立即生效并持久化。"

@@ -236,6 +236,13 @@ export const memoryApi = {
     }),
   status: () =>
     apiGet<{ ok: boolean; status: any }>('/api/memory/status'),
+  /** 记忆功能开关与向量模型加载状态（enabled/loading/available） */
+  feature: () =>
+    apiGet<{ enabled: boolean; loading: boolean; available: boolean }>(
+      '/api/memory/feature'
+    ),
+  setFeature: (enabled: boolean) =>
+    apiPost<{ ok: boolean }>('/api/memory/feature', { enabled }),
   wings: () =>
     apiGet<{ ok: boolean; wings: any[] }>('/api/memory/wings'),
   rooms: (wing: string) =>

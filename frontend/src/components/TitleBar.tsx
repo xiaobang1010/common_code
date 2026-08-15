@@ -1,5 +1,6 @@
-import { useState, useCallback } from 'react'
+import { useState } from 'react'
 import { useChatStore } from '../stores/useChatStore'
+import BrainStatusIcon from './BrainStatusIcon'
 
 interface TitleBarProps {
   workspaceSelector: React.ReactNode
@@ -26,126 +27,38 @@ const OVERLAY_RESERVED = 138
 // macOS 交通灯按钮占位宽度
 const TRAFFIC_LIGHTS_RESERVED = 78
 
-// 溢出菜单项：菜单栏隐藏后的低频入口（重载/DevTools/设置）
-function OverflowMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
-  const [open, setOpen] = useState(false)
-  const toggle = useCallback(() => setOpen((prev) => !prev), [])
-
-  const handleAction = useCallback((action: () => void) => {
-    setOpen(false)
-    action()
-  }, [])
-
-  const electronAPI = (window as unknown as { electronAPI?: { reload?: () => void; toggleDevTools?: () => void } }).electronAPI
+// 设置入口：齿轮按钮，点击直接打开设置面板（原溢出菜单的重载/DevTools/设置
+// 已精简，只保留设置）
+function SettingsButton({ onOpenSettings }: { onOpenSettings: () => void }) {
+  const [hovered, setHovered] = useState(false)
 
   return (
-    <div style={{ position: 'relative' }}>
-      <button
-        onClick={toggle}
-        title="更多"
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          width: '28px',
-          height: '28px',
-          border: open ? '1px solid var(--accent)' : '1px solid var(--border)',
-          borderRadius: 'var(--radius-sm)',
-          background: open ? 'var(--accent-soft)' : 'transparent',
-          color: open ? 'var(--accent)' : 'var(--text-secondary)',
-          cursor: 'pointer',
-          transition: 'all var(--transition-fast)',
-          flexShrink: 0,
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.borderColor = 'var(--accent)'
-          e.currentTarget.style.color = 'var(--accent)'
-        }}
-        onMouseLeave={(e) => {
-          if (!open) {
-            e.currentTarget.style.borderColor = 'var(--border)'
-            e.currentTarget.style.color = 'var(--text-secondary)'
-          }
-        }}
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-          <circle cx="5" cy="12" r="2" />
-          <circle cx="12" cy="12" r="2" />
-          <circle cx="19" cy="12" r="2" />
-        </svg>
-      </button>
-
-      {open && (
-        <>
-          {/* 点击外部关闭 */}
-          <div
-            style={{ position: 'fixed', inset: 0, zIndex: 99 }}
-            onClick={() => setOpen(false)}
-          />
-          <div
-            style={{
-              position: 'absolute',
-              top: '36px',
-              right: '0',
-              zIndex: 100,
-              minWidth: '140px',
-              padding: '4px',
-              backgroundColor: 'var(--bg-elevated)',
-              border: '1px solid var(--border-strong)',
-              borderRadius: 'var(--radius-md)',
-              boxShadow: 'var(--shadow-lg)',
-              display: 'flex',
-              flexDirection: 'column',
-            }}
-          >
-            {electronAPI?.reload && (
-              <button
-                onClick={() => handleAction(() => electronAPI.reload?.())}
-                style={menuItemStyle}
-                onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg-tertiary)')}
-                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-              >
-                重载
-              </button>
-            )}
-            {electronAPI?.toggleDevTools && (
-              <button
-                onClick={() => handleAction(() => electronAPI.toggleDevTools?.())}
-                style={menuItemStyle}
-                onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg-tertiary)')}
-                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-              >
-                开发者工具
-              </button>
-            )}
-            <button
-              onClick={() => handleAction(onOpenSettings)}
-              style={menuItemStyle}
-              onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg-tertiary)')}
-              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-            >
-              设置
-            </button>
-          </div>
-        </>
-      )}
-    </div>
+    <button
+      onClick={onOpenSettings}
+      title="设置"
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: '28px',
+        height: '28px',
+        border: `1px solid ${hovered ? 'var(--accent)' : 'var(--border)'}`,
+        borderRadius: 'var(--radius-sm)',
+        background: hovered ? 'var(--accent-soft)' : 'transparent',
+        color: hovered ? 'var(--accent)' : 'var(--text-secondary)',
+        cursor: 'pointer',
+        transition: 'all var(--transition-fast)',
+        flexShrink: 0,
+      }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+      </svg>
+    </button>
   )
-}
-
-const menuItemStyle: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  padding: '7px 12px',
-  border: 'none',
-  background: 'transparent',
-  color: 'var(--text-primary)',
-  fontSize: '12px',
-  fontFamily: 'var(--font-ui)',
-  textAlign: 'left',
-  cursor: 'pointer',
-  borderRadius: 'var(--radius-sm)',
-  transition: 'background var(--transition-fast)',
 }
 
 // 自绘标题栏：整行是可拖拽区（drag），交互控件标 no-drag
@@ -180,7 +93,7 @@ function TitleBar({
         userSelect: 'none',
       }}
     >
-      {/* 左侧：状态点 + 工作区/分支选择 */}
+      {/* 左侧：状态点 + 记忆图标 + 工作区/分支选择 */}
       <span
         title={isStreaming ? '思考中' : '就绪'}
         style={{
@@ -195,6 +108,8 @@ function TitleBar({
           flexShrink: 0,
         }}
       />
+      {/* 记忆状态图标：暗色=未启用，蓝色脉冲=加载中，蓝色常亮=就绪 */}
+      <BrainStatusIcon />
       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, ...appRegion('no-drag') }}>
         {workspaceSelector}
         {branchSelector}
@@ -303,8 +218,8 @@ function TitleBar({
           </svg>
         </button>
 
-        {/* 溢出菜单：重载/DevTools/设置 */}
-        <OverflowMenu onOpenSettings={onOpenSettings} />
+        {/* 设置入口（齿轮，直接打开设置面板） */}
+        <SettingsButton onOpenSettings={onOpenSettings} />
       </div>
     </div>
   )

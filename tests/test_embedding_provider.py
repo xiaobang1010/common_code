@@ -117,14 +117,18 @@ def test_load_complete_auto_effective(slow_provider):
 def test_callback_fires_after_event_set(slow_provider):
     provider, finish, _ = slow_provider
     observed_available: list[bool] = []
+    callback_done = threading.Event()
 
     def callback():
         # 回调执行时 available 必须已对外为 True（补嵌期间写入自带向量）
         observed_available.append(provider.available)
+        callback_done.set()
 
     provider.add_loaded_callback(callback)
     finish.set()
     assert _join_worker(provider) is True
+    # event 置位与回调执行之间有检查点窗口，等待回调完成再断言
+    assert callback_done.wait(timeout=5)
     assert observed_available == [True]
 
 
