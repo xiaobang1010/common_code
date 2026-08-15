@@ -159,11 +159,11 @@ function QuickOpen({ open, onClose, onOpenFile }: QuickOpenProps) {
                 gap: '8px',
                 padding: '7px 14px',
                 cursor: 'pointer',
-                backgroundColor: i === cursor ? 'var(--accent-soft)' : 'transparent',
+                backgroundColor: i === cursor ? 'var(--selected-bg)' : 'transparent',
                 fontFamily: 'var(--font-ui)',
               }}
             >
-              <span style={{ fontSize: '12px', color: i === cursor ? 'var(--accent)' : 'var(--text-primary)', fontWeight: 500 }}>
+              <span style={{ fontSize: '12px', color: 'var(--text-primary)', fontWeight: 500 }}>
                 {f.name}
               </span>
               <span

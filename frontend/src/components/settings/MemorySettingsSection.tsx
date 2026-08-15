@@ -228,8 +228,8 @@ function MemorySettingsSection() {
           <div style={{ fontSize: '12px', lineHeight: 1.6, maxWidth: '420px', margin: '0 auto' }}>
             {memoryEnabled ? (
               <>
-                记忆插件是 <code style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>memory</code> kind 的插件，
-                在插件目录放 <code style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>memory.py</code>
+                记忆插件是 <code style={{ color: 'var(--code-text)', fontFamily: 'var(--font-mono)' }}>memory</code> kind 的插件，
+                在插件目录放 <code style={{ color: 'var(--code-text)', fontFamily: 'var(--font-mono)' }}>memory.py</code>
                 并实现 store/retrieve/search/clear 四个方法即可。
                 没有记忆后端时，对话照常运行，只是不会跨会话保留摘要。
               </>
@@ -276,13 +276,13 @@ function MemorySettingsSection() {
           <div style={{ padding: '8px 0' }}>
             <div style={{ display: 'flex', gap: '24px', marginBottom: '16px' }}>
               <div>
-                <div style={{ fontSize: '24px', fontWeight: 600, color: 'var(--accent)' }}>
+                <div style={{ fontSize: '24px', fontWeight: 600, color: 'var(--text-primary)' }}>
                   {palaceStatus.status.total_drawers}
                 </div>
                 <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>总抽屉数</div>
               </div>
               <div>
-                <div style={{ fontSize: '24px', fontWeight: 600, color: 'var(--accent)' }}>
+                <div style={{ fontSize: '24px', fontWeight: 600, color: 'var(--text-primary)' }}>
                   {palaceStatus.status.total_wings}
                 </div>
                 <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>Wing 数</div>
@@ -292,7 +292,7 @@ function MemorySettingsSection() {
               <div style={{ fontSize: '12px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
                 {palaceStatus.status.wings.map((w: any) => (
                   <div key={w.name} style={{ marginBottom: '4px' }}>
-                    <span style={{ color: 'var(--accent)' }}>{w.name}</span>
+                    <span style={{ color: 'var(--text-primary)' }}>{w.name}</span>
                     {' '}
                     <span style={{ color: 'var(--text-tertiary)' }}>({w.drawer_count})</span>
                     {w.rooms && w.rooms.length > 0 && (

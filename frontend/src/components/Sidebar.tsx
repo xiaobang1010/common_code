@@ -112,7 +112,7 @@ function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, cu
           flexShrink: 0,
         }}
       >
-        {/* 品牌标识（迁移自原活动栏） */}
+        {/* 品牌标识（迁移自原活动栏）：单色字形小方块，无渐变无彩色 */}
         <div
           style={{
             width: '24px',
@@ -121,12 +121,13 @@ function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, cu
             alignItems: 'center',
             justifyContent: 'center',
             borderRadius: 'var(--radius-sm)',
-            background: 'linear-gradient(135deg, var(--accent), #ff7a45)',
-            color: '#1a1a1a',
+            background: 'var(--bg-elevated)',
+            border: '1px solid var(--border-strong)',
+            color: 'var(--text-primary)',
             fontWeight: 700,
             fontSize: '12px',
             fontFamily: 'var(--font-display)',
-            boxShadow: '0 2px 8px rgba(245, 166, 35, 0.3)',
+            boxShadow: '0 1px 2px rgba(0, 0, 0, 0.3)',
             letterSpacing: '-0.5px',
             flexShrink: 0,
           }}
@@ -164,7 +165,7 @@ function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, cu
           }}
           onMouseEnter={(e) => {
             e.currentTarget.style.background = 'var(--bg-tertiary)'
-            e.currentTarget.style.color = 'var(--accent)'
+            e.currentTarget.style.color = 'var(--text-primary)'
           }}
           onMouseLeave={(e) => {
             e.currentTarget.style.background = 'transparent'
@@ -192,8 +193,8 @@ function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, cu
           title="新建任务 (Ctrl+N)"
           style={entryButtonStyle}
           onMouseEnter={(e) => {
-            e.currentTarget.style.color = 'var(--accent)'
-            e.currentTarget.style.backgroundColor = 'var(--accent-soft)'
+            e.currentTarget.style.color = 'var(--text-primary)'
+            e.currentTarget.style.backgroundColor = 'var(--hover-bg)'
           }}
           onMouseLeave={(e) => {
             e.currentTarget.style.color = 'var(--text-secondary)'
@@ -211,8 +212,8 @@ function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, cu
           title="搜索 (Ctrl+K)"
           style={entryButtonStyle}
           onMouseEnter={(e) => {
-            e.currentTarget.style.color = 'var(--accent)'
-            e.currentTarget.style.backgroundColor = 'var(--accent-soft)'
+            e.currentTarget.style.color = 'var(--text-primary)'
+            e.currentTarget.style.backgroundColor = 'var(--hover-bg)'
           }}
           onMouseLeave={(e) => {
             e.currentTarget.style.color = 'var(--text-secondary)'
@@ -231,8 +232,8 @@ function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, cu
           title="打开工作区"
           style={entryButtonStyle}
           onMouseEnter={(e) => {
-            e.currentTarget.style.color = 'var(--accent)'
-            e.currentTarget.style.backgroundColor = 'var(--accent-soft)'
+            e.currentTarget.style.color = 'var(--text-primary)'
+            e.currentTarget.style.backgroundColor = 'var(--hover-bg)'
           }}
           onMouseLeave={(e) => {
             e.currentTarget.style.color = 'var(--text-secondary)'

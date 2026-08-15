@@ -37,7 +37,7 @@ const ToolStepView = memo(function ToolStepView({ step }: { step: WorkStep }) {
         borderRadius: 'var(--radius-md)',
         backgroundColor: 'var(--bg-base)',
         border: '1px solid var(--border-subtle)',
-        borderLeft: `2px solid ${isError ? 'var(--error)' : isRunning ? 'var(--accent)' : 'var(--success)'}`,
+        borderLeft: `2px solid ${isError ? 'var(--error)' : isRunning ? 'var(--info)' : 'var(--success)'}`,
         overflow: 'hidden',
       }}
     >
@@ -51,7 +51,7 @@ const ToolStepView = memo(function ToolStepView({ step }: { step: WorkStep }) {
           cursor: 'pointer',
           fontSize: '12px',
           fontFamily: 'var(--font-mono)',
-          color: isError ? 'var(--error)' : isRunning ? 'var(--accent)' : 'var(--text-secondary)',
+          color: isError ? 'var(--error)' : isRunning ? 'var(--info)' : 'var(--text-secondary)',
           userSelect: 'none',
           transition: 'background var(--transition-fast)',
         }}
@@ -184,16 +184,24 @@ export const markdownComponents = {
     return (
       <code
         style={{
-          backgroundColor: 'var(--bg-tertiary)',
+          backgroundColor: 'var(--code-bg)',
+          border: '1px solid var(--code-border)',
           padding: '1px 5px',
-          borderRadius: '3px',
+          borderRadius: '4px',
           fontFamily: 'var(--font-mono)',
           fontSize: '12px',
-          color: 'var(--accent)',
+          color: 'var(--code-text)',
         }}
       >
         {children}
       </code>
+    )
+  },
+  a({ children, href }: { children?: React.ReactNode; href?: string }) {
+    return (
+      <a className="markdown-link" href={href}>
+        {children}
+      </a>
     )
   },
   p({ children }: { children?: React.ReactNode }) {
@@ -246,12 +254,13 @@ const lightMarkdownComponents = {
     return (
       <code
         style={{
-          backgroundColor: 'var(--bg-tertiary)',
+          backgroundColor: 'var(--code-bg)',
+          border: '1px solid var(--code-border)',
           padding: '1px 5px',
-          borderRadius: '3px',
+          borderRadius: '4px',
           fontFamily: 'var(--font-mono)',
           fontSize: '12px',
-          color: 'var(--accent)',
+          color: 'var(--code-text)',
         }}
       >
         {children}
@@ -342,12 +351,12 @@ function WorkBlockView({ blockId }: Props) {
           maxWidth: '80%',
           padding: '10px 14px',
           borderRadius: 'var(--radius-lg)',
-          background: 'linear-gradient(135deg, var(--accent), #e89015)',
-          color: '#1a1a1a',
+          background: 'var(--bg-tertiary)',
+          color: 'var(--text-primary)',
           fontSize: '14px',
           lineHeight: 1.6,
           wordBreak: 'break-word',
-          boxShadow: '0 2px 8px rgba(245, 166, 35, 0.2)',
+          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.2)',
           fontWeight: 500,
           whiteSpace: 'pre-wrap',
         }}
@@ -385,7 +394,7 @@ function WorkBlockView({ blockId }: Props) {
             onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
           >
             {isRunning ? (
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--info)" strokeWidth="2" strokeLinecap="round" style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }}>
                 <path d="M21 12a9 9 0 1 1-6.219-8.56" />
               </svg>
             ) : (
@@ -393,7 +402,7 @@ function WorkBlockView({ blockId }: Props) {
                 <path d="M20 6L9 17l-5-5" />
               </svg>
             )}
-            <span style={{ fontWeight: 500, color: isRunning ? 'var(--accent)' : 'var(--text-secondary)' }}>
+            <span style={{ fontWeight: 500, color: isRunning ? 'var(--info)' : 'var(--text-secondary)' }}>
               {statusText}
             </span>
             {toolCount > 0 && (
@@ -489,7 +498,7 @@ function WorkBlockView({ blockId }: Props) {
                 display: 'inline-block',
                 width: '8px',
                 height: '14px',
-                backgroundColor: 'var(--accent)',
+                backgroundColor: 'var(--text-primary)',
                 marginLeft: '2px',
                 verticalAlign: 'text-bottom',
                 animation: 'blink 1s step-end infinite',

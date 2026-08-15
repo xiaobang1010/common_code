@@ -36,7 +36,7 @@ function AIPanel({ hasWorkspace, onOpenWorkspace, currentTaskSessionId }: AIPane
         position: 'relative',
         // 微妙的顶部光晕，让 AI 面板有"主角感"
         boxShadow: isStreaming
-          ? 'inset 0 1px 0 rgba(245, 166, 35, 0.15)'
+          ? 'inset 0 1px 0 rgba(255, 255, 255, 0.06)'
           : 'inset 0 1px 0 rgba(255, 255, 255, 0.02)',
         transition: 'box-shadow 400ms ease',
       }}

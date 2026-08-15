@@ -116,13 +116,14 @@ function SessionItem({
           style={{
             width: '100%',
             padding: '3px 6px',
-            border: '1px solid var(--accent)',
+            border: '1px solid var(--border-strong)',
             borderRadius: 'var(--radius-sm)',
             background: 'var(--bg-base)',
             color: 'var(--text-primary)',
             fontSize: '12px',
             fontFamily: 'var(--font-ui)',
             outline: 'none',
+            boxShadow: '0 0 0 3px var(--focus-ring)',
           }}
         />
       </div>
@@ -141,14 +142,14 @@ function SessionItem({
         borderRadius: 'var(--radius-sm)',
         marginBottom: '1px',
         backgroundColor: isActive
-          ? 'var(--accent-soft)'
+          ? 'var(--selected-bg)'
           : hovered
-            ? 'var(--bg-tertiary)'
+            ? 'var(--hover-bg)'
             : 'transparent',
         transition: 'background var(--transition-fast)',
-        // 当前任务左侧 accent 色边条
+        // 当前任务左侧中性灰边条
         borderLeft: isActive
-          ? '3px solid var(--accent)'
+          ? '3px solid var(--border-strong)'
           : '3px solid transparent',
       }}
     >
@@ -156,11 +157,11 @@ function SessionItem({
       <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
         {/* 运行中转圈 / 置顶图钉 */}
         {isRunning ? (
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-primary)" strokeWidth="2.5" strokeLinecap="round" style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }}>
             <path d="M21 12a9 9 0 1 1-6.219-8.56" />
           </svg>
         ) : session.pinned ? (
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="var(--accent)" style={{ flexShrink: 0 }}>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="var(--text-secondary)" style={{ flexShrink: 0 }}>
             <path d="M16 3l5 5-8 2-4 4-2-2 4-4 2-8z" transform="rotate(45 12 12)" />
           </svg>
         ) : null}
@@ -343,9 +344,9 @@ function WorkspaceGroup({
           cursor: 'pointer',
           borderRadius: 'var(--radius-sm)',
           backgroundColor: isCurrent
-            ? 'var(--accent-soft)'
+            ? 'var(--selected-bg)'
             : headerHovered
-              ? 'var(--bg-tertiary)'
+              ? 'var(--hover-bg)'
               : 'transparent',
           transition: 'background var(--transition-fast)',
           userSelect: 'none',
@@ -358,7 +359,7 @@ function WorkspaceGroup({
             display: 'inline-block',
             width: '14px',
             fontSize: '10px',
-            color: isCurrent ? 'var(--accent)' : 'var(--text-tertiary)',
+            color: isCurrent ? 'var(--text-primary)' : 'var(--text-tertiary)',
             transition: 'transform var(--transition-fast)',
             transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)',
             flexShrink: 0,
@@ -368,7 +369,7 @@ function WorkspaceGroup({
         </span>
         {/* 置顶图钉 + 工作区显示名 */}
         {ws.pinned && (
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="var(--accent)" style={{ flexShrink: 0, marginRight: '2px' }}>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="var(--text-secondary)" style={{ flexShrink: 0, marginRight: '2px' }}>
             <path d="M16 3l5 5-8 2-4 4-2-2 4-4 2-8z" transform="rotate(45 12 12)" />
           </svg>
         )}
@@ -378,7 +379,7 @@ function WorkspaceGroup({
             fontSize: '12px',
             fontFamily: 'var(--font-ui)',
             fontWeight: 600,
-            color: isCurrent ? 'var(--accent)' : 'var(--text-secondary)',
+            color: isCurrent ? 'var(--text-primary)' : 'var(--text-secondary)',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
@@ -481,13 +482,14 @@ function WorkspaceGroup({
                   style={{
                     width: '100%',
                     padding: '3px 6px',
-                    border: '1px solid var(--accent)',
+                    border: '1px solid var(--border-strong)',
                     borderRadius: 'var(--radius-sm)',
                     background: 'var(--bg-base)',
                     color: 'var(--text-primary)',
                     fontSize: '12px',
                     fontFamily: 'var(--font-ui)',
                     outline: 'none',
+                    boxShadow: '0 0 0 3px var(--focus-ring)',
                   }}
                 />
               </div>
@@ -577,9 +579,9 @@ function WorkspaceGroup({
                   justifyContent: 'center',
                 }}
                 onMouseEnter={(e) => {
-                  e.currentTarget.style.borderColor = 'var(--accent)'
-                  e.currentTarget.style.color = 'var(--accent)'
-                  e.currentTarget.style.backgroundColor = 'var(--accent-soft)'
+                  e.currentTarget.style.borderColor = 'var(--border-strong)'
+                  e.currentTarget.style.color = 'var(--text-primary)'
+                  e.currentTarget.style.backgroundColor = 'var(--hover-bg)'
                 }}
                 onMouseLeave={(e) => {
                   e.currentTarget.style.borderColor = 'var(--border)'
@@ -689,10 +691,10 @@ function SessionList({
               onClick={onOpenWorkspace}
               style={{
                 padding: '8px 16px',
-                border: '1px solid var(--accent)',
+                border: '1px solid var(--border-strong)',
                 borderRadius: 'var(--radius-md)',
-                backgroundColor: 'var(--accent-soft)',
-                color: 'var(--accent)',
+                backgroundColor: 'var(--button-primary-bg)',
+                color: 'var(--button-primary-text)',
                 fontSize: '12px',
                 fontFamily: 'var(--font-ui)',
                 fontWeight: 500,
@@ -703,12 +705,10 @@ function SessionList({
                 gap: '6px',
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = 'var(--accent)'
-                e.currentTarget.style.color = '#1a1a1a'
+                e.currentTarget.style.backgroundColor = 'var(--button-primary-bg-hover)'
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = 'var(--accent-soft)'
-                e.currentTarget.style.color = 'var(--accent)'
+                e.currentTarget.style.backgroundColor = 'var(--button-primary-bg)'
               }}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">

@@ -489,7 +489,7 @@ function ProviderCard({
                       background: 'transparent',
                       color: isActivating
                         ? 'var(--text-tertiary)'
-                        : 'var(--accent)',
+                        : 'var(--text-primary)',
                       cursor: isActivating ? 'not-allowed' : 'pointer',
                       fontSize: '11px',
                       padding: '2px 6px',
@@ -902,8 +902,8 @@ function btnStyle(
   if (variant === 'primary') {
     return {
       ...base,
-      backgroundColor: 'var(--accent)',
-      color: '#1a1a1a',
+      backgroundColor: 'var(--button-primary-bg)',
+      color: 'var(--button-primary-text)',
       border: 'none',
       fontWeight: 600,
     }

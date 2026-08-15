@@ -131,7 +131,7 @@ function TerminalToolContent() {
                 color: active ? 'var(--text-primary)' : 'var(--text-tertiary)',
                 backgroundColor: active ? 'var(--bg-base)' : 'transparent',
                 borderRight: '1px solid var(--border-subtle)',
-                borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
+                borderBottom: active ? '2px solid var(--border-strong)' : '2px solid transparent',
                 whiteSpace: 'nowrap',
                 transition: 'all var(--transition-fast)',
                 letterSpacing: '0.5px',
@@ -204,7 +204,7 @@ function TerminalToolContent() {
           }}
           onMouseEnter={(e) => {
             e.currentTarget.style.background = 'var(--bg-tertiary)'
-            e.currentTarget.style.color = 'var(--accent)'
+            e.currentTarget.style.color = 'var(--text-primary)'
           }}
           onMouseLeave={(e) => {
             e.currentTarget.style.background = 'transparent'
@@ -650,7 +650,7 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
                     cursor: 'pointer',
                     color: active ? 'var(--text-primary)' : 'var(--text-tertiary)',
                     backgroundColor: active ? 'var(--bg-secondary)' : 'transparent',
-                    borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
+                    borderBottom: active ? '2px solid var(--border-strong)' : '2px solid transparent',
                     transition: 'all var(--transition-fast)',
                     position: 'relative',
                   }}
@@ -720,7 +720,7 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
               style={{
                 border: 'none',
                 background: 'transparent',
-                color: activeDirty ? 'var(--accent)' : 'var(--text-tertiary)',
+                color: activeDirty ? 'var(--text-primary)' : 'var(--text-tertiary)',
                 cursor: activeDirty && !activeTab.saving ? 'pointer' : 'default',
                 padding: '0 10px',
                 fontSize: '12px',
@@ -741,7 +741,7 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
             style={{
               border: 'none',
               background: 'transparent',
-              color: treeCollapsed ? 'var(--text-tertiary)' : 'var(--accent)',
+              color: treeCollapsed ? 'var(--text-tertiary)' : 'var(--text-primary)',
               cursor: 'pointer',
               padding: '0 10px',
               marginLeft: 'auto',
@@ -777,7 +777,7 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
             }}
             onMouseEnter={(e) => {
               e.currentTarget.style.background = 'var(--bg-tertiary)'
-              e.currentTarget.style.color = 'var(--accent)'
+              e.currentTarget.style.color = 'var(--text-primary)'
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.background = 'transparent'
@@ -819,7 +819,7 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
                         <span>磁盘已变更，可能由 AI 更新。</span>
                         <button
                           onClick={() => void reloadTab(activeTab.path)}
-                          style={{ border: 'none', background: 'transparent', color: 'var(--accent)', cursor: 'pointer', fontSize: '12px', padding: 0 }}
+                          style={{ border: 'none', background: 'transparent', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '12px', padding: 0 }}
                         >
                           点击重新加载
                         </button>
@@ -862,8 +862,8 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
                       title="源码视图"
                       style={{
                         border: '1px solid var(--border)',
-                        background: !previewMode ? 'var(--accent-soft)' : 'transparent',
-                        color: !previewMode ? 'var(--accent)' : 'var(--text-secondary)',
+                        background: !previewMode ? 'var(--selected-bg)' : 'transparent',
+                        color: !previewMode ? 'var(--text-primary)' : 'var(--text-secondary)',
                         cursor: previewMode ? 'pointer' : 'default',
                         padding: '3px 12px',
                         borderRadius: 'var(--radius-sm)',
@@ -879,8 +879,8 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
                       title="预览视图"
                       style={{
                         border: '1px solid var(--border)',
-                        background: previewMode ? 'var(--accent-soft)' : 'transparent',
-                        color: previewMode ? 'var(--accent)' : 'var(--text-secondary)',
+                        background: previewMode ? 'var(--selected-bg)' : 'transparent',
+                        color: previewMode ? 'var(--text-primary)' : 'var(--text-secondary)',
                         cursor: previewMode ? 'default' : 'pointer',
                         padding: '3px 12px',
                         borderRadius: 'var(--radius-sm)',
@@ -989,7 +989,7 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
                         }}
                         onMouseEnter={(e) => {
                           e.currentTarget.style.background = 'var(--bg-tertiary)'
-                          e.currentTarget.style.color = 'var(--accent)'
+                          e.currentTarget.style.color = 'var(--text-primary)'
                         }}
                         onMouseLeave={(e) => {
                           e.currentTarget.style.background = 'transparent'
@@ -1062,7 +1062,7 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
                     }}
                     onMouseEnter={(e) => {
                       e.currentTarget.style.background = 'var(--bg-tertiary)'
-                      e.currentTarget.style.color = 'var(--accent)'
+                      e.currentTarget.style.color = 'var(--text-primary)'
                     }}
                     onMouseLeave={(e) => {
                       e.currentTarget.style.background = 'transparent'
@@ -1137,7 +1137,7 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
                     setConflict(null)
                     void forceSave(c.path)
                   }}
-                  style={{ padding: '6px 12px', cursor: 'pointer', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 'var(--radius-sm)', fontSize: '12px' }}
+                  style={{ padding: '6px 12px', cursor: 'pointer', background: 'var(--button-primary-bg)', color: 'var(--button-primary-text)', border: 'none', borderRadius: 'var(--radius-sm)', fontSize: '12px' }}
                 >
                   覆盖磁盘版本
                 </button>
@@ -1197,7 +1197,7 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
               <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
                 <button
                   onClick={() => void handleCloseSave()}
-                  style={{ padding: '6px 12px', cursor: 'pointer', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 'var(--radius-sm)', fontSize: '12px' }}
+                  style={{ padding: '6px 12px', cursor: 'pointer', background: 'var(--button-primary-bg)', color: 'var(--button-primary-text)', border: 'none', borderRadius: 'var(--radius-sm)', fontSize: '12px' }}
                 >
                   保存
                 </button>

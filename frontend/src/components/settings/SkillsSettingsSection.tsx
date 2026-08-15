@@ -11,7 +11,7 @@ import type { SkillInfo } from '../../api/client'
 // 来源标签的颜色映射（source_label：workspace/personal/plugin/bundled）
 const sourceStyle: Record<string, { bg: string; color: string; label: string }> = {
   workspace: { bg: 'rgba(78, 201, 176, 0.12)', color: 'var(--success)', label: '工作区' },
-  personal: { bg: 'rgba(245, 166, 35, 0.12)', color: 'var(--accent)', label: '个人' },
+  personal: { bg: 'rgba(255, 255, 255, 0.08)', color: 'var(--text-secondary)', label: '个人' },
   plugin: { bg: 'rgba(108, 182, 255, 0.12)', color: 'var(--info)', label: '插件' },
   bundled: { bg: 'rgba(160, 160, 160, 0.12)', color: 'var(--text-tertiary)', label: '内置' },
 }
@@ -256,7 +256,7 @@ function btnStyle(variant: 'primary' | 'default'): React.CSSProperties {
     flexShrink: 0,
   }
   if (variant === 'primary') {
-    return { ...base, backgroundColor: 'var(--accent)', color: '#fff', border: 'none' }
+    return { ...base, backgroundColor: 'var(--button-primary-bg)', color: 'var(--button-primary-text)', border: 'none' }
   }
   return { ...base, backgroundColor: 'var(--bg-primary)', color: 'var(--text-secondary)' }
 }

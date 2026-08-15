@@ -42,10 +42,10 @@ function SettingsButton({ onOpenSettings }: { onOpenSettings: () => void }) {
         justifyContent: 'center',
         width: '28px',
         height: '28px',
-        border: `1px solid ${hovered ? 'var(--accent)' : 'var(--border)'}`,
+        border: `1px solid ${hovered ? 'var(--border-strong)' : 'var(--border)'}`,
         borderRadius: 'var(--radius-sm)',
-        background: hovered ? 'var(--accent-soft)' : 'transparent',
-        color: hovered ? 'var(--accent)' : 'var(--text-secondary)',
+        background: hovered ? 'var(--hover-bg)' : 'transparent',
+        color: hovered ? 'var(--text-primary)' : 'var(--text-secondary)',
         cursor: 'pointer',
         transition: 'all var(--transition-fast)',
         flexShrink: 0,
@@ -86,7 +86,7 @@ function TitleBar({
         paddingLeft: IS_MAC ? `${TRAFFIC_LIGHTS_RESERVED}px` : '12px',
         paddingRight: IS_WINDOWS ? `${OVERLAY_RESERVED}px` : '12px',
         borderBottom: '1px solid var(--border)',
-        background: 'linear-gradient(180deg, rgba(245, 166, 35, 0.03), transparent)',
+        background: 'linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent)',
         flexShrink: 0,
         // 整行可拖拽窗口
         ...appRegion('drag'),
@@ -100,9 +100,9 @@ function TitleBar({
           width: '8px',
           height: '8px',
           borderRadius: '50%',
-          backgroundColor: isStreaming ? 'var(--accent)' : 'var(--success)',
+          backgroundColor: isStreaming ? 'var(--info)' : 'var(--success)',
           boxShadow: isStreaming
-            ? '0 0 10px var(--accent-glow)'
+            ? '0 0 10px rgba(108, 182, 255, 0.4)'
             : '0 0 6px rgba(78, 201, 176, 0.4)',
           animation: isStreaming ? 'breathe 1.4s ease-in-out infinite' : 'none',
           flexShrink: 0,
@@ -159,17 +159,17 @@ function TitleBar({
             width: '28px',
             height: '28px',
             border: '1px solid',
-            borderColor: panelActive ? 'var(--accent)' : 'var(--border)',
+            borderColor: panelActive ? 'var(--border-strong)' : 'var(--border)',
             borderRadius: 'var(--radius-sm)',
-            background: panelActive ? 'var(--accent-soft)' : 'transparent',
-            color: panelActive ? 'var(--accent)' : 'var(--text-secondary)',
+            background: panelActive ? 'var(--selected-bg)' : 'transparent',
+            color: panelActive ? 'var(--text-primary)' : 'var(--text-secondary)',
             cursor: 'pointer',
             transition: 'all var(--transition-fast)',
             flexShrink: 0,
           }}
           onMouseEnter={(e) => {
-            e.currentTarget.style.borderColor = 'var(--accent)'
-            e.currentTarget.style.color = 'var(--accent)'
+            e.currentTarget.style.borderColor = 'var(--border-strong)'
+            e.currentTarget.style.color = 'var(--text-primary)'
           }}
           onMouseLeave={(e) => {
             if (!panelActive) {
@@ -203,9 +203,9 @@ function TitleBar({
             flexShrink: 0,
           }}
           onMouseEnter={(e) => {
-            e.currentTarget.style.borderColor = 'var(--accent)'
-            e.currentTarget.style.color = 'var(--accent)'
-            e.currentTarget.style.backgroundColor = 'var(--accent-soft)'
+            e.currentTarget.style.borderColor = 'var(--border-strong)'
+            e.currentTarget.style.color = 'var(--text-primary)'
+            e.currentTarget.style.backgroundColor = 'var(--hover-bg)'
           }}
           onMouseLeave={(e) => {
             e.currentTarget.style.borderColor = 'var(--border)'

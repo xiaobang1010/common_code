@@ -82,15 +82,16 @@ function ChatStream({ hasWorkspace, onOpenWorkspace }: Props) {
                 width: '56px',
                 height: '56px',
                 borderRadius: '50%',
-                background: 'linear-gradient(135deg, var(--accent), #ff7a45)',
+                background: 'var(--bg-elevated)',
+                border: '1px solid var(--border-strong)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                boxShadow: '0 8px 24px rgba(245, 166, 35, 0.25)',
+                boxShadow: '0 8px 24px rgba(0, 0, 0, 0.35)',
                 marginBottom: '4px',
               }}
             >
-              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#1a1a1a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--text-primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M12 2a3 3 0 0 0-3 3v1H7a3 3 0 0 0-3 3v1H3a1 1 0 0 0 0 2h1v1a3 3 0 0 0 3 3h.5a3 3 0 0 0 3 3h1.5a3 3 0 0 0 3-3h.5a3 3 0 0 0 3-3v-1h1a1 1 0 0 0 0-2h-1V9a3 3 0 0 0-3-3h-2V5a3 3 0 0 0-3-3z" />
               </svg>
             </div>
@@ -134,15 +135,16 @@ function ChatStream({ hasWorkspace, onOpenWorkspace }: Props) {
                 width: '56px',
                 height: '56px',
                 borderRadius: '50%',
-                background: 'linear-gradient(135deg, var(--accent), #ff7a45)',
+                background: 'var(--bg-elevated)',
+                border: '1px solid var(--border-strong)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                boxShadow: '0 8px 24px rgba(245, 166, 35, 0.25)',
+                boxShadow: '0 8px 24px rgba(0, 0, 0, 0.35)',
                 marginBottom: '4px',
               }}
             >
-              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#1a1a1a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--text-primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
                 <path d="M9 13h6" />
               </svg>
@@ -173,10 +175,10 @@ function ChatStream({ hasWorkspace, onOpenWorkspace }: Props) {
               onClick={onOpenWorkspace}
               style={{
                 padding: '9px 20px',
-                border: '1px solid var(--accent)',
+                border: '1px solid var(--border-strong)',
                 borderRadius: 'var(--radius-md)',
-                backgroundColor: 'var(--accent-soft)',
-                color: 'var(--accent)',
+                backgroundColor: 'var(--button-primary-bg)',
+                color: 'var(--button-primary-text)',
                 fontSize: '13px',
                 fontFamily: 'var(--font-ui)',
                 fontWeight: 500,
@@ -187,12 +189,10 @@ function ChatStream({ hasWorkspace, onOpenWorkspace }: Props) {
                 gap: '6px',
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = 'var(--accent)'
-                e.currentTarget.style.color = '#1a1a1a'
+                e.currentTarget.style.backgroundColor = 'var(--button-primary-bg-hover)'
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = 'var(--accent-soft)'
-                e.currentTarget.style.color = 'var(--accent)'
+                e.currentTarget.style.backgroundColor = 'var(--button-primary-bg)'
               }}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -226,7 +226,7 @@ function ChatStream({ hasWorkspace, onOpenWorkspace }: Props) {
             gap: '6px',
             padding: '6px 12px',
             fontSize: '12px',
-            color: 'var(--accent)',
+            color: 'var(--text-primary)',
             backgroundColor: 'var(--bg-elevated)',
             border: '1px solid var(--border-strong)',
             borderRadius: 'var(--radius-md)',
