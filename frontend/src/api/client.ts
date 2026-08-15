@@ -236,6 +236,13 @@ export const memoryApi = {
     }),
   status: () =>
     apiGet<{ ok: boolean; status: any }>('/api/memory/status'),
+  /** 记忆功能开关与向量模型加载状态（enabled/loading/available） */
+  feature: () =>
+    apiGet<{ enabled: boolean; loading: boolean; available: boolean }>(
+      '/api/memory/feature'
+    ),
+  setFeature: (enabled: boolean) =>
+    apiPost<{ ok: boolean }>('/api/memory/feature', { enabled }),
   wings: () =>
     apiGet<{ ok: boolean; wings: any[] }>('/api/memory/wings'),
   rooms: (wing: string) =>
@@ -328,6 +335,7 @@ export interface SessionInfo {
   created_at: string
   updated_at: string
   message_count: number
+  pinned: boolean
 }
 
 /** 会话详情（含消息） */
@@ -342,6 +350,8 @@ export interface WorkspaceInfo {
   name: string
   last_used_at: string
   session_count: number
+  pinned: boolean
+  alias: string
 }
 
 /** 工作区分组（含会话列表） */
@@ -362,10 +372,12 @@ export const sessionsApi = {
     apiDelete<{ ok: boolean }>(`/api/sessions/${session_id}`),
   rename: (session_id: string, title: string) =>
     apiPatch<{ ok: boolean }>(`/api/sessions/${session_id}`, { title }),
+  pin: (session_id: string, pinned: boolean) =>
+    apiPatch<{ ok: boolean }>(`/api/sessions/${session_id}`, { pinned }),
   switch: (session_id: string) =>
     apiPost<{ ok: boolean; messages: Record<string, unknown>[]; workspace_path: string }>(`/api/sessions/${session_id}/switch`),
   grouped: () =>
-    apiGet<{ groups: SessionGroup[] }>('/api/sessions/grouped'),
+    apiGet<{ groups: SessionGroup[]; current_tasks: Array<{ session_id: string; state: string }> }>('/api/sessions/grouped'),
 }
 
 /** 工作区管理 */
@@ -378,6 +390,8 @@ export const workspacesApi = {
     apiPost<{ ok: boolean; workspace: WorkspaceInfo; current_branch: string }>('/api/workspaces/switch', { path }),
   remove: (path: string) =>
     apiPost<{ ok: boolean; workspaces: WorkspaceInfo[] }>('/api/workspaces/delete', { path }),
+  update: (path: string, data: { alias?: string; pinned?: boolean }) =>
+    apiPost<{ ok: boolean }>('/api/workspaces/update', { path, ...data }),
 }
 
 /** Git 分支管理 */
@@ -386,4 +400,65 @@ export const gitApi = {
     apiGet<{ branches: string[]; current: string }>(`/api/git/branches?path=${encodeURIComponent(path)}`),
   checkout: (branch: string) =>
     apiPost<{ ok: boolean; branch: string }>('/api/git/checkout', { branch }),
+}
+
+// ---------------------------------------------------------------------------
+// 文件读写
+// ---------------------------------------------------------------------------
+
+/** 读文件返回（含一致性基线） */
+export interface FileReadResult {
+  content: string
+  language: string
+  mtime: number
+  size: number
+  editable: boolean
+}
+
+/** 写文件成功返回 */
+export interface FileWriteResult {
+  path: string
+  mtime: number
+  size: number
+}
+
+/** 写文件冲突详情（409） */
+export interface FileConflict {
+  error: 'file_modified'
+  current_mtime: number
+  current_size: number
+}
+
+/** 写文件错误：带 HTTP 状态码与冲突详情 */
+export interface FileWriteError extends Error {
+  status: number
+  conflict?: FileConflict
+}
+
+/** 文件读写接口 */
+export const filesApi = {
+  read: (path: string) =>
+    apiGet<FileReadResult>(`/api/files/read?path=${encodeURIComponent(path)}`),
+  create: (path: string, type: 'file' | 'dir') =>
+    apiPost<{ path: string; type: string }>('/api/files/create', { path, type }),
+  write: async (body: {
+    path: string
+    content: string
+    base_mtime?: number
+    base_size?: number
+  }): Promise<FileWriteResult> => {
+    const res = await fetch('/api/files/write', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const json = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      const err = new Error(json.error || `写文件失败：${res.status}`) as FileWriteError
+      err.status = res.status
+      if (res.status === 409) err.conflict = json as FileConflict
+      throw err
+    }
+    return json as FileWriteResult
+  },
 }

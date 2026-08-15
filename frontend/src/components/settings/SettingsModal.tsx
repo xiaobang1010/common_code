@@ -10,8 +10,8 @@ import SubagentSettingsSection from './SubagentSettingsSection'
 import MultiagentPlaceholder from './MultiagentPlaceholder'
 import SkillsSettingsSection from './SkillsSettingsSection'
 
-// 六个分区
-type SettingsSection = 'llm' | 'plugins' | 'memory' | 'subagents' | 'multiagent' | 'skills'
+// 七个分区
+type SettingsSection = 'llm' | 'plugins' | 'memory' | 'subagents' | 'multiagent' | 'skills' | 'layout'
 
 const sections: { id: SettingsSection; label: string; desc: string }[] = [
   { id: 'llm', label: 'LLM 模型', desc: '配置模型供应商与参数' },
@@ -20,14 +20,43 @@ const sections: { id: SettingsSection; label: string; desc: string }[] = [
   { id: 'memory', label: '记忆', desc: '管理记忆后端' },
   { id: 'subagents', label: '子智能体', desc: '查看内置子智能体' },
   { id: 'multiagent', label: '多智能体', desc: '多智能体编排（规划中）' },
+  { id: 'layout', label: '界面', desc: '布局宽度与面板开关' },
 ]
+
+// 界面分区：恢复默认布局
+function LayoutSection({ onResetLayout }: { onResetLayout: () => void }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+      <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', fontFamily: 'var(--font-ui)' }}>
+        把对话区/编辑区/文件树的宽度与面板开关重置为默认布局（用于恢复被拖乱或误调的界面）。
+      </div>
+      <button
+        onClick={onResetLayout}
+        style={{
+          alignSelf: 'flex-start',
+          padding: '8px 16px',
+          cursor: 'pointer',
+          background: 'var(--button-primary-bg)',
+          color: 'var(--button-primary-text)',
+          border: 'none',
+          borderRadius: 'var(--radius-sm)',
+          fontSize: '12px',
+          fontFamily: 'var(--font-ui)',
+        }}
+      >
+        恢复默认布局
+      </button>
+    </div>
+  )
+}
 
 interface SettingsModalProps {
   open: boolean
   onClose: () => void
+  onResetLayout: () => void
 }
 
-function SettingsModal({ open, onClose }: SettingsModalProps) {
+function SettingsModal({ open, onClose, onResetLayout }: SettingsModalProps) {
   const [activeSection, setActiveSection] = useState<SettingsSection>('llm')
 
   // Esc 关闭
@@ -67,6 +96,8 @@ function SettingsModal({ open, onClose }: SettingsModalProps) {
         return <MultiagentPlaceholder />
       case 'skills':
         return <SkillsSettingsSection />
+      case 'layout':
+        return <LayoutSection onResetLayout={onResetLayout} />
     }
   }
 
@@ -130,8 +161,8 @@ function SettingsModal({ open, onClose }: SettingsModalProps) {
                 onClick={() => setActiveSection(sec.id)}
                 style={{
                   border: 'none',
-                  background: isActive ? 'var(--accent-soft)' : 'transparent',
-                  color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
+                  background: isActive ? 'var(--selected-bg)' : 'transparent',
+                  color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
                   textAlign: 'left',
                   padding: '8px 10px',
                   borderRadius: 'var(--radius-sm)',
@@ -142,7 +173,7 @@ function SettingsModal({ open, onClose }: SettingsModalProps) {
                 }}
                 onMouseEnter={(e) => {
                   if (!isActive) {
-                    e.currentTarget.style.background = 'var(--bg-tertiary)'
+                    e.currentTarget.style.background = 'var(--hover-bg)'
                     e.currentTarget.style.color = 'var(--text-primary)'
                   }
                 }}

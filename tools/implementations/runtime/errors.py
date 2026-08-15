@@ -49,8 +49,24 @@ def not_a_directory_error(path: str) -> ToolExecutionError:
 
 
 def file_too_large_error(path: str, max_bytes: int) -> ToolExecutionError:
-    """文件超过大小上限。"""
+    """写回内容超过大小上限。"""
     return ToolExecutionError(
         "file_too_large",
-        f"文件过大（超过 {max_bytes} 字节上限），请使用 offset/limit 分段读取：{path}",
+        f"写回内容过大（超过 {max_bytes} 字节上限），请缩小内容或拆分文件：{path}",
+    )
+
+
+def file_modified_error(path: str) -> ToolExecutionError:
+    """文件在读取之后被修改，需要重新读取后再写入。"""
+    return ToolExecutionError(
+        "file_modified",
+        f"文件已被修改，请重新读取后再试：{path}",
+    )
+
+
+def file_exists_requires_baseline_error(path: str) -> ToolExecutionError:
+    """覆盖已存在文件但缺少一致性基线。"""
+    return ToolExecutionError(
+        "missing_baseline",
+        f"文件已存在，覆盖前请先读取该文件获取基线（mtime/size）：{path}",
     )

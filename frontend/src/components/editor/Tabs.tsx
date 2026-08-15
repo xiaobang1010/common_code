@@ -1,6 +1,7 @@
 interface Tab {
   path: string
   name: string
+  dirty: boolean
 }
 
 interface TabsProps {
@@ -11,7 +12,20 @@ interface TabsProps {
 }
 
 // 标签页栏：可水平滚动，中键关闭，当前激活标签底部高亮
+// 同名文件（不同目录）用父目录后缀区分
 function Tabs({ tabs, activePath, onSwitch, onClose }: TabsProps) {
+  // 统计同名文件数量
+  const nameCounts = new Map<string, number>()
+  for (const t of tabs) {
+    nameCounts.set(t.name, (nameCounts.get(t.name) || 0) + 1)
+  }
+  // 同名文件显示「父目录/文件名」，其余只显示文件名
+  const displayName = (tab: Tab): string => {
+    if ((nameCounts.get(tab.name) || 0) < 2) return tab.name
+    const segs = tab.path.split('/').filter(Boolean)
+    return segs.length >= 2 ? `${segs[segs.length - 2]}/${tab.name}` : tab.name
+  }
+
   return (
     <div
       style={{
@@ -47,7 +61,7 @@ function Tabs({ tabs, activePath, onSwitch, onClose }: TabsProps) {
               color: active ? 'var(--text-primary)' : 'var(--text-tertiary)',
               backgroundColor: active ? 'var(--bg-secondary)' : 'transparent',
               borderRight: '1px solid var(--border-subtle)',
-              borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
+              borderBottom: active ? '2px solid var(--border-strong)' : '2px solid transparent',
               whiteSpace: 'nowrap',
               flexShrink: 0,
               transition: 'all var(--transition-fast)',
@@ -66,7 +80,19 @@ function Tabs({ tabs, activePath, onSwitch, onClose }: TabsProps) {
               }
             }}
           >
-            <span style={{ fontWeight: active ? 500 : 400 }}>{tab.name}</span>
+            <span style={{ fontWeight: active ? 500 : 400 }} title={tab.path}>{displayName(tab)}</span>
+            {tab.dirty && (
+              <span
+                title="未保存"
+                style={{
+                  width: '6px',
+                  height: '6px',
+                  borderRadius: '50%',
+                  background: 'var(--text-primary)',
+                  flexShrink: 0,
+                }}
+              />
+            )}
             <button
               onClick={(e) => {
                 e.stopPropagation()

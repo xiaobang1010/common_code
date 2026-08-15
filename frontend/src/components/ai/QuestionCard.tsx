@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { QuestionRequest } from '../../hooks/useChat'
+import type { QuestionRequest } from '../../stores/useChatStore'
 
 interface Props {
   // 当前待回答的提问请求，为 null 时不显示卡片
@@ -34,7 +34,7 @@ function QuestionCard({ questionRequest, onAnswer }: Props) {
     >
       {/* 标题行：提问图标 + AI 提问 */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--info)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
           <circle cx="12" cy="12" r="10" />
           <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
           <path d="M12 17h.01" />
@@ -50,6 +50,18 @@ function QuestionCard({ questionRequest, onAnswer }: Props) {
         >
           AI 提问
         </span>
+        {questionRequest.session_id && (
+          <span
+            style={{
+              color: 'var(--text-secondary)',
+              fontSize: '11px',
+              fontFamily: 'var(--font-ui)',
+              marginLeft: '4px',
+            }}
+          >
+            来自会话 {questionRequest.session_id.slice(0, 8)}
+          </span>
+        )}
       </div>
 
       {/* 问题文本 */}
@@ -82,8 +94,8 @@ function QuestionCard({ questionRequest, onAnswer }: Props) {
                 transition: 'all var(--transition-fast)',
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = 'var(--accent-soft)'
-                e.currentTarget.style.borderColor = 'var(--accent)'
+                e.currentTarget.style.backgroundColor = 'var(--hover-bg)'
+                e.currentTarget.style.borderColor = 'var(--border-strong)'
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.backgroundColor = 'transparent'
@@ -139,10 +151,16 @@ function QuestionCard({ questionRequest, onAnswer }: Props) {
             fontFamily: 'var(--font-ui)',
             fontWeight: 600,
             background: customAnswer.trim()
-              ? 'linear-gradient(135deg, var(--accent), #ff7a45)'
+              ? 'var(--button-primary-bg)'
               : 'var(--bg-tertiary)',
-            color: customAnswer.trim() ? '#1a1a1a' : 'var(--text-tertiary)',
+            color: customAnswer.trim() ? 'var(--button-primary-text)' : 'var(--text-tertiary)',
             transition: 'all var(--transition-fast)',
+          }}
+          onMouseEnter={(e) => {
+            if (customAnswer.trim()) e.currentTarget.style.background = 'var(--button-primary-bg-hover)'
+          }}
+          onMouseLeave={(e) => {
+            if (customAnswer.trim()) e.currentTarget.style.background = 'var(--button-primary-bg)'
           }}
         >
           回答

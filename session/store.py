@@ -62,7 +62,8 @@ class SessionStore:
                     branch TEXT DEFAULT '',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
-                    messages TEXT DEFAULT '[]'
+                    messages TEXT DEFAULT '[]',
+                    pinned INTEGER DEFAULT 0
                 )
                 """
             )
@@ -72,7 +73,9 @@ class SessionStore:
                 CREATE TABLE IF NOT EXISTS workspaces (
                     path TEXT PRIMARY KEY,
                     name TEXT DEFAULT '',
-                    last_used_at TEXT NOT NULL
+                    last_used_at TEXT NOT NULL,
+                    pinned INTEGER DEFAULT 0,
+                    alias TEXT DEFAULT ''
                 )
                 """
             )
@@ -84,9 +87,25 @@ class SessionStore:
                 "CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at)"
             )
 
+            # 兼容旧库：缺列时补列（ALTER TABLE 幂等）
+            self._ensure_columns(conn)
+
             conn.commit()
         finally:
             conn.close()
+
+    @staticmethod
+    def _ensure_columns(conn: sqlite3.Connection) -> None:
+        """旧库迁移：按需补充新列（pinned/alias），不破坏既有数据。"""
+        session_cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+        if "pinned" not in session_cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN pinned INTEGER DEFAULT 0")
+
+        ws_cols = {r[1] for r in conn.execute("PRAGMA table_info(workspaces)").fetchall()}
+        if "pinned" not in ws_cols:
+            conn.execute("ALTER TABLE workspaces ADD COLUMN pinned INTEGER DEFAULT 0")
+        if "alias" not in ws_cols:
+            conn.execute("ALTER TABLE workspaces ADD COLUMN alias TEXT DEFAULT ''")
 
     # ------------------------------------------------------------------
     # 行转换辅助
@@ -123,6 +142,7 @@ class SessionStore:
             updated_at=row["updated_at"],
             messages=messages,
             message_count=message_count,
+            pinned=bool(row["pinned"]) if "pinned" in row.keys() else False,
         )
 
     @staticmethod
@@ -133,6 +153,8 @@ class SessionStore:
             name=row["name"],
             last_used_at=row["last_used_at"],
             session_count=session_count,
+            pinned=bool(row["pinned"]) if "pinned" in row.keys() else False,
+            alias=row["alias"] if "alias" in row.keys() else "",
         )
 
     # ------------------------------------------------------------------
@@ -287,6 +309,28 @@ class SessionStore:
             finally:
                 conn.close()
 
+    def update_session_pinned(self, session_id: str, pinned: bool) -> bool:
+        """更新会话置顶状态。
+
+        Args:
+            session_id: 会话 ID
+            pinned: 是否置顶
+
+        Returns:
+            True 更新成功，False 表示会话不存在
+        """
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "UPDATE sessions SET pinned = ? WHERE id = ?",
+                    (1 if pinned else 0, session_id),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
     def save_messages(
         self, session_id: str, messages: list[dict]
     ) -> bool:
@@ -392,6 +436,34 @@ class SessionStore:
                     (now, path),
                 )
                 conn.commit()
+            finally:
+                conn.close()
+
+    def update_workspace_pinned(self, path: str, pinned: bool) -> bool:
+        """更新工作区置顶状态。"""
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "UPDATE workspaces SET pinned = ? WHERE path = ?",
+                    (1 if pinned else 0, path),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    def update_workspace_alias(self, path: str, alias: str) -> bool:
+        """更新工作区别名（显示 alias||name，用于区分同名项目）。"""
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "UPDATE workspaces SET alias = ? WHERE path = ?",
+                    (alias, path),
+                )
+                conn.commit()
+                return cur.rowcount > 0
             finally:
                 conn.close()
 

@@ -1,6 +1,6 @@
 // 设置面板的全局状态 store
 // 持有五区需要的数据，提供刷新 action 和"设置变更广播"
-// useChat/StatusBar 订阅 modelVersion，变化时触发 fetchState 刷新显示
+// 订阅 modelVersion，变化时触发 fetchState 刷新显示
 
 import { create } from 'zustand'
 import {
@@ -33,6 +33,8 @@ interface SettingsState {
   // 记忆
   memoryProviders: MemoryProviderInfo[]
   activeMemory: string | null
+  // 记忆功能开关（后端 memoryEnabled 的前端镜像，大脑图标与设置开关共享）
+  memoryEnabled: boolean
 
   // 子智能体
   agents: AgentInfo[]
@@ -45,7 +47,7 @@ interface SettingsState {
   error: string
 
   // 设置变更版本号：每次 LLM 配置或供应商变更后 +1
-  // useChat/StatusBar 订阅它，变化时触发 fetchState 刷新 model 显示
+  // 订阅它，变化时触发 fetchState 刷新 model 显示
   modelVersion: number
 
   // 刷新各分区
@@ -61,6 +63,9 @@ interface SettingsState {
   // 设置变更后调用，触发 modelVersion +1
   notifyModelChanged: () => void
 
+  // 记忆功能开关状态同步
+  setMemoryEnabled: (enabled: boolean) => void
+
   // 错误处理
   setError: (err: string) => void
 }
@@ -74,6 +79,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   plugins: [],
   memoryProviders: [],
   activeMemory: null,
+  memoryEnabled: false,
   agents: [],
   skills: [],
 
@@ -168,6 +174,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   notifyModelChanged: () => {
     set((state) => ({ modelVersion: state.modelVersion + 1 }))
   },
+
+  setMemoryEnabled: (enabled: boolean) => set({ memoryEnabled: enabled }),
 
   setError: (err: string) => set({ error: err }),
 }))

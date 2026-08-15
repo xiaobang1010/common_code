@@ -10,7 +10,7 @@ import type { PluginInfo } from '../../api/client'
 // 来源标签的颜色映射
 const sourceStyle: Record<string, { bg: string; color: string; label: string }> = {
   bundled: { bg: 'rgba(108, 182, 255, 0.12)', color: 'var(--info)', label: '内置' },
-  user: { bg: 'rgba(245, 166, 35, 0.12)', color: 'var(--accent)', label: '用户' },
+  user: { bg: 'rgba(255, 255, 255, 0.08)', color: 'var(--text-secondary)', label: '用户' },
   project: { bg: 'rgba(78, 201, 176, 0.12)', color: 'var(--success)', label: '项目' },
 }
 
@@ -66,8 +66,8 @@ function PluginSettingsSection() {
         <div style={{ fontSize: '32px', marginBottom: '12px' }}>📦</div>
         <div style={{ fontSize: '13px' }}>未发现任何插件</div>
         <div style={{ fontSize: '12px', marginTop: '8px', lineHeight: 1.6 }}>
-          把插件目录放到 <code style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>~/.agent/plugins/</code>
-          或项目 <code style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>.agent/plugins/</code> 下即可
+          把插件目录放到 <code style={{ color: 'var(--code-text)', fontFamily: 'var(--font-mono)' }}>~/.agent/plugins/</code>
+          或项目 <code style={{ color: 'var(--code-text)', fontFamily: 'var(--font-mono)' }}>.agent/plugins/</code> 下即可
         </div>
       </div>
     )

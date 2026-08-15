@@ -14,6 +14,9 @@ Agentic 循环引擎核心。
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import os
 from dataclasses import asdict, dataclass, field, replace
 from typing import TYPE_CHECKING, Any, AsyncGenerator
 
@@ -44,6 +47,73 @@ MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3
 
 # 上下文长度超限时的错误关键词
 _CONTEXT_LENGTH_KEYWORDS = ("context_length", "maximum context length", "prompt too long")
+
+
+def _project_wing_name() -> str:
+    """项目 wing 标识：basename:sha1(绝对路径)[:12]。
+
+    用路径哈希保证同名不同路径的项目互不串味，显示名保留 basename。
+    注入/摄取/中途召回统一走这个命名，口径一致。
+    根目录统一读 server.paths.project_root()（工作区切换后已更新），
+    不使用进程 cwd（切换后不更新，会导致记忆归属错误的工作区）。
+    """
+    from server.paths import effective_root
+
+    root = effective_root()
+    name = os.path.basename(root)
+    digest = hashlib.sha1(os.path.abspath(root).encode("utf-8")).hexdigest()[:12]
+    return f"{name}:{digest}"
+
+
+# git 分支缓存：workspace 路径 → 分支（切换工作区后按新路径重新读取）
+_branch_cache: dict[str, str] = {}
+
+
+def _current_git_branch(root: str) -> str:
+    """读取工作区当前 git 分支，失败返回空串；按工作区缓存避免每轮跑 git。"""
+    cached = _branch_cache.get(root)
+    if cached is not None:
+        return cached
+    branch = ""
+    try:
+        import subprocess
+
+        result = subprocess.run(
+            ["git", "-C", root, "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode == 0:
+            branch = result.stdout.strip()
+    except Exception:
+        branch = ""
+    _branch_cache[root] = branch
+    return branch
+
+
+def _build_project_info() -> str:
+    """构造注入系统提示词的工作区信息段。
+
+    让 agent 明确知晓当前工作区与访问边界（工作区根、git 分支、
+    额外允许目录），不必靠 pwd/试错推断；随会话动态构建。
+    """
+    from server.paths import effective_root
+
+    root = effective_root()
+    lines = [f"当前工作区根目录: {root}"]
+    branch = _current_git_branch(root)
+    if branch:
+        lines.append(f"当前 Git 分支: {branch}")
+    # 额外允许目录（additional_directories 多源合并结果）
+    try:
+        from pathlib import Path as _Path
+        from startup.config import get_initial_settings
+
+        additional = get_initial_settings(_Path(root)).permissions.additional_directories
+        if additional:
+            lines.append(f"额外允许目录: {', '.join(additional)}")
+    except Exception:
+        pass  # 配置读取失败不影响注入
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -162,14 +232,13 @@ def _build_assistant_message(
 # ---------------------------------------------------------------------------
 
 
-def _mine_conversation_to_palace(engine: QueryEngine) -> None:
+async def _mine_conversation_to_palace(engine: QueryEngine) -> None:
     """会话结束自动摄取入 Palace。"""
     try:
         from query.services.memory.registry import get_active_memory
         memory = get_active_memory()
         if memory is not None and hasattr(memory, 'mine_conversation'):
-            import os
-            project_name = os.path.basename(os.getcwd())
+            project_name = _project_wing_name()
             # Convert messages to the format ConversationMiner expects
             convo_messages = []
             for msg in engine.mutable_messages:
@@ -180,7 +249,7 @@ def _mine_conversation_to_palace(engine: QueryEngine) -> None:
                         content = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
                     convo_messages.append({"role": role, "content": content})
             if convo_messages:
-                memory.mine_conversation(convo_messages, wing=project_name, session_id="loop_session")
+                await memory.mine_conversation(convo_messages, wing=project_name, session_id="loop_session")
     except Exception:
         pass  # 摄取失败不中断
 
@@ -365,17 +434,21 @@ async def query_loop(
     # skill 列表增量注入追踪（跨轮保持，避免重复注入）
     sent_skills: set[str] = set()
 
-    # 首轮记忆注入：若有启用的记忆插件，注入 L0+L1 上下文或历史记忆
-    if not engine.mutable_messages and user_context is None:
+    # 首轮记忆注入：若有启用的记忆插件，注入 L0+L1 上下文或历史记忆。
+    # 首轮判定用「历史仅含当前这条用户消息」：submitMessage 在进循环前已把用户消息
+    # 追加进历史，原先的「历史为空」在 UI 路径上永远不成立，导致注入从未执行
+    if len(engine.mutable_messages) == 1 and user_context is None:
         try:
             from query.services.memory.registry import get_active_memory
             memory = get_active_memory()
             if memory is not None:
-                # 优先使用 MemoryPalaceProvider 的 wake_up（L0+L1 上下文）
+                # 优先使用 MemoryPalaceProvider 的 wake_up（L0+L1 上下文）。
+                # wake_up 是同步调用，丢到线程池避免阻塞事件循环（心跳、权限桥都在上面）
                 if hasattr(memory, 'wake_up'):
-                    import os
-                    project_name = os.path.basename(os.getcwd())
-                    wake_up_text = memory.wake_up(wing=project_name)
+                    project_name = _project_wing_name()
+                    wake_up_text = await asyncio.to_thread(
+                        memory.wake_up, wing=project_name,
+                    )
                     if wake_up_text and wake_up_text.strip():
                         user_context = {"记忆上下文": wake_up_text}
                 else:
@@ -387,6 +460,8 @@ async def query_loop(
                         )
                         if mem_text:
                             user_context = {"历史记忆": mem_text}
+                # 记忆准备完成：通知前端展示「已加载上下文」阶段
+                yield StreamEvent(type="phase", content="memory_ready")
         except Exception:
             pass  # 记忆检索失败不中断循环
 
@@ -401,7 +476,7 @@ async def query_loop(
             if engine.turn_count >= engine_config.max_turns:
                 yield {"type": "max_turns_reached", "max_turns": engine_config.max_turns}
                 yield StreamEvent(type="done", finish_reason="stop")
-                _mine_conversation_to_palace(engine)
+                await _mine_conversation_to_palace(engine)
                 yield LoopResult(reason="completed")
                 return
 
@@ -431,10 +506,54 @@ async def query_loop(
 
         # ---- 2. 用户/系统上下文（由调用方传入，无需此处获取） ----
 
+        # ---- 2.5 会话中途轻量召回 ----
+        # 首轮 wake_up 已注入记忆，后续轮按最近用户输入做一次轻量检索，
+        # 分数超阈值才注入少量记忆片段（默认开启，可用 memory.auto_recall 关闭；
+        # 阈值按 recall 分数量纲 0.4*bm25+boost 校准，默认 0.3）
+        mid_context = user_context
+        try:
+            if mid_context is None:
+                from query.services.memory.registry import get_active_memory
+                memory = get_active_memory()
+                if memory is not None and hasattr(memory, 'recall'):
+                    from startup.config import get_global_config
+                    memory_cfg = get_global_config().memory or {}
+                    if memory_cfg.get("auto_recall", True):
+                        threshold = float(memory_cfg.get("auto_recall_threshold", 0.3))
+                        # 取最近一条用户消息作为检索 query
+                        user_query = ""
+                        for m in reversed(messages):
+                            if m.get("role") == "user":
+                                user_query = m.get("content", "")
+                                break
+                        if isinstance(user_query, list):
+                            user_query = " ".join(
+                                c.get("text", "") for c in user_query if isinstance(c, dict)
+                            )
+                        if user_query:
+                            # recall 是同步查询，丢到线程池避免阻塞事件循环
+                            results = await asyncio.to_thread(
+                                memory.recall, user_query,
+                                wing=_project_wing_name(), n_results=3,
+                            )
+                            hits = [
+                                r for r in results
+                                if float(r.get("score", 0.0)) >= threshold
+                            ]
+                            if hits:
+                                snippet = "\n".join(
+                                    f"- {r.get('content', '')[:200]}" for r in hits
+                                )
+                                mid_context = {"相关记忆": snippet}
+        except Exception:
+            pass  # 中途召回失败不中断循环
+
         # ---- 3. 构建 API 请求 ----
         from prompts import build_system_messages, get_system_prompt_sections
 
-        sections = engine_config.system_prompt_sections or get_system_prompt_sections()
+        sections = engine_config.system_prompt_sections or get_system_prompt_sections(
+            project_info=_build_project_info()
+        )
         system_messages = build_system_messages(sections)
 
         if system_context:
@@ -442,8 +561,8 @@ async def query_loop(
 
         # 用户上下文仅临时拼入 api_messages，不污染 messages（messages 会被写回引擎）
         api_messages = messages
-        if user_context:
-            api_messages = prepend_user_context(api_messages, user_context)
+        if mid_context:
+            api_messages = prepend_user_context(api_messages, mid_context)
 
         # skill 列表增量注入（临时，不写回引擎）
         try:
@@ -485,6 +604,9 @@ async def query_loop(
         tool_result_messages: list[dict] = []
 
         # ---- 4. 调用模型（流式） ----
+        # 阶段事件：请求已构建、即将发起模型调用。与空 content 的流开始信号并列保留：
+        # 后者维持流启动语义，本事件承载前端「正在调用模型」文案（每轮循环都会发）
+        yield StreamEvent(type="phase", content="model_requested")
         yield StreamEvent(type="content", content="")  # stream_request_start 信号
 
         content_parts: list[str] = []
@@ -684,7 +806,7 @@ async def query_loop(
         # 8a. finish_reason=stop → yield done → return
         if finish_reason == "stop":
             yield StreamEvent(type="done", finish_reason="stop")
-            _mine_conversation_to_palace(engine)
+            await _mine_conversation_to_palace(engine)
             yield LoopResult(reason="completed")
             return
 
@@ -694,12 +816,12 @@ async def query_loop(
             stop_result = await run_stop_hooks(messages)
             if stop_result.should_stop:
                 yield StreamEvent(type="done", finish_reason="stop")
-                _mine_conversation_to_palace(engine)
+                await _mine_conversation_to_palace(engine)
                 yield LoopResult(reason="completed")
                 return
 
             yield StreamEvent(type="done", finish_reason="stop")
-            _mine_conversation_to_palace(engine)
+            await _mine_conversation_to_palace(engine)
             yield LoopResult(reason="completed")
             return
 

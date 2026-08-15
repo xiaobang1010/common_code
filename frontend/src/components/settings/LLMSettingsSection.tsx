@@ -1,6 +1,6 @@
 // LLM 模型设置区 - 自定义供应商列表管理（增删改查 + 测试连接 + 激活）
 // 接 /api/llm-providers 系列接口，支持多供应商多模型的完整管理
-// 保存/删除/激活后通过 store 广播，让 StatusBar 刷新 model 显示
+// 保存/删除/激活后通过 store 广播，触发 fetchState 刷新 model 显示
 
 import { useEffect, useState, useCallback } from 'react'
 import { llmApi } from '../../api/client'
@@ -161,7 +161,7 @@ function LLMSettingsSection() {
       }
       setForm(null)
       setEditingId(null)
-      // 刷新本地列表 + store，再广播让 StatusBar 更新
+      // 刷新本地列表 + store，再广播触发 fetchState 更新
       await load()
       await refreshLlmConfig()
       await refreshProviders()
@@ -489,7 +489,7 @@ function ProviderCard({
                       background: 'transparent',
                       color: isActivating
                         ? 'var(--text-tertiary)'
-                        : 'var(--accent)',
+                        : 'var(--text-primary)',
                       cursor: isActivating ? 'not-allowed' : 'pointer',
                       fontSize: '11px',
                       padding: '2px 6px',
@@ -902,8 +902,8 @@ function btnStyle(
   if (variant === 'primary') {
     return {
       ...base,
-      backgroundColor: 'var(--accent)',
-      color: '#1a1a1a',
+      backgroundColor: 'var(--button-primary-bg)',
+      color: 'var(--button-primary-text)',
       border: 'none',
       fontWeight: 600,
     }

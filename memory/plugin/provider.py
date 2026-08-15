@@ -43,6 +43,7 @@ class MemoryPalaceProvider:
     - kg_invalidate(subject, predicate, object, ended) -> int
     - kg_entities() -> list[str]
     - kg_supersede(subject, predicate, old_object, new_object, at) -> dict
+    - mine_conversation(convo_messages, wing, session_id) -> int: 会话自动摄取
     """
 
     def __init__(self):
@@ -71,6 +72,28 @@ class MemoryPalaceProvider:
         except Exception as e:
             logger.warning("KnowledgeGraph 初始化失败: %s", e)
 
+    # --- 记忆功能开关透传（feature API 使用）---
+
+    def unload(self) -> None:
+        """释放 embedding 模型内存（透传 PalaceManager 的 provider）。"""
+        provider = self.palace.embedding_provider
+        if provider is not None and hasattr(provider, "unload"):
+            provider.unload()
+
+    def embedding_status(self) -> dict:
+        """只读状态快照 {loading, available}（透传，不触发加载）。"""
+        provider = self.palace.embedding_provider
+        if provider is None or not hasattr(provider, "status_snapshot"):
+            return {"loading": False, "available": False}
+        loading, available = provider.status_snapshot()
+        return {"loading": loading, "available": available}
+
+    def start_loading(self) -> None:
+        """触发 embedding 模型后台加载并立即返回（透传 wait_loaded(timeout=0)）。"""
+        provider = self.palace.embedding_provider
+        if provider is not None and hasattr(provider, "wait_loaded"):
+            provider.wait_loaded(timeout=0)
+
     # --- MemoryProvider 协议实现 (async) ---
 
     async def store(self, session_id: str, key: str, content: str) -> None:
@@ -82,8 +105,9 @@ class MemoryPalaceProvider:
 
     async def retrieve(self, session_id: str, key: str) -> str | None:
         """检索一条记忆。"""
+        # 带上限拉取，避免 session 数据量大时全量扫描
         drawers = self.palace.list_drawers_by_importance(
-            limit=100000, wing=session_id
+            limit=2000, wing=session_id
         )
         for d in drawers:
             metadata = d.get("metadata", {})
@@ -193,6 +217,68 @@ class MemoryPalaceProvider:
     def get_status(self) -> dict:
         """获取 Palace 状态。"""
         return self.palace.status()
+
+    # --- 自动摄取（会话结束） ---
+
+    async def mine_conversation(
+        self,
+        convo_messages: list[dict],
+        wing: str | None = None,
+        session_id: str = "",
+    ) -> int:
+        """会话结束自动摄取：LLM 抽取候选记忆 → 置信度过滤 → 幂等写入。
+
+        配置项（config.json 的 memory 分区）：
+        - auto_mine: 总开关，默认开启
+        - auto_mine_min_confidence: 置信度阈值，默认 0.7
+        - auto_mine_max_items_per_session: 单会话最多写入条数，默认 5
+
+        返回实际写入条数；配置关闭、LLM 不可用或抽取失败时返回 0，不抛异常。
+        """
+        try:
+            from startup.config import get_global_config
+
+            memory_cfg = get_global_config().memory or {}
+        except Exception:
+            memory_cfg = {}
+        if not memory_cfg.get("auto_mine", True):
+            return 0
+        try:
+            min_confidence = float(memory_cfg.get("auto_mine_min_confidence", 0.7))
+            max_items = int(memory_cfg.get("auto_mine_max_items_per_session", 5))
+        except (TypeError, ValueError):
+            min_confidence, max_items = 0.7, 5
+
+        # 惰性导入抽取器；失败由 miner 内部静默降级
+        from memory.mine.miner import extract_candidates
+
+        candidates = await extract_candidates(convo_messages)
+        if not candidates:
+            return 0
+
+        # 按置信度过滤，取前 N 条
+        picked = sorted(
+            (c for c in candidates if c.get("confidence", 0.0) >= min_confidence),
+            key=lambda c: c.get("confidence", 0.0),
+            reverse=True,
+        )[:max_items]
+
+        wing = wing or "auto_mine"
+        written = 0
+        for c in picked:
+            try:
+                # add_drawer 内容寻址幂等：重复内容不会重复写入
+                self.add_drawer(
+                    wing=wing,
+                    room=str(c["type"]),
+                    content=str(c["content"]),
+                    source_file="auto_mine",
+                    importance=float(c.get("confidence", 0.5)),
+                )
+                written += 1
+            except Exception as e:
+                logger.warning("自动摄取写入失败: %s", e)
+        return written
 
     # --- 知识图谱 ---
 

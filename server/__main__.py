@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import socket
 import sys
 
@@ -25,12 +26,39 @@ from server.permission_bridge import PermissionBridge
 from server.question_bridge import QuestionBridge
 from startup.setup import setup
 
+logger = logging.getLogger(__name__)
+
 
 def find_free_port() -> int:
     """让系统分配一个空闲端口。"""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+def load_memory_plugins_if_enabled() -> bool:
+    """按记忆功能开关加载记忆插件。返回是否已加载（开关关闭返回 False）。
+
+    默认关闭时跳过——不注册记忆后端、不构造 PalaceManager/embedding
+    provider，向量模型完全不加载。开关开启时正常加载并恢复激活后端。
+    """
+    try:
+        from startup.config import get_global_config
+
+        memory_enabled = get_global_config().memory_enabled
+    except Exception as e:
+        memory_enabled = False
+        print(f"读取记忆功能开关失败，按关闭处理: {e}", file=sys.stderr)
+    if not memory_enabled:
+        logger.info("记忆功能未开启（memoryEnabled=False），跳过记忆插件加载")
+        return False
+    try:
+        from query.services.memory.registry import load_memory_plugins
+
+        load_memory_plugins()
+    except Exception as e:
+        print(f"加载记忆插件失败: {e}", file=sys.stderr)
+    return True
 
 
 async def main() -> None:
@@ -48,12 +76,8 @@ async def main() -> None:
         load_llm_provider_plugins()
     except Exception as e:
         print(f"加载 LLM 供应商插件失败: {e}", file=sys.stderr)
-    try:
-        from query.services.memory.registry import load_memory_plugins
-
-        load_memory_plugins()
-    except Exception as e:
-        print(f"加载记忆插件失败: {e}", file=sys.stderr)
+    # 记忆插件按"记忆功能开关"加载：默认关闭时跳过，向量模型完全不加载
+    load_memory_plugins_if_enabled()
 
     # 重捕 hooks 快照，纳入插件提供的 hooks
     from startup.setup import update_hooks_snapshot

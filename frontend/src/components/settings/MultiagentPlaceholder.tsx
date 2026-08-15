@@ -16,7 +16,7 @@ function MultiagentPlaceholder() {
         多智能体（teammate 协作、任务流转、结果聚合）目前作为运行时编排能力存在，
         尚未提供设置面板可管理的配置项。
         <br />
-        详见 spec：<code style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>
+        详见 spec：<code style={{ color: 'var(--code-text)', fontFamily: 'var(--font-mono)' }}>
           evolve-subagent-multiagent-claude-code
         </code>
       </div>

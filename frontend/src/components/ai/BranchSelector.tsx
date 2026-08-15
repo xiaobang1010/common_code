@@ -99,21 +99,21 @@ function BranchSelector({ currentBranch, branches, onCheckout }: BranchSelectorP
                 style={{
                   padding: '7px 10px',
                   cursor: 'pointer',
-                  backgroundColor: isActive ? 'var(--accent-soft)' : 'transparent',
+                  backgroundColor: isActive ? 'var(--selected-bg)' : 'transparent',
                   transition: 'background var(--transition-fast)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'space-between',
                 }}
                 onMouseEnter={(e) => {
-                  if (!isActive) e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)'
+                  if (!isActive) e.currentTarget.style.backgroundColor = 'var(--hover-bg)'
                 }}
                 onMouseLeave={(e) => {
                   if (!isActive) e.currentTarget.style.backgroundColor = 'transparent'
                 }}
               >
                 <span style={{
-                  color: isActive ? 'var(--accent)' : 'var(--text-primary)',
+                  color: 'var(--text-primary)',
                   fontSize: '12px',
                   fontFamily: 'var(--font-mono)',
                   fontWeight: 500,
@@ -121,7 +121,7 @@ function BranchSelector({ currentBranch, branches, onCheckout }: BranchSelectorP
                   {branch}
                 </span>
                 {isActive && (
-                  <span style={{ color: 'var(--accent)', fontSize: '11px' }}>✓</span>
+                  <span style={{ color: 'var(--text-primary)', fontSize: '11px' }}>✓</span>
                 )}
               </div>
             )

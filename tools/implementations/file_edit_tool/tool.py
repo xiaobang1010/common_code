@@ -32,6 +32,7 @@ FILE_EDIT_PROMPT = """\
 - 如果 old_string 在文件中不唯一，编辑将失败。请提供更多上下文使其唯一，或使用 replace_all
 - 使用 replace_all 可替换文件中所有匹配的字符串（例如重命名变量）
 - file_path 支持绝对路径或相对工作区的路径
+- 修改已存在文件时，建议回传最近一次 Read 该文件得到的 base_mtime 与 base_size，用于写回前的一致性校验
 """
 
 

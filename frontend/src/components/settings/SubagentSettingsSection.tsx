@@ -87,8 +87,8 @@ function SubagentSettingsSection() {
                   style={{
                     fontSize: '10px',
                     padding: '1px 6px',
-                    backgroundColor: 'var(--accent-soft)',
-                    color: 'var(--accent)',
+                    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                    color: 'var(--text-secondary)',
                     borderRadius: 'var(--radius-sm)',
                   }}
                 >

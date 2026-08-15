@@ -134,9 +134,9 @@ function SearchPanel({ onFileOpen }: SearchPanelProps) {
             onClick={() => setCaseSensitive(!caseSensitive)}
             title="区分大小写"
             style={{
-              border: `1px solid ${caseSensitive ? 'var(--accent)' : 'var(--border)'}`,
-              backgroundColor: caseSensitive ? 'var(--accent)' : 'var(--bg-primary)',
-              color: caseSensitive ? '#fff' : 'var(--text-secondary)',
+              border: `1px solid ${caseSensitive ? 'var(--border-strong)' : 'var(--border)'}`,
+              backgroundColor: caseSensitive ? 'var(--selected-bg)' : 'var(--bg-primary)',
+              color: caseSensitive ? 'var(--text-primary)' : 'var(--text-secondary)',
               width: '26px',
               cursor: 'pointer',
               fontSize: '12px',
@@ -151,9 +151,9 @@ function SearchPanel({ onFileOpen }: SearchPanelProps) {
             onClick={() => setRegex(!regex)}
             title="正则表达式"
             style={{
-              border: `1px solid ${regex ? 'var(--accent)' : 'var(--border)'}`,
-              backgroundColor: regex ? 'var(--accent)' : 'var(--bg-primary)',
-              color: regex ? '#fff' : 'var(--text-secondary)',
+              border: `1px solid ${regex ? 'var(--border-strong)' : 'var(--border)'}`,
+              backgroundColor: regex ? 'var(--selected-bg)' : 'var(--bg-primary)',
+              color: regex ? 'var(--text-primary)' : 'var(--text-secondary)',
               width: '26px',
               cursor: 'pointer',
               fontSize: '12px',

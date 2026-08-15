@@ -10,7 +10,7 @@ interface ResizerProps {
 }
 
 // 可拖拽的分隔条：鼠标按下后监听全局移动，松开时移除监听
-// 鼠标悬停时显示琥珀色细线，拖拽时显示更明显的指示
+// 鼠标悬停时显示中性灰细线，拖拽时显示更明显的指示
 function Resizer({ onResize, direction, invert = false }: ResizerProps) {
   const [isDragging, setIsDragging] = useState(false)
   const [isHovered, setIsHovered] = useState(false)
@@ -68,7 +68,7 @@ function Resizer({ onResize, direction, invert = false }: ResizerProps) {
         position: 'relative',
         flexShrink: 0,
         backgroundColor: isDragging
-          ? 'var(--accent)'
+          ? 'var(--border-strong)'
           : isHovered
             ? 'var(--border-strong)'
             : 'transparent',
@@ -86,12 +86,12 @@ function Resizer({ onResize, direction, invert = false }: ResizerProps) {
             left: isHorizontal ? '50%' : 0,
             width: isHorizontal ? '1px' : '100%',
             height: isHorizontal ? '100%' : '1px',
-            backgroundColor: isDragging ? 'var(--accent)' : 'var(--accent-hover)',
+            backgroundColor: isDragging ? 'var(--text-secondary)' : 'var(--border-strong)',
             transform: isHorizontal
               ? 'translateX(-50%)'
               : 'translateY(-50%)',
             opacity: isDragging ? 1 : 0.6,
-            boxShadow: isDragging ? '0 0 8px var(--accent-glow)' : 'none',
+            boxShadow: isDragging ? '0 0 8px rgba(255, 255, 255, 0.2)' : 'none',
           }}
         />
       )}
