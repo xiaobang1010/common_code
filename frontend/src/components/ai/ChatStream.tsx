@@ -14,6 +14,9 @@ interface Props {
 function ChatStream({ hasWorkspace, onOpenWorkspace }: Props) {
   // 只订阅 id 列表：新增/删除块时更新，单块内容变化不触发本组件重渲
   const blockIds = useChatStore(s => s.blockIds)
+  // 运行态订阅：浮动条在流式期间附带停止入口（停止唯一常驻入口仍在输入区）
+  const isStreaming = useChatStore(s => s.isStreaming)
+  const abort = useChatStore(s => s.abort)
   const containerRef = useRef<HTMLDivElement>(null)
   const sentinelRef = useRef<HTMLDivElement>(null)
   // 用户是否在底部附近：在才自动滚动跟随，上滚查看历史时停止抢占
@@ -212,34 +215,75 @@ function ChatStream({ hasWorkspace, onOpenWorkspace }: Props) {
         <div ref={sentinelRef} style={{ height: '1px', flexShrink: 0 }} />
       </div>
 
-      {/* 用户上滚查看历史时显示回到底部按钮 */}
+      {/* 用户上滚查看历史时显示回到底部按钮；流式期间并列停止入口，保证离底时控制仍可触达 */}
       {!stickToBottom && blockIds.length > 0 && (
-        <button
-          onClick={scrollToBottomSmooth}
-          title="回到底部"
+        <div
           style={{
             position: 'absolute',
             bottom: '16px',
             right: '28px',
             display: 'flex',
             alignItems: 'center',
-            gap: '6px',
-            padding: '6px 12px',
-            fontSize: '12px',
-            color: 'var(--text-primary)',
-            backgroundColor: 'var(--bg-elevated)',
-            border: '1px solid var(--border-strong)',
-            borderRadius: 'var(--radius-md)',
-            cursor: 'pointer',
-            boxShadow: 'var(--shadow-md)',
+            gap: '8px',
             zIndex: 10,
           }}
         >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 5v14M5 12l7 7 7-7" />
-          </svg>
-          回到底部
-        </button>
+          <button
+            onClick={scrollToBottomSmooth}
+            title="回到底部"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '6px 12px',
+              fontSize: '12px',
+              color: 'var(--text-primary)',
+              backgroundColor: 'var(--bg-elevated)',
+              border: '1px solid var(--border-strong)',
+              borderRadius: 'var(--radius-md)',
+              cursor: 'pointer',
+              boxShadow: 'var(--shadow-md)',
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 5v14M5 12l7 7 7-7" />
+            </svg>
+            回到底部
+          </button>
+          {isStreaming && (
+            <button
+              onClick={abort}
+              title="停止生成"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                padding: '6px 12px',
+                fontSize: '12px',
+                border: '1px solid var(--error)',
+                borderRadius: 'var(--radius-md)',
+                background: 'var(--bg-elevated)',
+                color: 'var(--error)',
+                cursor: 'pointer',
+                boxShadow: 'var(--shadow-md)',
+                transition: 'all var(--transition-fast)',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'var(--error)'
+                e.currentTarget.style.color = '#fff'
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'var(--bg-elevated)'
+                e.currentTarget.style.color = 'var(--error)'
+              }}
+            >
+              停止
+              <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="6" width="12" height="12" rx="1.5" />
+              </svg>
+            </button>
+          )}
+        </div>
       )}
     </div>
   )
