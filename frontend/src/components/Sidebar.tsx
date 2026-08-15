@@ -29,7 +29,7 @@ const entryShortcutStyle: React.CSSProperties = {
 }
 
 // 会话栏：左侧唯一的侧边区域，只承载会话列表
-// 文件/搜索/Git 视图已移入右侧检查器面板，此处不再有视图切换
+// 文件视图在编辑区右缘树窄列、搜索/审查为编辑区工具标签，此处不再有视图切换
 interface SidebarProps {
   collapsed: boolean
   onToggleCollapse: () => void
@@ -45,7 +45,7 @@ interface SidebarProps {
   onDeleteSession: (sessionId: string) => void
   onRemoveWorkspace: (workspacePath: string) => void
   onOpenWorkspace: () => void
-  // 打开搜索：打开检查器并切到搜索 tab
+  // 打开搜索：打开搜索工具标签
   onOpenSearch: () => void
   onRenameSession: (sessionId: string, title: string) => void
   onToggleSessionPin: (sessionId: string, pinned: boolean) => void

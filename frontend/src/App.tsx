@@ -3,7 +3,7 @@ import Sidebar from './components/Sidebar'
 import EditorArea, { type EditorAreaHandle } from './components/EditorArea'
 import AIPanel from './components/AIPanel'
 import TitleBar from './components/TitleBar'
-import InspectorPanel, { type CardId, type PanelMode } from './components/inspector/InspectorPanel'
+import IconRail from './components/IconRail'
 import Resizer from './components/Resizer'
 import SettingsModal from './components/settings/SettingsModal'
 import WorkspaceSelector from './components/ai/WorkspaceSelector'
@@ -11,33 +11,60 @@ import BranchSelector from './components/ai/BranchSelector'
 import { useChatStore } from './stores/useChatStore'
 import { useSettingsStore } from './stores/useSettingsStore'
 import { useSessions } from './hooks/useSessions'
+import { TOOL_META, type ToolId } from './components/editor/toolMeta'
 import { gitApi, sessionsApi } from './api/client'
 
-// 面板宽度范围约束
+// 布局宽度预算：对话区是主角，有最小宽度保护；编辑区宽度设上下限
 const SIDEBAR_MIN = 180
 const SIDEBAR_MAX = 500
-const EDITOR_MIN = 200
+const CHAT_MIN_WIDTH = 360 // 对话区最小宽度：任何情况下不被挤到不可读
+const EDITOR_MIN = 360
 const EDITOR_MAX_RATIO = 0.85 // 编辑器最多占窗口 85%
+
+// 布局持久化 key：宽度与面板开关状态重启后恢复，设置面板提供「恢复默认布局」
+const LAYOUT_KEYS = {
+  sidebarWidth: 'layout.sidebarWidth',
+  editorWidth: 'layout.editorWidth',
+  treeWidth: 'layout.treeWidth',
+  treeCollapsed: 'layout.treeCollapsed',
+  toolTabsOpen: 'layout.toolTabsOpen',
+  activeToolId: 'layout.activeToolId',
+} as const
 
 function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   // 编辑器按需显示：默认隐藏，打开文件时才出现
   const [editorCollapsed, setEditorCollapsed] = useState(true)
 
-  // 右侧检查器面板（概要/终端/文件/审查卡片）显隐，默认隐藏
-  const [inspectorVisible, setInspectorVisible] = useState(false)
-  // 检查器面板形态与选中卡：由 App 持有，面板隐藏再打开时能恢复
-  const [inspectorMode, setInspectorMode] = useState<PanelMode>('list')
-  const [inspectorCard, setInspectorCard] = useState<CardId>('summary')
-  // 面板是否被打开过：首次打开后保持挂载（隐藏仅 CSS 隐藏），终端会话不丢
-  const [inspectorEverShown, setInspectorEverShown] = useState(false)
+  // 工具标签（概要/终端/搜索/审查）开关状态：由 App 持有，标题栏开关/图标轨/快捷键共用
+  const [toolTabsOpen, setToolTabsOpen] = useState<ToolId[]>(() => {
+    try {
+      const v = JSON.parse(localStorage.getItem(LAYOUT_KEYS.toolTabsOpen) || '[]')
+      return Array.isArray(v) ? v.filter((x): x is ToolId => TOOL_META.some((t) => t.id === x)) : []
+    } catch {
+      return []
+    }
+  })
+  const [activeToolId, setActiveToolId] = useState<ToolId | null>(() => {
+    const v = localStorage.getItem(LAYOUT_KEYS.activeToolId)
+    return v && TOOL_META.some((t) => t.id === v) ? (v as ToolId) : null
+  })
+  // 最近使用的工具标签：标题栏开关展开编辑区时聚焦它
+  const lastToolIdRef = useRef<ToolId | null>(activeToolId)
 
   // 设置 Modal 开关
   const [settingsOpen, setSettingsOpen] = useState(false)
 
-  // 侧边栏和编辑器的像素宽度（折叠时不起作用，恢复时用得上）
-  const [sidebarWidth, setSidebarWidth] = useState(240)
-  const [editorWidth, setEditorWidth] = useState(0) // 0 表示用 flex 比例
+  // 侧边栏和编辑器的像素宽度（折叠时不起作用，恢复时用得上），持久化恢复
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const v = Number(localStorage.getItem(LAYOUT_KEYS.sidebarWidth))
+    return v >= SIDEBAR_MIN && v <= SIDEBAR_MAX ? v : 240
+  })
+  const [editorWidth, setEditorWidth] = useState(() => {
+    // 0 表示用 flex 比例；恢复时按当前窗口 85% 上限钳制
+    const v = Number(localStorage.getItem(LAYOUT_KEYS.editorWidth))
+    return v > 0 ? Math.min(v, window.innerWidth * EDITOR_MAX_RATIO) : 0
+  })
 
   // 聊天状态从 store 订阅：action 引用稳定，不会因流式更新引起本组件重渲
   const chatSessionId = useChatStore(s => s.sessionId)
@@ -111,6 +138,44 @@ function App() {
     })
   }, [sessions.currentSessionId]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ---- 布局持久化 ----
+  useEffect(() => {
+    localStorage.setItem(LAYOUT_KEYS.sidebarWidth, String(sidebarWidth))
+  }, [sidebarWidth])
+  useEffect(() => {
+    localStorage.setItem(LAYOUT_KEYS.editorWidth, String(editorWidth))
+  }, [editorWidth])
+  useEffect(() => {
+    localStorage.setItem(LAYOUT_KEYS.toolTabsOpen, JSON.stringify(toolTabsOpen))
+  }, [toolTabsOpen])
+  useEffect(() => {
+    localStorage.setItem(LAYOUT_KEYS.activeToolId, activeToolId ?? '')
+  }, [activeToolId])
+
+  // 恢复默认布局：清持久化并重置各宽度与面板开关（树状态由 EditorArea 监听事件重置）
+  const resetLayout = useCallback(() => {
+    Object.values(LAYOUT_KEYS).forEach((k) => localStorage.removeItem(k))
+    setSidebarWidth(240)
+    setEditorWidth(0)
+    setToolTabsOpen([])
+    setActiveToolId(null)
+    setSidebarCollapsed(false)
+    setEditorCollapsed(true)
+    window.dispatchEvent(new Event('layout-reset'))
+  }, [])
+
+  // 窄屏退让：树列折叠由 EditorArea 按编辑区/窗口宽度处理；
+  // 这里兜底：窗口仍不足以容纳「会话栏 + 对话区 360 + 编辑区 360」时会话栏自动折叠为窄条
+  useEffect(() => {
+    const onResize = () => {
+      if (window.innerWidth < SIDEBAR_MIN + CHAT_MIN_WIDTH + EDITOR_MIN) {
+        setSidebarCollapsed(true)
+      }
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
   // 侧边栏拖拽：向右拖增加宽度，向左拖减少
   const handleSidebarResize = useCallback((delta: number) => {
     setSidebarWidth((prev) => {
@@ -138,32 +203,64 @@ function App() {
   // 折叠/展开编辑器
   const toggleEditor = useCallback(() => {
     setEditorCollapsed((prev) => {
-      // 第一次展开时如果没设过宽度，给个默认值（窗口的 40%）
+      // 第一次展开时如果没设过宽度，给个默认值（窗口的 40%，钳制在上下限内）
       if (!prev && editorWidth === 0) {
-        setEditorWidth(Math.floor(window.innerWidth * 0.4))
+        const maxW = window.innerWidth * EDITOR_MAX_RATIO
+        setEditorWidth(Math.max(EDITOR_MIN, Math.min(maxW, Math.floor(window.innerWidth * 0.4))))
       }
       return !prev
     })
   }, [editorWidth])
 
-  // 显隐右侧检查器面板
-  const toggleInspector = useCallback(() => {
-    setInspectorVisible((prev) => !prev)
-    setInspectorEverShown(true)
+  // ---- 工具标签操作 ----
+
+  // 打开工具标签：展开编辑区并激活该面板
+  const openTool = useCallback(
+    (id: ToolId) => {
+      if (editorCollapsed) {
+        toggleEditor()
+      }
+      lastToolIdRef.current = id
+      setToolTabsOpen((prev) => (prev.includes(id) ? prev : [...prev, id]))
+      setActiveToolId(id)
+    },
+    [editorCollapsed, toggleEditor]
+  )
+
+  // 关闭工具标签：只隐藏面板，后台状态保留（终端会话不杀、审查结果不清除）
+  const closeTool = useCallback((id: ToolId) => {
+    setToolTabsOpen((prev) => prev.filter((t) => t !== id))
+    setActiveToolId((prev) => (prev === id ? null : prev))
   }, [])
 
-  // 进入聚焦态：选中卡片并切换形态
-  const enterInspectorFocus = useCallback((id: CardId) => {
-    setInspectorCard(id)
-    setInspectorMode('focus')
+  // 文件标签被激活：工具标签取消激活（内容区回到文件视图）
+  const activateFile = useCallback(() => {
+    setActiveToolId(null)
   }, [])
 
-  // 打开搜索：显示检查器并切到搜索 tab（复用检查器 SearchPanel）
-  const handleOpenSearch = useCallback(() => {
-    setInspectorVisible(true)
-    setInspectorEverShown(true)
-    enterInspectorFocus('search')
-  }, [enterInspectorFocus])
+  // 图标轨点击：已激活则收回，否则直达对应面板
+  const handleRailToolClick = useCallback(
+    (id: ToolId) => {
+      if (activeToolId === id && !editorCollapsed) {
+        closeTool(id)
+      } else {
+        openTool(id)
+      }
+    },
+    [activeToolId, editorCollapsed, closeTool, openTool]
+  )
+
+  // 标题栏面板开关：展开编辑区并聚焦最近工具标签；已展开则收起
+  const togglePanel = useCallback(() => {
+    if (!editorCollapsed) {
+      toggleEditor()
+      return
+    }
+    const last = lastToolIdRef.current ?? 'summary'
+    toggleEditor()
+    setToolTabsOpen((prev) => (prev.includes(last) ? prev : [...prev, last]))
+    setActiveToolId(last)
+  }, [editorCollapsed, toggleEditor])
 
   // ---- 会话管理相关回调 ----
 
@@ -382,7 +479,7 @@ function App() {
     }
   }, [handleSwitchWorkspace])
 
-  // 全局快捷键：Ctrl/⌘+N 新建任务，Ctrl/⌘+K 搜索
+  // 全局快捷键：Ctrl/⌘+N 新建任务，Ctrl/⌘+K 打开搜索工具标签
   // Electron 中这两组快捷键无默认系统行为，全局拦截安全
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -393,12 +490,12 @@ function App() {
         handleCreateSession()
       } else if (e.key.toLowerCase() === 'k') {
         e.preventDefault()
-        handleOpenSearch()
+        openTool('search')
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [handleCreateSession, handleOpenSearch])
+  }, [handleCreateSession, openTool])
 
   return (
     <div
@@ -427,14 +524,14 @@ function App() {
             onCheckout={handleCheckout}
           />
         }
-        inspectorVisible={inspectorVisible}
-        onToggleInspector={toggleInspector}
+        panelActive={!editorCollapsed}
+        onTogglePanel={togglePanel}
         onOpenSettings={() => setSettingsOpen(true)}
         onNewSession={handleCreateSession}
         currentTaskTitle={currentTaskTitle}
       />
 
-      {/* 主体行：会话栏 + AI面板 + 编辑器 + 检查器面板 */}
+      {/* 主体行：会话栏 + AI面板 + 编辑区 + 右缘图标轨 */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         {/* 会话栏：折叠时不占位，展开时固定宽度 + 可拖拽 */}
         {!sidebarCollapsed && (
@@ -452,7 +549,7 @@ function App() {
                 onDeleteSession={handleDeleteSession}
                 onRemoveWorkspace={handleRemoveWorkspace}
                 onOpenWorkspace={handleOpenWorkspace}
-                onOpenSearch={handleOpenSearch}
+                onOpenSearch={() => openTool('search')}
                 runningSessionId={runningSessionId}
                 onRenameSession={sessions.renameSession}
                 onToggleSessionPin={sessions.toggleSessionPin}
@@ -475,7 +572,7 @@ function App() {
             onDeleteSession={handleDeleteSession}
             onRemoveWorkspace={handleRemoveWorkspace}
             onOpenWorkspace={handleOpenWorkspace}
-            onOpenSearch={handleOpenSearch}
+            onOpenSearch={() => openTool('search')}
             runningSessionId={runningSessionId}
             onRenameSession={sessions.renameSession}
             onToggleSessionPin={sessions.toggleSessionPin}
@@ -483,8 +580,8 @@ function App() {
           />
         )}
 
-        {/* AI 面板：占据剩余空间（主角） */}
-        <div style={{ flex: 1, minWidth: 0 }}>
+        {/* AI 面板：占据剩余空间（主角），最小宽度受保护不被挤没 */}
+        <div style={{ flex: 1, minWidth: CHAT_MIN_WIDTH }}>
           <AIPanel
             hasWorkspace={!!sessions.currentWorkspace}
             onOpenWorkspace={handleOpenWorkspace}
@@ -503,35 +600,35 @@ function App() {
             width: editorCollapsed ? undefined : editorWidth === 0 ? '40%' : editorWidth,
             flexShrink: 0,
             minWidth: editorCollapsed ? 0 : EDITOR_MIN,
+            display: editorCollapsed ? 'none' : 'block',
           }}
         >
           <EditorArea
             ref={editorRef}
             collapsed={editorCollapsed}
             onToggleCollapse={toggleEditor}
+            workspacePath={sessions.currentWorkspace?.path ?? null}
+            toolTabsOpen={toolTabsOpen}
+            activeToolId={activeToolId}
+            onOpenTool={openTool}
+            onCloseTool={closeTool}
+            onActivateFile={activateFile}
           />
         </div>
 
-        {/* 右侧检查器面板：首次打开后保持挂载，隐藏时仅 CSS 隐藏（保活终端会话） */}
-        {(inspectorVisible || inspectorEverShown) && (
-          <div style={{ display: inspectorVisible ? 'flex' : 'none', height: '100%', flexShrink: 0 }}>
-            <InspectorPanel
-              onFileOpen={(path) => editorRef.current?.openFile(path)}
-              workspacePath={sessions.currentWorkspace?.path ?? null}
-              mode={inspectorMode}
-              activeCard={inspectorCard}
-              onEnterFocus={enterInspectorFocus}
-              onBackToList={() => setInspectorMode('list')}
-              onCardChange={setInspectorCard}
-            />
-          </div>
-        )}
+        {/* 右缘图标轨：面板与编辑区的折叠态入口，始终可见 */}
+        <IconRail
+          activeToolId={activeToolId}
+          editorCollapsed={editorCollapsed}
+          onToolClick={handleRailToolClick}
+          onToggleEditor={toggleEditor}
+        />
       </div>
 
       {/* 状态信息已并入输入区底部行（ChatInput），无独立状态栏 */}
 
       {/* 设置 Modal */}
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} onResetLayout={resetLayout} />
     </div>
   )
 }
