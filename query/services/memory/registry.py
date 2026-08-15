@@ -208,6 +208,12 @@ def load_memory_plugins() -> None:
             logger.warning("memory 插件 %s 缺少 memory.py", plugin.manifest.name)
             continue
 
+        # 幂等保护：同名后端已注册则跳过整轮（不 exec_module、不调工厂），
+        # 支持运行中"开启记忆功能"时重复调用而不重建实例
+        if plugin.manifest.name in registry.list_providers():
+            logger.info("记忆后端 %s 已注册，跳过重复加载", plugin.manifest.name)
+            continue
+
         try:
             # 动态导入 memory.py
             spec = importlib.util.spec_from_file_location(

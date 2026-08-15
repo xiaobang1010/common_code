@@ -220,14 +220,6 @@ function createTerminal(cwd) {
 app.whenReady().then(() => {
   pythonProcess = spawnPython()
 
-  // 菜单栏隐藏后，调试入口（重载/DevTools）由前端溢出菜单通过 IPC 触发
-  ipcMain.on('window:reload', () => {
-    if (win && !win.isDestroyed()) win.webContents.reload()
-  })
-  ipcMain.on('window:toggleDevTools', () => {
-    if (win && !win.isDestroyed()) win.webContents.toggleDevTools()
-  })
-
   // 终端 IPC
   ipcMain.handle('terminal:create', (_event, cwd) => createTerminal(cwd))
   ipcMain.on('terminal:input', (_event, { id, data }) => {

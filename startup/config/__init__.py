@@ -130,6 +130,8 @@ class GlobalConfig:
     # 记忆插件配置：记录激活的记忆后端名，重启后恢复
     # 结构 {"active": "memory-backend-name" | None}
     memory: dict[str, Any] = field(default_factory=dict)
+    # 记忆功能总开关：默认关闭。关闭时启动不加载记忆插件与向量化模型
+    memory_enabled: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """转换为 JSON 友好的字典，使用 camelCase 键名。"""
@@ -155,6 +157,7 @@ class GlobalConfig:
             "llm_providers": "llm_providers",
             "active_provider": "active_provider",
             "active_model": "active_model",
+            "memory_enabled": "memoryEnabled",
         }
         for k, v in d.items():
             result[key_map.get(k, k)] = v
@@ -191,6 +194,7 @@ class GlobalConfig:
             active_provider=data.get("active_provider"),
             active_model=data.get("active_model"),
             memory=data.get("memory", {}),
+            memory_enabled=data.get("memoryEnabled", False),
         )
 
 
