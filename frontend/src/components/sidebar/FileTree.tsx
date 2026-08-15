@@ -10,6 +10,8 @@ interface FileItem {
 
 interface FileTreeProps {
   onFileOpen: (path: string) => void
+  // 当前激活文件路径：树中对应节点高亮（编辑器树列使用，可不传）
+  activePath?: string
 }
 
 // 根据文件扩展名返回对应颜色 - 精致的语法色
@@ -57,14 +59,53 @@ function LoadingIcon() {
   )
 }
 
+// 过滤命中段高亮：名称中包含关键词的部分加深底色
+function HighlightedName({ name, q }: { name: string; q: string }) {
+  const idx = name.toLowerCase().indexOf(q)
+  if (idx < 0) return <span>{name}</span>
+  return (
+    <span>
+      {name.slice(0, idx)}
+      <span style={{ backgroundColor: 'var(--accent-soft)', color: 'var(--accent)', fontWeight: 600 }}>{name.slice(idx, idx + q.length)}</span>
+      {name.slice(idx + q.length)}
+    </span>
+  )
+}
+
+// 过滤模式下整树节点的完整结构（含全部子孙）
+interface FullTreeNode {
+  item: FileItem
+  children: FullTreeNode[]
+}
+
+// 后端递归列表项转为前端树节点
+const toFullNode = (it: { name: string; type: 'dir' | 'file'; path: string; children?: unknown[] }): FullTreeNode => ({
+  item: { name: it.name, type: it.type, path: it.path },
+  children: (it.children || []).map((c) => toFullNode(c as { name: string; type: 'dir' | 'file'; path: string; children?: unknown[] })),
+})
+
+// 一次性取整棵树：过滤激活时需要全局视角才能保留匹配项的父级目录链
+const loadFullTree = async (): Promise<FullTreeNode[]> => {
+  const res = await fetch('/api/files/list?path=.&recursive=true')
+  const data = await res.json()
+  return (data.items || []).map((it: { name: string; type: 'dir' | 'file'; path: string; children?: unknown[] }) => toFullNode(it))
+}
+
+// 剪枝：只保留名称命中的节点及其父级目录链
+const pruneTree = (nodes: FullTreeNode[], q: string): FullTreeNode[] =>
+  nodes
+    .map((n) => ({ ...n, children: pruneTree(n.children, q) }))
+    .filter((n) => n.item.name.toLowerCase().includes(q) || n.children.length > 0)
+
 // 单个树节点
 interface FileTreeNodeProps {
   item: FileItem
   depth: number
   onFileOpen: (path: string) => void
+  activePath?: string
 }
 
-function FileTreeNode({ item, depth, onFileOpen }: FileTreeNodeProps) {
+function FileTreeNode({ item, depth, onFileOpen, activePath }: FileTreeNodeProps) {
   const [expanded, setExpanded] = useState(false)
   const [children, setChildren] = useState<FileItem[]>([])
   const [loaded, setLoaded] = useState(false)
@@ -72,6 +113,8 @@ function FileTreeNode({ item, depth, onFileOpen }: FileTreeNodeProps) {
   const [hovered, setHovered] = useState(false)
 
   const isDir = item.type === 'dir'
+  // 当前打开文件的节点高亮，选中与视线在树内闭环
+  const isActive = !isDir && activePath === item.path
 
   const handleClick = async () => {
     if (!isDir) {
@@ -115,7 +158,7 @@ function FileTreeNode({ item, depth, onFileOpen }: FileTreeNodeProps) {
           fontFamily: 'var(--font-ui)',
           whiteSpace: 'nowrap',
           userSelect: 'none',
-          backgroundColor: hovered ? 'var(--bg-tertiary)' : 'transparent',
+          backgroundColor: isActive ? 'var(--accent-soft)' : hovered ? 'var(--bg-tertiary)' : 'transparent',
           borderRadius: 'var(--radius-sm)',
           margin: '0 4px',
           transition: 'background var(--transition-fast)',
@@ -124,12 +167,12 @@ function FileTreeNode({ item, depth, onFileOpen }: FileTreeNodeProps) {
         <span style={{ width: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           {loading ? <LoadingIcon /> : isDir ? <FolderIcon open={expanded} /> : <FileIcon color={fileColor} />}
         </span>
-        <span style={{ fontWeight: isDir ? 500 : 400 }}>{item.name}</span>
+        <span style={{ fontWeight: isDir ? 500 : isActive ? 500 : 400, color: isActive ? 'var(--accent)' : undefined }}>{item.name}</span>
       </div>
       {isDir && expanded && loaded && (
         <div>
           {children.map((child) => (
-            <FileTreeNode key={child.path} item={child} depth={depth + 1} onFileOpen={onFileOpen} />
+            <FileTreeNode key={child.path} item={child} depth={depth + 1} onFileOpen={onFileOpen} activePath={activePath} />
           ))}
         </div>
       )}
@@ -137,7 +180,60 @@ function FileTreeNode({ item, depth, onFileOpen }: FileTreeNodeProps) {
   )
 }
 
-function FileTree({ onFileOpen }: FileTreeProps) {
+// 过滤结果树节点：全部展开、命中高亮，点击文件打开
+function FilteredTreeNode({ node, depth, q, onFileOpen, activePath }: {
+  node: FullTreeNode
+  depth: number
+  q: string
+  onFileOpen: (path: string) => void
+  activePath?: string
+}) {
+  const [hovered, setHovered] = useState(false)
+  const isDir = node.item.type === 'dir'
+  const isActive = !isDir && activePath === node.item.path
+  const fileColor = getFileColor(node.item.name)
+  return (
+    <div>
+      <div
+        onClick={() => {
+          if (!isDir) onFileOpen(node.item.path)
+        }}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px',
+          paddingLeft: depth * 14 + 8,
+          paddingRight: '8px',
+          height: '26px',
+          cursor: isDir ? 'default' : 'pointer',
+          color: isDir ? 'var(--text-primary)' : isActive ? 'var(--accent)' : fileColor,
+          fontSize: '13px',
+          fontFamily: 'var(--font-ui)',
+          whiteSpace: 'nowrap',
+          userSelect: 'none',
+          backgroundColor: isActive ? 'var(--accent-soft)' : hovered ? 'var(--bg-tertiary)' : 'transparent',
+          borderRadius: 'var(--radius-sm)',
+          margin: '0 4px',
+          transition: 'background var(--transition-fast)',
+        }}
+      >
+        <span style={{ width: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          {isDir ? <FolderIcon open={true} /> : <FileIcon color={isActive ? 'var(--accent)' : fileColor} />}
+        </span>
+        <span style={{ fontWeight: isDir ? 500 : isActive ? 500 : 400 }}>
+          <HighlightedName name={node.item.name} q={q} />
+        </span>
+      </div>
+      {node.children.map((c) => (
+        <FilteredTreeNode key={c.item.path} node={c} depth={depth + 1} q={q} onFileOpen={onFileOpen} activePath={activePath} />
+      ))}
+    </div>
+  )
+}
+
+function FileTree({ onFileOpen, activePath }: FileTreeProps) {
   const [rootItems, setRootItems] = useState<FileItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -145,6 +241,35 @@ function FileTree({ onFileOpen }: FileTreeProps) {
   const [creating, setCreating] = useState<'file' | 'dir' | null>(null)
   const [createValue, setCreateValue] = useState('')
   const [createError, setCreateError] = useState('')
+
+  // 搜索名称过滤：激活时加载整棵树做全局过滤，保留父级目录链
+  const [filter, setFilter] = useState('')
+  const [filterTree, setFilterTree] = useState<FullTreeNode[] | null>(null)
+  const [filterLoading, setFilterLoading] = useState(false)
+
+  useEffect(() => {
+    const q = filter.trim().toLowerCase()
+    if (!q) {
+      setFilterTree(null)
+      setFilterLoading(false)
+      return
+    }
+    let cancelled = false
+    setFilterLoading(true)
+    loadFullTree()
+      .then((tree) => {
+        if (!cancelled) {
+          setFilterTree(pruneTree(tree, q))
+          setFilterLoading(false)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setFilterLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [filter])
 
   const loadRoot = useCallback(async () => {
     try {
@@ -222,6 +347,27 @@ function FileTree({ onFileOpen }: FileTreeProps) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      {/* 搜索名称过滤框：树内过滤，保留父级目录结构，匹配文件名高亮 */}
+      <div style={{ padding: '8px 8px 0' }}>
+        <input
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder="搜索名称"
+          style={{
+            width: '100%',
+            boxSizing: 'border-box',
+            border: '1px solid var(--border)',
+            background: 'var(--bg-elevated)',
+            color: 'var(--text-primary)',
+            fontSize: '12px',
+            fontFamily: 'var(--font-ui)',
+            padding: '5px 8px',
+            borderRadius: 'var(--radius-sm)',
+            outline: 'none',
+          }}
+        />
+      </div>
+
       {/* 顶部新建入口 */}
       <div
         style={{
@@ -318,12 +464,25 @@ function FileTree({ onFileOpen }: FileTreeProps) {
         </div>
       )}
 
-      {/* 文件树列表（treeVersion 变化时重建，保证新建后可见） */}
-      <div key={treeVersion} style={{ flex: 1, overflow: 'auto', padding: '6px 0' }}>
+      {/* 文件树列表：过滤激活时展示全局过滤结果（懒加载树保持挂载，展开态不丢） */}
+      <div key={treeVersion} style={{ flex: 1, overflow: 'auto', padding: '6px 0', display: filterTree !== null ? 'none' : 'block' }}>
         {rootItems.map((item) => (
-          <FileTreeNode key={item.path} item={item} depth={0} onFileOpen={onFileOpen} />
+          <FileTreeNode key={item.path} item={item} depth={0} onFileOpen={onFileOpen} activePath={activePath} />
         ))}
       </div>
+      {filterTree !== null && (
+        <div style={{ flex: 1, overflow: 'auto', padding: '6px 0' }}>
+          {filterLoading && filterTree.length === 0 ? (
+            <div style={{ padding: '8px 16px', color: 'var(--text-tertiary)', fontSize: '12px' }}>过滤中…</div>
+          ) : filterTree.length === 0 ? (
+            <div style={{ padding: '8px 16px', color: 'var(--text-tertiary)', fontSize: '12px' }}>没有匹配的文件</div>
+          ) : (
+            filterTree.map((n) => (
+              <FilteredTreeNode key={n.item.path} node={n} depth={0} q={filter.trim().toLowerCase()} onFileOpen={onFileOpen} activePath={activePath} />
+            ))
+          )}
+        </div>
+      )}
     </div>
   )
 }

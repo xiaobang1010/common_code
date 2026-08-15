@@ -45,25 +45,8 @@ class CreateRequest(BaseModel):
     type: str
 
 
-@router.get("/api/files/list")
-async def list_files(path: str = ".") -> dict:
-    """列目录接口。
-
-    参数 path：相对路径，默认 "."（项目根目录）。
-    返回 {"items": [{"name", "type", "path"}]}，
-    目录排前面、文件排后面，各自按名字排序。
-    隐藏文件和指定目录会被排除。
-    """
-    root = project_root()
-    target = os.path.normpath(os.path.join(root, path))
-
-    # 路径安全检查：不允许穿越到项目根之外
-    if not is_within_root(target, root):
-        return {"items": []}
-
-    if not os.path.isdir(target):
-        return {"items": []}
-
+def _list_dir(target: str, root: str) -> list[dict]:
+    """列单个目录：目录排前面、文件排后面，各自按名字排序，隐藏文件与排除目录跳过。"""
     dirs: list[dict] = []
     files: list[dict] = []
     for name in os.listdir(target):
@@ -81,7 +64,46 @@ async def list_files(path: str = ".") -> dict:
 
     dirs.sort(key=lambda x: x["name"])
     files.sort(key=lambda x: x["name"])
-    return {"items": dirs + files}
+    return dirs + files
+
+
+@router.get("/api/files/list")
+async def list_files(path: str = ".", recursive: bool = False) -> dict:
+    """列目录接口。
+
+    参数 path：相对路径，默认 "."（项目根目录）。
+    参数 recursive：True 时一次性递归返回嵌套树（目录带 children），
+    供文件树过滤等需要整棵树视角的场景使用；条目总量设上限防超大仓库。
+    返回 {"items": [{"name", "type", "path", "children"?}]}，
+    目录排前面、文件排后面，各自按名字排序。
+    隐藏文件和指定目录会被排除。
+    """
+    root = project_root()
+    target = os.path.normpath(os.path.join(root, path))
+
+    # 路径安全检查：不允许穿越到项目根之外
+    if not is_within_root(target, root):
+        return {"items": []}
+
+    if not os.path.isdir(target):
+        return {"items": []}
+
+    items = _list_dir(target, root)
+    if not recursive:
+        return {"items": items}
+
+    # 递归模式：广度优先展开所有子目录，目录条目补 children 字段
+    MAX_ENTRIES = 20000
+    total = len(items)
+    queue: list[dict] = [it for it in items if it["type"] == "dir"]
+    while queue and total < MAX_ENTRIES:
+        item = queue.pop(0)
+        full = os.path.join(root, item["path"])
+        children = _list_dir(full, root)
+        item["children"] = children
+        total += len(children)
+        queue.extend(c for c in children if c["type"] == "dir")
+    return {"items": items}
 
 
 @router.get("/api/files/read")

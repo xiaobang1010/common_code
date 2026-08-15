@@ -136,8 +136,8 @@ const ToolStepView = memo(function ToolStepView({ step }: { step: WorkStep }) {
   )
 })
 
-// Markdown 渲染配置（复用）
-const markdownComponents = {
+// Markdown 渲染配置（对话区渲染与编辑区 .md 预览共用）
+export const markdownComponents = {
   code({ className, children }: { className?: string; children?: React.ReactNode }) {
     const match = /language-(\w+)/.exec(className || '')
     const codeText = String(children).replace(/\n$/, '')

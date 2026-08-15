@@ -5,9 +5,9 @@ import BrainStatusIcon from './BrainStatusIcon'
 interface TitleBarProps {
   workspaceSelector: React.ReactNode
   branchSelector: React.ReactNode
-  // 右侧检查器面板开关状态
-  inspectorVisible: boolean
-  onToggleInspector: () => void
+  // 编辑区展开状态：面板开关展开编辑区并聚焦最近工具标签
+  panelActive: boolean
+  onTogglePanel: () => void
   onOpenSettings: () => void
   onNewSession: () => void
   // 当前任务标题（侧栏折叠时仍可见）
@@ -68,8 +68,8 @@ function SettingsButton({ onOpenSettings }: { onOpenSettings: () => void }) {
 function TitleBar({
   workspaceSelector,
   branchSelector,
-  inspectorVisible,
-  onToggleInspector,
+  panelActive,
+  onTogglePanel,
   onOpenSettings,
   onNewSession,
   currentTaskTitle,
@@ -148,10 +148,10 @@ function TitleBar({
           ...appRegion('no-drag'),
         }}
       >
-        {/* 检查器面板开关 */}
+        {/* 面板开关：展开编辑区并聚焦最近工具标签 */}
         <button
-          onClick={onToggleInspector}
-          title={inspectorVisible ? '隐藏面板' : '打开面板'}
+          onClick={onTogglePanel}
+          title={panelActive ? '隐藏面板' : '打开面板'}
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -159,10 +159,10 @@ function TitleBar({
             width: '28px',
             height: '28px',
             border: '1px solid',
-            borderColor: inspectorVisible ? 'var(--accent)' : 'var(--border)',
+            borderColor: panelActive ? 'var(--accent)' : 'var(--border)',
             borderRadius: 'var(--radius-sm)',
-            background: inspectorVisible ? 'var(--accent-soft)' : 'transparent',
-            color: inspectorVisible ? 'var(--accent)' : 'var(--text-secondary)',
+            background: panelActive ? 'var(--accent-soft)' : 'transparent',
+            color: panelActive ? 'var(--accent)' : 'var(--text-secondary)',
             cursor: 'pointer',
             transition: 'all var(--transition-fast)',
             flexShrink: 0,
@@ -172,7 +172,7 @@ function TitleBar({
             e.currentTarget.style.color = 'var(--accent)'
           }}
           onMouseLeave={(e) => {
-            if (!inspectorVisible) {
+            if (!panelActive) {
               e.currentTarget.style.borderColor = 'var(--border)'
               e.currentTarget.style.color = 'var(--text-secondary)'
             }

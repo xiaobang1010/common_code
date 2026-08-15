@@ -10,6 +10,7 @@ from server.routers.files.routes import (
     CreateRequest,
     WriteRequest,
     create_file,
+    list_files,
     read_file,
     write_file,
 )
@@ -123,3 +124,28 @@ async def test_create_already_exists_409(workspace):
 async def test_create_invalid_type_400(workspace):
     result = await create_file(CreateRequest(path="x", type="link"))
     assert result.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_list_recursive_returns_nested_tree(workspace):
+    (workspace / "sub").mkdir()
+    (workspace / "sub" / "deep").mkdir()
+    (workspace / "sub" / "a.py").write_text("x", encoding="utf-8")
+    (workspace / "sub" / "deep" / "b.py").write_text("y", encoding="utf-8")
+    (workspace / "top.py").write_text("z", encoding="utf-8")
+    result = await list_files(".", recursive=True)
+    items = {it["name"]: it for it in result["items"]}
+    assert "top.py" in items
+    sub = items["sub"]
+    assert sub["type"] == "dir"
+    sub_children = {c["name"]: c for c in sub["children"]}
+    assert "a.py" in sub_children
+    assert [c["name"] for c in sub_children["deep"]["children"]] == ["b.py"]
+
+
+@pytest.mark.asyncio
+async def test_list_recursive_off_keeps_flat(workspace):
+    (workspace / "sub").mkdir()
+    result = await list_files(".", recursive=False)
+    for it in result["items"]:
+        assert "children" not in it
