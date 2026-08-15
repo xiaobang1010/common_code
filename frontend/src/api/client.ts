@@ -370,7 +370,7 @@ export const sessionsApi = {
   switch: (session_id: string) =>
     apiPost<{ ok: boolean; messages: Record<string, unknown>[]; workspace_path: string }>(`/api/sessions/${session_id}/switch`),
   grouped: () =>
-    apiGet<{ groups: SessionGroup[]; current_task: { session_id: string; state: string } | null }>('/api/sessions/grouped'),
+    apiGet<{ groups: SessionGroup[]; current_tasks: Array<{ session_id: string; state: string }> }>('/api/sessions/grouped'),
 }
 
 /** 工作区管理 */

@@ -17,8 +17,8 @@ export function useSessions() {
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([])
   const [allGroups, setAllGroups] = useState<SessionGroup[]>([])
-  // 当前运行任务（grouped API 透出，实时计算不落库）
-  const [currentTask, setCurrentTask] = useState<{ session_id: string; state: string } | null>(null)
+  // 当前运行任务列表（grouped API 透出，实时计算不落库；多任务并发时全量透出）
+  const [currentTasks, setCurrentTasks] = useState<Array<{ session_id: string; state: string }>>([])
 
   // 用 ref 保存当前工作区路径，避免 useCallback 依赖重建
   const currentWorkspacePathRef = useRef<string | null>(null)
@@ -64,7 +64,7 @@ export function useSessions() {
     try {
       const data = await sessionsApi.grouped()
       setAllGroups(data.groups)
-      setCurrentTask(data.current_task ?? null)
+      setCurrentTasks(data.current_tasks ?? [])
       return data.groups
     } catch {
       return []
@@ -86,15 +86,14 @@ export function useSessions() {
     }
   }, [loadSessions, loadAllSessions, updateCurrentSessionId])
 
-  // 切换会话，返回消息列表供 useChat 使用
+  // 切换会话，返回消息列表供 useChat 使用。
+  // 失败时错误冒泡给调用方：切换失败必须让调用方知道，否则调用方
+  // 误以为成功、更新本地状态，会导致前后端脱钩（界面显示已切换、
+  // 后端引擎仍是旧会话），下次发消息把旧会话历史写进目标会话
   const switchSession = useCallback(async (sessionId: string) => {
-    try {
-      const result = await sessionsApi.switch(sessionId)
-      updateCurrentSessionId(sessionId)
-      return result.messages
-    } catch {
-      return null
-    }
+    const result = await sessionsApi.switch(sessionId)
+    updateCurrentSessionId(sessionId)
+    return result.messages
   }, [updateCurrentSessionId])
 
   // 删除会话，刷新列表，如果删的是当前会话则切换到下一个
@@ -284,10 +283,11 @@ export function useSessions() {
   return {
     currentWorkspace,
     currentSessionId,
+    updateCurrentSessionId,
     sessions,
     workspaces,
     allGroups,
-    currentTask,
+    currentTasks,
     createSession,
     switchSession,
     deleteSession,

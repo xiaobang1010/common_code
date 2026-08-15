@@ -15,14 +15,15 @@ from tools.implementations.runtime.errors import path_outside_workspace_error
 
 
 def get_workspace_root() -> Path:
-    """获取工作区根目录 — 统一读取 server.paths.project_root()。
+    """获取工作区根目录 - 统一读取 server.paths.effective_root()。
 
-    不使用进程 cwd：工作区切换时 server.paths 的 project_root 会被更新，
-    而进程 cwd 是启动时的静态值，两者会在切换后分叉。
+    后台任务上下文里优先取任务的 workspace_var（跨工作区任务隔离），
+    否则回退全局 project_root()。不使用进程 cwd：工作区切换后
+    进程 cwd 是启动时的静态值，两者会分叉。
     """
-    from server.paths import project_root
+    from server.paths import effective_root
 
-    return Path(project_root())
+    return Path(effective_root())
 
 
 def _allowed_roots(workspace_root: Path) -> list[Path]:

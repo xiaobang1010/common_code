@@ -55,6 +55,8 @@ export interface PermissionRequest {
   tool_name: string
   tool_input: unknown
   reason: string
+  // 来源会话 id（后台任务跨会话弹窗标注用）
+  session_id?: string
 }
 
 // 提问请求（AskUserQuestion 工具）
@@ -62,6 +64,8 @@ export interface QuestionRequest {
   request_id: string
   question: string
   options: Array<{ label: string; description: string }>
+  // 来源会话 id（后台任务跨会话弹窗标注用）
+  session_id?: string
 }
 
 // SSE 事件结构
@@ -69,6 +73,8 @@ interface SSEEvent {
   type: string
   event_type?: string
   content?: string
+  // 后端自动建会话回传（session_meta 事件）
+  session_id?: string
   usage?: {
     prompt_tokens: number
     completion_tokens: number
@@ -111,6 +117,8 @@ export function formatDuration(ms: number): string {
 
 // 流式过程使用的模块级 ref（store 是单例，跨 action 调用保持）
 const sessionIdRef = { current: null as string | null }
+// 当前 SSE 连接的中止控制器：切换会话时仅断开连接（不取消后台任务）
+const sseAbortRef = { current: null as AbortController | null }
 const currentBlockId = { current: null as string | null }
 const finalReplyRef = { current: '' }
 const pendingReasoningRef = { current: '' }
@@ -145,6 +153,8 @@ interface ChatState {
   answerQuestion: (answer: string) => Promise<void>
   setPermissionMode: (mode: PermissionMode) => Promise<void>
   setSessionId: (id: string | null) => void
+  // 断开当前 SSE 连接（不取消后台任务），恢复可发送状态
+  disconnectStream: () => void
   fetchState: () => Promise<void>
 }
 
@@ -198,6 +208,11 @@ export const useChatStore = create<ChatState>((set, get) => {
 
   // 处理单个 SSE 事件
   const handleSSEEvent = (evt: SSEEvent) => {
+    // 会话元信息（后端自动建会话回传）：更新会话 ID，不依赖 block 存在
+    if (evt.type === 'session_meta' && evt.session_id) {
+      setSessionId(evt.session_id)
+      return
+    }
     const blockId = currentBlockId.current
     if (!blockId) return
 
@@ -278,6 +293,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           tool_name: evt.tool_name || '',
           tool_input: evt.tool_input,
           reason: evt.reason || '',
+          session_id: evt.session_id,
         },
       })
     } else if (evt.type === 'question_request') {
@@ -286,6 +302,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           request_id: evt.request_id || '',
           question: evt.question || '',
           options: evt.options || [],
+          session_id: evt.session_id,
         },
       })
     } else if (evt.type === 'error') {
@@ -407,10 +424,12 @@ export const useChatStore = create<ChatState>((set, get) => {
           // skill 触发：创建工作块，skill 正文作为 prompt 发到 /api/chat
           const blockId = createBlock(`Launching skill: ${data.skill_name}`)
           updateBlock(blockId, b => ({ ...b, userMessage: prompt }))
+          sseAbortRef.current = new AbortController()
           const chatResp = await fetch('/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ prompt: data.skill_prompt, session_id: sessionIdRef.current }),
+            signal: sseAbortRef.current.signal,
           })
           if (!chatResp.ok) throw new Error(`HTTP ${chatResp.status}`)
           await parseSSEStream(chatResp)
@@ -450,10 +469,12 @@ export const useChatStore = create<ChatState>((set, get) => {
     createBlock(prompt)
 
     try {
+      sseAbortRef.current = new AbortController()
       const resp = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt, session_id: sessionIdRef.current }),
+        signal: sseAbortRef.current.signal,
       })
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
       await parseSSEStream(resp)
@@ -521,7 +542,12 @@ export const useChatStore = create<ChatState>((set, get) => {
   // 停止当前对话
   const abort = async () => {
     try {
-      await fetch('/api/abort', { method: 'POST' })
+      await fetch('/api/abort', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // 停止作用于当前查看会话的任务（后端缺省也按查看会话处理）
+        body: JSON.stringify({ session_id: sessionIdRef.current }),
+      })
     } catch {
       // 忽略
     }
@@ -560,6 +586,16 @@ export const useChatStore = create<ChatState>((set, get) => {
   const setSessionId = (id: string | null) => {
     sessionIdRef.current = id
     set({ sessionId: id })
+  }
+
+  // 断开当前 SSE 连接（切换会话/工作区时调用）：仅断连接不取消后台任务，
+  // 任务在服务端继续跑；同时清空本地流式状态，让其他会话可以发消息
+  const disconnectStream = () => {
+    sseAbortRef.current?.abort()
+    sseAbortRef.current = null
+    currentBlockId.current = null
+    flushContent()
+    set({ isStreaming: false })
   }
 
   // 清空
@@ -665,6 +701,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     answerQuestion,
     setPermissionMode,
     setSessionId,
+    disconnectStream,
     fetchState,
   }
 })
