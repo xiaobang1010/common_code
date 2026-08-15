@@ -184,3 +184,17 @@ body {
   content-visibility: auto;
   contain-intrinsic-size: auto 320px;
 }
+
+/* 工作块文本流行：去盒子后保持键盘交互可感知 */
+.work-row:focus-visible {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+/* 减弱动效：spinner 与呼吸点静止 */
+@media (prefers-reduced-motion: reduce) {
+  .work-spin,
+  .work-pulse {
+    animation: none !important;
+  }
+}
