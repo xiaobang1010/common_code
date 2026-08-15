@@ -57,9 +57,9 @@ def _project_wing_name() -> str:
     根目录统一读 server.paths.project_root()（工作区切换后已更新），
     不使用进程 cwd（切换后不更新，会导致记忆归属错误的工作区）。
     """
-    from server.paths import project_root
+    from server.paths import effective_root
 
-    root = project_root()
+    root = effective_root()
     name = os.path.basename(root)
     digest = hashlib.sha1(os.path.abspath(root).encode("utf-8")).hexdigest()[:12]
     return f"{name}:{digest}"
@@ -96,9 +96,9 @@ def _build_project_info() -> str:
     让 agent 明确知晓当前工作区与访问边界（工作区根、git 分支、
     额外允许目录），不必靠 pwd/试错推断；随会话动态构建。
     """
-    from server.paths import project_root
+    from server.paths import effective_root
 
-    root = project_root()
+    root = effective_root()
     lines = [f"当前工作区根目录: {root}"]
     branch = _current_git_branch(root)
     if branch:

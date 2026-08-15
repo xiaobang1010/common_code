@@ -251,6 +251,18 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
             >
               权限确认
             </span>
+            {permissionRequest.session_id && (
+              <span
+                style={{
+                  color: 'var(--text-secondary)',
+                  fontSize: '11px',
+                  fontFamily: 'var(--font-ui)',
+                  marginLeft: '4px',
+                }}
+              >
+                来自会话 {permissionRequest.session_id.slice(0, 8)}
+              </span>
+            )}
           </div>
 
           {/* 工具名 - 等宽字体琥珀色 */}

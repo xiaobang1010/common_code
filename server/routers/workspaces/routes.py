@@ -139,10 +139,21 @@ async def delete_workspace(body: dict) -> dict:
 
     请求体：{"path": "..."}
     如果删除的是当前工作区，删除后清空当前工作区状态。
+    若运行中的任务属于该工作区，先中止并等待收尾（保存）落库再删——
+    否则任务所在会话随工作区删除后，收尾保存落空（更新零行），内容蒸发。
     """
+    from server.routers.sessions.routes import stop_session_run
+
     path = body.get("path", "")
     if not path:
         return {"ok": False, "error": "path is required"}
+
+    # 运行任务属于该工作区：先中止 + 等待收尾（按注册表遍历判断归属）
+    for run_session_id in list(server.state.running_runs.keys()):
+        run_session = server.state.session_store.get_session(run_session_id)
+        if run_session is not None and run_session.workspace_path == path:
+            if not await stop_session_run(run_session_id):
+                return {"ok": False, "error": "上一任务收尾超时，请重试"}
 
     deleted = server.state.session_store.delete_workspace(path)
     if not deleted:

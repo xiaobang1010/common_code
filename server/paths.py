@@ -32,6 +32,25 @@ def project_root() -> str:
     return _project_root_value
 
 
+def effective_root() -> str:
+    """返回当前执行上下文生效的工作区根目录。
+
+    后台任务上下文优先取 workspace_var（任务启动时设置自己所属工作区，
+    asyncio.Task 拷贝 context 保证任务内读取隔离），跨工作区后台任务的
+    文件沙箱/Bash/记忆归属/提示词工作区信息都取它；
+    非任务上下文（默认为空）回退全局 project_root()，行为不变。
+    """
+    try:
+        from server import state
+
+        task_workspace = state.workspace_var.get()
+        if task_workspace:
+            return task_workspace
+    except Exception:
+        pass
+    return project_root()
+
+
 def set_project_root(path: str) -> None:
     """切换工作区根目录。
 

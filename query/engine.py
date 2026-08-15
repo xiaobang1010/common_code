@@ -248,8 +248,9 @@ class QueryEngine:
         # 延迟 import 避免循环依赖
         from query.loop import query_loop
 
-        # UserPromptSubmit hooks：在消息进引擎前执行，可拦截或注入上下文
-        from startup.bootstrap.state import get_cwd_state
+        # UserPromptSubmit hooks：在消息进引擎前执行，可拦截或注入上下文。
+        # cwd 用 effective_root：后台任务上下文里取任务自己的工作区
+        from server.paths import effective_root
         from startup.hooks import run_user_prompt_submit_hooks
         from startup.setup import get_hooks_snapshot
         from query.services.api.llm import StreamEvent
@@ -262,7 +263,7 @@ class QueryEngine:
                     hook_snapshot,
                     prompt,
                     self._session_id,
-                    get_cwd_state(),
+                    effective_root(),
                 )
             except Exception:
                 hook_result = None

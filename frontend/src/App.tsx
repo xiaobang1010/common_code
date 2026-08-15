@@ -11,7 +11,7 @@ import BranchSelector from './components/ai/BranchSelector'
 import { useChatStore } from './stores/useChatStore'
 import { useSettingsStore } from './stores/useSettingsStore'
 import { useSessions } from './hooks/useSessions'
-import { gitApi } from './api/client'
+import { gitApi, sessionsApi } from './api/client'
 
 // 面板宽度范围约束
 const SIDEBAR_MIN = 180
@@ -42,6 +42,7 @@ function App() {
   // 聊天状态从 store 订阅：action 引用稳定，不会因流式更新引起本组件重渲
   const chatSessionId = useChatStore(s => s.sessionId)
   const setSessionId = useChatStore(s => s.setSessionId)
+  const disconnectStream = useChatStore(s => s.disconnectStream)
   const loadMessages = useChatStore(s => s.loadMessages)
   const clearMessages = useChatStore(s => s.clearMessages)
   const fetchState = useChatStore(s => s.fetchState)
@@ -104,6 +105,9 @@ function App() {
     sessions.switchSession(id).then(messages => {
       setSessionId(id)
       if (messages) loadMessages(messages)
+    }).catch(e => {
+      // 初始加载失败：提示用户，本地状态不动（引擎未覆盖，不会串数据）
+      alert(`加载会话失败：${e instanceof Error ? e.message : '未知错误'}`)
     })
   }, [sessions.currentSessionId]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -163,8 +167,69 @@ function App() {
 
   // ---- 会话管理相关回调 ----
 
-  // 新建会话：创建后设为当前，清空消息
+  // 删除类操作确认：删除会话/工作区会中止任务并删记录，统一提示
+  const confirmIfStreaming = useCallback((): boolean => {
+    if (!isStreaming) return true
+    return window.confirm('任务进行中，该操作将停止当前任务，确定继续？')
+  }, [isStreaming])
+
+  // 切回运行中会话：轻轮询 /api/state 拉实时消息展示任务进展；
+  // 后台任务结束后拉取最终消息
+  const prevTaskRunningRef = useRef(false)
+  const lastMsgCountRef = useRef(0)
+  useEffect(() => {
+    const taskRunning = sessions.currentTasks.some(t => t.session_id === chatSessionId)
+    if (!taskRunning) {
+      // 任务刚结束（之前在跑 -> 现在不在）：刷新消息列表展示后台任务产出
+      if (prevTaskRunningRef.current) {
+        prevTaskRunningRef.current = false
+        lastMsgCountRef.current = 0
+        if (chatSessionId) {
+          sessionsApi.get(chatSessionId)
+            .then(detail => loadMessages(detail.messages))
+            .catch(() => {})
+        }
+      }
+      return
+    }
+    prevTaskRunningRef.current = true
+    const timer = setInterval(async () => {
+      // 刷新运行态标记
+      sessions.loadAllSessions()
+      // 拉取任务引擎实时消息（消息数变化才重建视图，避免闪烁）
+      try {
+        const resp = await fetch('/api/state')
+        const data = await resp.json()
+        if (Array.isArray(data.messages) && data.messages.length !== lastMsgCountRef.current) {
+          lastMsgCountRef.current = data.messages.length
+          loadMessages(data.messages)
+        }
+      } catch {
+        // 忽略瞬时失败
+      }
+    }, 2000)
+    return () => clearInterval(timer)
+  }, [chatSessionId, sessions.currentTasks]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 当前查看会话是否在跑后台任务（运行态标记与输入提示用）
+  const runningSessionId = sessions.currentTasks.some(t => t.session_id === chatSessionId)
+    ? chatSessionId
+    : null
+
+  // 后端自动建会话（session_meta）回传后：同步会话 hook 的选中态并刷新列表。
+  // 幂等条件：chatSessionId 与 hook 源一致时不动作（初始加载/手动切换走各自逻辑）
+  useEffect(() => {
+    if (!chatSessionId) return
+    if (sessions.currentSessionId !== chatSessionId) {
+      sessions.updateCurrentSessionId(chatSessionId)
+      sessions.loadSessions()
+      sessions.loadAllSessions()
+    }
+  }, [chatSessionId, sessions]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 新建会话：创建后设为当前，清空消息（任务后台继续，无需确认）
   const handleCreateSession = useCallback(async () => {
+    disconnectStream()
     const id = await sessions.createSession()
     if (id) {
       setSessionId(id)
@@ -172,70 +237,100 @@ function App() {
     }
   }, [sessions, setSessionId, clearMessages])
 
-  // 切换会话：加载消息到聊天面板
+  // 切换会话：加载消息到聊天面板（不中止后台任务，任务继续写回原会话）。
+  // 切换失败时（404/网络错误）：不改本地状态、不清空界面，提示用户——
+  // 否则界面显示已切换而后端引擎仍是旧会话，下次发消息会把旧会话历史
+  // 写进目标会话（前后端脱钩串数据）
   const handleSwitchSession = useCallback(async (sessionId: string) => {
-    const messages = await sessions.switchSession(sessionId)
-    setSessionId(sessionId)
-    if (messages) {
-      loadMessages(messages)
-    } else {
-      clearMessages()
+    // 断开当前 SSE 连接：任务在后台继续跑，本地恢复可发送状态
+    disconnectStream()
+    try {
+      const messages = await sessions.switchSession(sessionId)
+      setSessionId(sessionId)
+      if (messages) {
+        loadMessages(messages)
+      } else {
+        clearMessages()
+      }
+    } catch (e) {
+      alert(`切换会话失败：${e instanceof Error ? e.message : '未知错误'}`)
     }
   }, [sessions, setSessionId, loadMessages, clearMessages])
 
-  // 删除会话：如果删的是当前会话，加载新的当前会话
+  // 删除会话：如果删的是当前会话，加载新的当前会话。
+  // 删除后的内嵌切换失败时：会话已删、本地 id 必须更新，后端已重置引擎，
+  // 清空界面并提示（引擎为空不会串数据）
   const handleDeleteSession = useCallback(async (sessionId: string) => {
+    if (!confirmIfStreaming()) return
+    disconnectStream()
     const wasCurrent = sessionId === chatSessionId
     const newSessionId = await sessions.deleteSession(sessionId)
     if (wasCurrent) {
       setSessionId(newSessionId)
       if (newSessionId) {
         // 加载新当前会话的消息
-        const messages = await sessions.switchSession(newSessionId)
-        if (messages) loadMessages(messages)
-        else clearMessages()
+        try {
+          const messages = await sessions.switchSession(newSessionId)
+          if (messages) loadMessages(messages)
+          else clearMessages()
+        } catch (e) {
+          clearMessages()
+          alert(`切换会话失败：${e instanceof Error ? e.message : '未知错误'}`)
+        }
       } else {
         clearMessages()
       }
     }
-  }, [sessions, setSessionId, loadMessages, clearMessages])
+  }, [sessions, setSessionId, loadMessages, clearMessages, chatSessionId, disconnectStream])
 
-  // 跨工作区切换会话：可能需要先切换工作区
+  // 跨工作区切换会话：可能需要先切换工作区（不中止后台任务）。
+  // 失败时不改本地状态、不清空界面并提示（同 handleSwitchSession）
   const handleSwitchInWorkspace = useCallback(async (sessionId: string, workspacePath: string) => {
-    const result = await sessions.switchToSessionInWorkspace(sessionId, workspacePath)
-    if (result) {
-      setSessionId(sessionId)
-      if (result.messages) {
-        loadMessages(result.messages)
-      } else {
-        clearMessages()
+    disconnectStream()
+    try {
+      const result = await sessions.switchToSessionInWorkspace(sessionId, workspacePath)
+      if (result) {
+        setSessionId(sessionId)
+        if (result.messages) {
+          loadMessages(result.messages)
+        } else {
+          clearMessages()
+        }
+        // 更新分支信息
+        if (result.branch !== undefined) {
+          setCurrentBranch(result.branch)
+        }
+        // 刷新分支列表（工作区可能变了）
+        if (sessions.currentWorkspace) {
+          gitApi.branches(sessions.currentWorkspace.path)
+            .then(data => {
+              setBranches(data.branches)
+              setCurrentBranch(data.current)
+            })
+            .catch(() => {})
+        }
       }
-      // 更新分支信息
-      if (result.branch !== undefined) {
-        setCurrentBranch(result.branch)
-      }
-      // 刷新分支列表（工作区可能变了）
-      if (sessions.currentWorkspace) {
-        gitApi.branches(sessions.currentWorkspace.path)
-          .then(data => {
-            setBranches(data.branches)
-            setCurrentBranch(data.current)
-          })
-          .catch(() => {})
-      }
+    } catch (e) {
+      alert(`切换会话失败：${e instanceof Error ? e.message : '未知错误'}`)
     }
   }, [sessions, setSessionId, loadMessages, clearMessages])
 
-  // 切换工作区：更新分支，加载新当前会话
+  // 切换工作区：更新分支，加载新当前会话（不中止后台任务）。
+  // 嵌套切换失败时提示用户，本地状态不动（后端引擎未覆盖，不会串数据）
   const handleSwitchWorkspace = useCallback(async (path: string) => {
+    disconnectStream()
     const result = await sessions.switchWorkspace(path)
     if (result) {
       setCurrentBranch(result.branch)
       // 加载新当前会话的消息
       if (result.sessionId) {
-        const messages = await sessions.switchSession(result.sessionId)
-        setSessionId(result.sessionId)
-        if (messages) loadMessages(messages)
+        try {
+          const messages = await sessions.switchSession(result.sessionId)
+          setSessionId(result.sessionId)
+          if (messages) loadMessages(messages)
+        } catch (e) {
+          alert(`切换会话失败：${e instanceof Error ? e.message : '未知错误'}`)
+        }
       } else {
         setSessionId(null)
         clearMessages()
@@ -262,8 +357,11 @@ function App() {
     }
   }, [])
 
-  // 移除工作区：删除后刷新列表，如果删的是当前工作区则清空聊天状态
+  // 移除工作区：删除后刷新列表，如果删的是当前工作区则清空聊天状态。
+  // 删除工作区会连名下所有会话一起删除，运行中的任务也会被中止，需确认
   const handleRemoveWorkspace = useCallback(async (workspacePath: string) => {
+    if (!confirmIfStreaming()) return
+    if (!window.confirm('删除工作区将删除其名下所有会话，确定继续？')) return
     const isCurrent = workspacePath === sessions.currentWorkspace?.path
     await sessions.deleteWorkspace(workspacePath)
     if (isCurrent) {
@@ -355,7 +453,7 @@ function App() {
                 onRemoveWorkspace={handleRemoveWorkspace}
                 onOpenWorkspace={handleOpenWorkspace}
                 onOpenSearch={handleOpenSearch}
-                runningSessionId={sessions.currentTask?.session_id ?? null}
+                runningSessionId={runningSessionId}
                 onRenameSession={sessions.renameSession}
                 onToggleSessionPin={sessions.toggleSessionPin}
                 onUpdateWorkspace={sessions.updateWorkspaceMeta}
@@ -378,7 +476,7 @@ function App() {
             onRemoveWorkspace={handleRemoveWorkspace}
             onOpenWorkspace={handleOpenWorkspace}
             onOpenSearch={handleOpenSearch}
-            runningSessionId={sessions.currentTask?.session_id ?? null}
+            runningSessionId={runningSessionId}
             onRenameSession={sessions.renameSession}
             onToggleSessionPin={sessions.toggleSessionPin}
             onUpdateWorkspace={sessions.updateWorkspaceMeta}
@@ -390,7 +488,7 @@ function App() {
           <AIPanel
             hasWorkspace={!!sessions.currentWorkspace}
             onOpenWorkspace={handleOpenWorkspace}
-            currentTaskSessionId={sessions.currentTask?.session_id ?? null}
+            currentTaskSessionId={runningSessionId}
           />
         </div>
 

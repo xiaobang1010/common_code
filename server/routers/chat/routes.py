@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
+from dataclasses import replace
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from query.engine import QueryEngine, build_engine_config
 from query.loop import LoopResult
 from query.services.api.llm import StreamEvent
+from server.paths import project_root
+from server.routers.sessions.routes import get_git_branch
 import server.state
 
 router = APIRouter()
@@ -23,15 +28,26 @@ router = APIRouter()
 
 @router.get("/api/state")
 async def get_state() -> dict:
-    """返回会话状态：消息历史、模型、token 用量、成本、权限模式。"""
+    """返回会话状态：消息历史、模型、token 用量、成本、权限模式。
+
+    当前查看会话有运行中的后台任务时，返回任务引擎的实时消息
+    （切回会话能看到任务进展），否则返回全局查看视图引擎的消息。
+    """
     from startup.bootstrap.state import get_permission_mode
 
     app_state = server.state.app_state
-    engine = server.state.engine
     state = app_state.get_state()
     usage = state.token_usage
+
+    # 运行任务的实时消息优先
+    messages: Any = server.state.engine.mutable_messages
+    view_session = server.state.engine_session_id
+    run = server.state.running_runs.get(view_session) if view_session else None
+    if run is not None and not run.finished.is_set():
+        messages = run.engine.mutable_messages
+
     return {
-        "messages": engine.mutable_messages,
+        "messages": messages,
         "model": state.model,
         "token_usage": {
             "input_tokens": usage.input_tokens,
@@ -101,125 +117,200 @@ def serialize_event(event: Any) -> dict:
 
 
 async def chat_event_stream(prompt: str, session_id: str = ""):
-    """SSE 事件生成器。
+    """SSE 事件生成器（订阅者角色）。
 
-    引擎的 submitMessage 是 async generator，当它挂起在 permission_prompt 回调时
-    （await future 等待前端决策），生成器需要能继续推 permission_request 事件；
-    同理，引擎挂起在 AskUserQuestion 提问回调时要推 question_request 事件。
+    任务模型：每次对话创建独立 RunContext（专属 QueryEngine + 消息缓冲 +
+    asyncio 任务），绑定启动时的会话。本生成器只是任务的订阅者：
+    断开仅注销订阅，任务在后台继续运行；收尾时保存到绑定会话，
+    若查看会话未被切换（engine_session_id == 启动值）则回写查看视图。
 
-    实现方式：用后台任务消费引擎事件放入队列，SSE 生成器从队列出队。
-    队列空时（引擎可能挂起在权限/提问回调），轮询权限桥和问题桥推对应事件。
+    保留语义（chat-session-binding）：session_id 为空自动建会话（校验工作区
+    已登记）、启动前立即持久化「DB 前缀 + 本条 user」、标题即时生成、
+    session_meta 固定回传、同会话串行约束。
     """
     from query.services.pricing import calculate_cost
 
     app_state = server.state.app_state
-    engine = server.state.engine
     permission_bridge = server.state.permission_bridge
     question_bridge = server.state.question_bridge
     session_store = server.state.session_store
 
-    queue: asyncio.Queue = asyncio.Queue()
+    # ---- 会话确定（自动建会话保留语义） ----
+    run_session_id = session_id
+    if not run_session_id:
+        workspace_path = project_root()
+        # 工作区已选择判定：当前路径已登记在工作区表
+        registered = False
+        if session_store is not None:
+            registered = any(w.path == workspace_path for w in session_store.list_workspaces())
+        if not registered:
+            yield f"data: {json.dumps({'type': 'error', 'error': '请先选择工作区'})}\n\n"
+            return
+        session = session_store.create_session(workspace_path, title="", branch=get_git_branch(workspace_path))
+        run_session_id = session.id
 
-    async def consume_engine():
-        """后台任务：消费引擎事件入队，同时累加 token 和成本到 AppState。"""
+    # ---- 同会话串行约束：同一会话同时只允许一个运行任务 ----
+    if run_session_id in server.state.running_runs:
+        yield (
+            f"data: {json.dumps({'type': 'error', 'error': '当前会话已有任务在运行，请先停止或等待完成'}, ensure_ascii=False)}\n\n"
+        )
+        return
+
+    # ---- 快照：DB 会话消息前缀（不含本条 user，user 由 submitMessage 内部追加） ----
+    session = session_store.get_session(run_session_id) if session_store is not None else None
+    prefix_messages: list[dict] = list(session.messages) if session else []
+    # 任务工作区：会话所属工作区（跨工作区后台任务的 cwd 隔离依据）
+    task_workspace = session.workspace_path if session else project_root()
+
+    # ---- 用户消息立即持久化（前缀 + 本条），标题即时生成 ----
+    if session_store is not None:
         try:
-            # user_context 必须传 None：引擎在进循环前已追加用户消息，
-            # 循环里以「user_context 为 None」判定首轮记忆注入，传空字典会导致注入永不执行
-            async for ev in engine.submitMessage(
-                prompt, user_context=None, system_context=None
-            ):
-                # 拦截 usage 事件，累加 token 和成本到 AppState（和 repl.py 逻辑一致）
-                if isinstance(ev, StreamEvent) and ev.type == "usage" and ev.usage:
-                    state = app_state.get_state()
-                    prompt_tokens = ev.usage.get("prompt_tokens", 0)
-                    completion_tokens = ev.usage.get("completion_tokens", 0)
-                    cache_read = ev.usage.get("cache_read_input_tokens", 0)
-                    cache_creation = ev.usage.get("cache_creation_input_tokens", 0)
-                    state.token_usage.input_tokens += prompt_tokens
-                    state.token_usage.output_tokens += completion_tokens
-                    state.token_usage.cache_read_input_tokens += cache_read
-                    state.token_usage.cache_creation_input_tokens += cache_creation
-                    # 最近一次请求的上下文大小和缓存大小（覆盖，不累加）
-                    state.token_usage.last_prompt_tokens = prompt_tokens
-                    state.token_usage.last_cache_creation = cache_creation
-                    cost = calculate_cost(state.model or "", ev.usage)
-                    state.total_cost_usd += cost
-                await queue.put(ev)
-        except Exception as e:
-            await queue.put(e)
-        finally:
-            # 哨兵，表示引擎结束
-            await queue.put(None)
+            session_store.save_messages(
+                run_session_id, [*prefix_messages, {"role": "user", "content": prompt}]
+            )
+            if session is not None and not session.title and prompt.strip():
+                session_store.update_session_title(run_session_id, prompt.strip()[:40])
+        except Exception:
+            pass
 
-    task = asyncio.create_task(consume_engine())
-    # 记录到全局变量，供 /api/abort 取消；同时记录所属会话，供列表 API 透出运行态
-    server.state.current_task = task
-    server.state.current_session_id = session_id
+    # ---- 创建任务引擎与 RunContext ----
+    async def task_permission_prompt(tool_name: str, tool_input: dict, reason: str) -> str:
+        # 闭包携带来源会话，桥的请求事件据此标注（跨会话可见）
+        return await permission_bridge.request_permission(
+            tool_name, tool_input, reason, session_id=run_session_id
+        )
+
+    async def task_question_prompt(question: str, options: list[dict]) -> str:
+        return await question_bridge.ask_question(question, options, session_id=run_session_id)
+
+    config = build_engine_config(
+        permission_prompt=task_permission_prompt,
+        question_prompt=task_question_prompt if question_bridge else None,
+    )
+    config = replace(config, cwd=task_workspace)
+    task_engine = QueryEngine(config, initial_messages=prefix_messages)
+
+    run = server.state.RunContext(session_id=run_session_id, engine=task_engine, started_at=time.time())
+    server.state.running_runs[run_session_id] = run
+    # 注册时把查看会话指向本会话并记录启动值（收尾回写判定用；
+    # 自动建会话场景由 None 指向新会话；run 期间 switch 会改变它）
+    server.state.engine_session_id = run_session_id
+    view_session_at_start = run_session_id
+
+    # ---- 任务事件分发：无订阅者时丢弃（不做无界缓冲） ----
+    def dispatch(ev: Any) -> None:
+        for queue in list(run.subscribers):
+            queue.put_nowait(ev)
+
+    async def run_engine() -> None:
+        """后台任务体：跑引擎循环，收尾统一走清理路径。"""
+        try:
+            # cwd 隔离：任务上下文里设置自己的工作区，
+            # 任务内的工具沙箱/Bash/记忆归属/提示词工作区信息都取它
+            token = server.state.workspace_var.set(task_workspace)
+            try:
+                # user_context 必须传 None：引擎以「user_context 为 None」判定首轮记忆注入
+                async for ev in task_engine.submitMessage(prompt, user_context=None, system_context=None):
+                    # 拦截 usage 事件，累加 token 和成本到 AppState
+                    if isinstance(ev, StreamEvent) and ev.type == "usage" and ev.usage:
+                        state = app_state.get_state()
+                        prompt_tokens = ev.usage.get("prompt_tokens", 0)
+                        completion_tokens = ev.usage.get("completion_tokens", 0)
+                        cache_read = ev.usage.get("cache_read_input_tokens", 0)
+                        cache_creation = ev.usage.get("cache_creation_input_tokens", 0)
+                        state.token_usage.input_tokens += prompt_tokens
+                        state.token_usage.output_tokens += completion_tokens
+                        state.token_usage.cache_read_input_tokens += cache_read
+                        state.token_usage.cache_creation_input_tokens += cache_creation
+                        state.token_usage.last_prompt_tokens = prompt_tokens
+                        state.token_usage.last_cache_creation = cache_creation
+                        cost = calculate_cost(state.model or "", ev.usage)
+                        state.total_cost_usd += cost
+                    dispatch(ev)
+            finally:
+                server.state.workspace_var.reset(token)
+        except Exception as e:
+            dispatch(e)
+        finally:
+            # ---- 收尾统一清理路径：保存 -> 回写视图 -> 移出注册表 -> 按来源清桥 -> 置位 ----
+            try:
+                session_store.save_messages(run_session_id, task_engine.mutable_messages)
+                final_session = session_store.get_session(run_session_id)
+                if final_session and not final_session.title:
+                    for msg in task_engine.mutable_messages:
+                        if msg.get("role") == "user":
+                            content = msg.get("content", "")
+                            if isinstance(content, str) and content.strip():
+                                session_store.update_session_title(run_session_id, content.strip()[:40])
+                                break
+            except Exception:
+                pass
+            # 回写查看视图：查看会话未被切换（含切走又切回）时同步视图，
+            # 否则用户看到进展回退、下一轮快照会用旧视图覆盖任务产出
+            if server.state.engine_session_id == view_session_at_start:
+                server.state.engine.mutable_messages = list(task_engine.mutable_messages)
+            server.state.running_runs.pop(run_session_id, None)
+            if permission_bridge is not None:
+                permission_bridge.clear_pending(session_id=run_session_id)
+            if question_bridge is not None:
+                question_bridge.clear_pending(session_id=run_session_id)
+            run.finished.set()
+            # 哨兵最后发：订阅者收到 None 时收尾已全部完成
+            dispatch(None)
+
+    run.task = asyncio.create_task(run_engine())
+
+    # ---- SSE 转发循环（订阅者；断开仅注销订阅，不取消任务） ----
+    subscriber: asyncio.Queue = asyncio.Queue()
+    run.subscribers.add(subscriber)
+
+    def _format_pending() -> list[str]:
+        """格式化当前所有未决权限/提问请求（桥为状态查询式，多个流都可见）。"""
+        chunks: list[str] = []
+        if permission_bridge is not None:
+            for req in permission_bridge.get_pending_requests():
+                chunks.append(f"data: {json.dumps(req, ensure_ascii=False, default=str)}\n\n")
+        if question_bridge is not None:
+            for q in question_bridge.get_pending_questions():
+                chunks.append(f"data: {json.dumps(q, ensure_ascii=False, default=str)}\n\n")
+        return chunks
 
     try:
+        # session_meta 固定为首个事件
+        meta_session = session_store.get_session(run_session_id) if session_store is not None else None
+        yield (
+            f"data: {json.dumps({'type': 'session_meta', 'session_id': run_session_id, 'title': meta_session.title if meta_session else ''}, ensure_ascii=False)}\n\n"
+        )
+
         while True:
             try:
-                # 短超时轮询，让生成器有机会在引擎挂起时推权限请求
-                ev = await asyncio.wait_for(queue.get(), timeout=0.2)
+                ev = await asyncio.wait_for(subscriber.get(), timeout=0.2)
             except asyncio.TimeoutError:
-                # 队列空，检查有没有待推送的权限请求或提问请求
-                req = permission_bridge.get_pending_permission_request()
-                if req is not None:
-                    yield f"data: {json.dumps(req, ensure_ascii=False, default=str)}\n\n"
+                # 队列空：检查未决权限/提问请求，没有则推心跳保活
+                pending = _format_pending()
+                if pending:
+                    for chunk in pending:
+                        yield chunk
                 else:
-                    q = question_bridge.get_pending_question() if question_bridge else None
-                    if q is not None:
-                        yield f"data: {json.dumps(q, ensure_ascii=False, default=str)}\n\n"
-                    else:
-                        # 推心跳，让前端知道后端还活着（AI 可能在思考或执行工具）
-                        yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
                 continue
 
             if ev is None:
-                # 引擎结束，退出循环
+                # 任务结束，退出转发循环（后台任务自己完成收尾）
                 break
 
             if isinstance(ev, Exception):
-                # 引擎抛异常，推错误事件
                 yield f"data: {json.dumps({'type': 'error', 'error': str(ev)}, ensure_ascii=False)}\n\n"
                 break
 
             yield f"data: {json.dumps(serialize_event(ev), ensure_ascii=False, default=str)}\n\n"
 
-            # 每个事件后也检查权限请求和提问请求
-            req = permission_bridge.get_pending_permission_request()
-            if req is not None:
-                yield f"data: {json.dumps(req, ensure_ascii=False, default=str)}\n\n"
-            q = question_bridge.get_pending_question() if question_bridge else None
-            if q is not None:
-                yield f"data: {json.dumps(q, ensure_ascii=False, default=str)}\n\n"
+            # 每个事件后也检查权限/提问请求
+            for chunk in _format_pending():
+                yield chunk
     finally:
-        # 客户端断开或引擎结束，清理后台任务
-        if not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-        # 清理全局引用
-        server.state.current_task = None
-        server.state.current_session_id = None
-        # 会话持久化：把完整消息列表存到 SQLite
-        if session_id and session_store is not None:
-            try:
-                session_store.save_messages(session_id, engine.mutable_messages)
-                # 自动生成标题：标题为空且存在用户消息时，取首条用户消息前 40 字符
-                session = session_store.get_session(session_id)
-                if session and not session.title:
-                    for msg in engine.mutable_messages:
-                        if msg.get("role") == "user":
-                            content = msg.get("content", "")
-                            if isinstance(content, str) and content.strip():
-                                title = content.strip()[:40]
-                                session_store.update_session_title(session_id, title)
-                                break
-            except Exception:
-                pass
+        # 断开仅注销订阅：任务在后台继续运行
+        run.subscribers.discard(subscriber)
 
 
 @router.post("/api/chat")
@@ -243,21 +334,31 @@ async def chat(body: dict) -> StreamingResponse:
 
 
 @router.post("/api/abort")
-async def abort_query() -> JSONResponse:
-    """取消当前正在进行的对话任务。
+async def abort_query(request: Request) -> JSONResponse:
+    """取消指定会话的运行任务。
 
-    通过取消 consume_engine 后台任务来中断对话，
-    SSE 流会因任务取消而结束，前端收到连接关闭后恢复输入状态。
+    请求体 {"session_id": "..."} 可选，缺省作用于当前查看会话的任务。
+    cancel 后等待该任务的 finished 收尾事件（保存完成）；超时不移出
+    注册表、返回错误--收尾由任务自己的 finally 完成。
     """
-    import server.state
-
-    if server.state.current_task is not None and not server.state.current_task.done():
-        server.state.current_task.cancel()
+    body: dict = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    session_id = body.get("session_id") or server.state.engine_session_id
+    run = server.state.running_runs.get(session_id) if session_id else None
+    if run is None:
+        return JSONResponse(content={"ok": False, "error": "no running task"})
+    if not run.task.done():
+        run.task.cancel()
         try:
-            await server.state.current_task
+            await run.task
         except asyncio.CancelledError:
             pass
-        server.state.current_task = None
-        server.state.current_session_id = None
-        return JSONResponse(content={"ok": True})
-    return JSONResponse(content={"ok": False, "error": "no running task"})
+    timeout = getattr(server.state, "stream_finalize_timeout", 10.0)
+    try:
+        await asyncio.wait_for(run.finished.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        return JSONResponse(content={"ok": False, "error": "stream finalize timeout"})
+    return JSONResponse(content={"ok": True})

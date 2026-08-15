@@ -50,6 +50,18 @@ function QuestionCard({ questionRequest, onAnswer }: Props) {
         >
           AI 提问
         </span>
+        {questionRequest.session_id && (
+          <span
+            style={{
+              color: 'var(--text-secondary)',
+              fontSize: '11px',
+              fontFamily: 'var(--font-ui)',
+              marginLeft: '4px',
+            }}
+          >
+            来自会话 {questionRequest.session_id.slice(0, 8)}
+          </span>
+        )}
       </div>
 
       {/* 问题文本 */}

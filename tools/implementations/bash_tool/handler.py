@@ -75,13 +75,14 @@ async def handle_bash(
 
     try:
         # 显式传入工作区根目录：Bash 默认目录与文件工具沙箱根对齐，
-        # 不继承进程 cwd（切换工作区后进程 cwd 不会更新）
-        from server.paths import project_root
+        # 不继承进程 cwd（切换工作区后进程 cwd 不会更新）；
+        # 用 effective_root：后台任务上下文里取任务自己的工作区
+        from server.paths import effective_root
 
         proc = await asyncio.create_subprocess_exec(
             *shell_cmd,
             actual_command,
-            cwd=project_root(),
+            cwd=effective_root(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
