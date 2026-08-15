@@ -1,11 +1,20 @@
 /* ============================================================
  * Common Code 设计系统
- * 美学方向：精致的暗色工作站，温暖的琥珀色点缀
+ * 美学方向：中性深色工作站，灰阶层级表达
  * 灵感来源：ZCode、Linear、Raycast 的深色精致感
+ *
+ * 配色原则：灰是常态、色是例外
+ * 1. 层级靠背景明度层、文字灰阶、细灰边框表达，不靠色相；
+ *    选中 = 背景层抬升 + 白字，hover = 轻微提亮
+ * 2. 彩色只允许出现在语义状态，且必须同时有文字/图标等非颜色提示：
+ *    --error 错误/危险、--warning 警告/权限风险、
+ *    --success 成功、--info 信息/运行中
+ * 3. 禁止用彩色做装饰：hover、选中、焦点、logo、行内代码、
+ *    链接、默认按钮、装饰阴影、文本选区、氛围渐变
  * ============================================================ */
 
 :root {
-  /* 背景层级 - 深石板色带微妙暖意，不是纯黑 */
+  /* 背景层级 - 中性深色，几乎不带色相 */
   --bg-base: #0f1115;           /* 最底层 - 几乎黑，带蓝灰调 */
   --bg-primary: #14171c;        /* 主背景 - 编辑器区 */
   --bg-secondary: #181b22;      /* 次背景 - 侧边栏、AI 面板 */
@@ -17,20 +26,30 @@
   --border-strong: #353b47;
   --border-subtle: #1d2128;
 
-  /* 文字 - 暖灰，不刺眼 */
+  /* 文字 - 中性灰，不刺眼 */
   --text-primary: #e6e9ef;      /* 主文字 - 高对比 */
   --text-secondary: #8b919e;    /* 次文字 - 标签、说明 */
   --text-tertiary: #5a6172;     /* 三级文字 - 占位、禁用 */
 
-  /* 主色调 - 琥珀金，温暖且专业 */
-  --accent: #f5a623;
-  --accent-hover: #ffb84d;
-  --accent-soft: rgba(245, 166, 35, 0.12);
-  --accent-glow: rgba(245, 166, 35, 0.25);
+  /* 交互状态 - 中性白色透明层，无彩色 */
+  --hover-bg: rgba(255, 255, 255, 0.05);     /* hover 轻微提亮 */
+  --selected-bg: rgba(255, 255, 255, 0.10);  /* 选中背景抬升 */
+  --focus-ring: rgba(255, 255, 255, 0.12);   /* 键盘焦点 ring，微弱光晕 */
 
-  /* 语义色 - 柔和但清晰 */
+  /* 内容元素 - 行内代码灰底 chip */
+  --code-bg: rgba(255, 255, 255, 0.07);
+  --code-border: rgba(255, 255, 255, 0.08);
+  --code-text: #c9cdd6;
+
+  /* 主按钮 - 中性高对比，唯一主操作 */
+  --button-primary-bg: rgba(255, 255, 255, 0.14);
+  --button-primary-bg-hover: rgba(255, 255, 255, 0.20);
+  --button-primary-text: #ffffff;
+
+  /* 语义色 - 柔和但清晰，仅用于语义场景 */
   --success: #4ec9b0;
   --warning: #ffb347;
+  --warning-soft: rgba(255, 179, 71, 0.12);  /* 警示语义的弱背景，仅配合 --warning 使用 */
   --error: #ff6b6b;
   --info: #6cb6ff;
 
@@ -41,11 +60,10 @@
   --syntax-comment: #5c6370;
   --syntax-function: #61afef;
 
-  /* 阴影 - 营造深度 */
+  /* 阴影 - 营造深度，中性黑 */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.5);
-  --shadow-glow: 0 0 24px var(--accent-glow);
 
   /* 字体 - 专业且有特色 */
   --font-ui: 'Geist', 'IBM Plex Sans', -apple-system, "Microsoft YaHei", sans-serif;
@@ -87,10 +105,9 @@ body {
 #root {
   height: 100vh;
   width: 100vw;
-  /* 微妙的径向渐变背景，营造氛围 */
+  /* 微妙的径向渐变背景，中性无偏色 */
   background:
-    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(245, 166, 35, 0.04), transparent),
-    radial-gradient(ellipse 60% 40% at 100% 100%, rgba(108, 182, 255, 0.03), transparent),
+    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(255, 255, 255, 0.02), transparent),
     var(--bg-base);
 }
 
@@ -110,10 +127,21 @@ body {
   background: var(--text-tertiary);
 }
 
-/* 选中文本 */
+/* 选中文本 - 中性灰 */
 ::selection {
-  background: var(--accent-soft);
-  color: var(--accent-hover);
+  background: rgba(255, 255, 255, 0.22);
+}
+
+/* 内容区链接 - 中性浅色 + 下划线，hover 提亮 */
+.markdown-link {
+  color: var(--text-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--border-strong);
+}
+.markdown-link:hover {
+  color: #ffffff;
+  text-decoration-color: currentColor;
 }
 
 /* 流式输出时的闪烁光标 */

@@ -61,7 +61,7 @@ function Tabs({ tabs, activePath, onSwitch, onClose }: TabsProps) {
               color: active ? 'var(--text-primary)' : 'var(--text-tertiary)',
               backgroundColor: active ? 'var(--bg-secondary)' : 'transparent',
               borderRight: '1px solid var(--border-subtle)',
-              borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
+              borderBottom: active ? '2px solid var(--border-strong)' : '2px solid transparent',
               whiteSpace: 'nowrap',
               flexShrink: 0,
               transition: 'all var(--transition-fast)',
@@ -88,7 +88,7 @@ function Tabs({ tabs, activePath, onSwitch, onClose }: TabsProps) {
                   width: '6px',
                   height: '6px',
                   borderRadius: '50%',
-                  background: 'var(--accent)',
+                  background: 'var(--text-primary)',
                   flexShrink: 0,
                 }}
               />

@@ -29,7 +29,7 @@ function getFileColor(name: string): string {
 // 文件夹图标 SVG
 function FolderIcon({ open }: { open: boolean }) {
   return open ? (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-primary)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
       <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
       <path d="M3 12h18" stroke="var(--border-strong)" strokeWidth="1" />
     </svg>
@@ -66,7 +66,7 @@ function HighlightedName({ name, q }: { name: string; q: string }) {
   return (
     <span>
       {name.slice(0, idx)}
-      <span style={{ backgroundColor: 'var(--accent-soft)', color: 'var(--accent)', fontWeight: 600 }}>{name.slice(idx, idx + q.length)}</span>
+      <span style={{ backgroundColor: 'var(--selected-bg)', color: 'var(--text-primary)', fontWeight: 600 }}>{name.slice(idx, idx + q.length)}</span>
       {name.slice(idx + q.length)}
     </span>
   )
@@ -158,7 +158,7 @@ function FileTreeNode({ item, depth, onFileOpen, activePath }: FileTreeNodeProps
           fontFamily: 'var(--font-ui)',
           whiteSpace: 'nowrap',
           userSelect: 'none',
-          backgroundColor: isActive ? 'var(--accent-soft)' : hovered ? 'var(--bg-tertiary)' : 'transparent',
+          backgroundColor: isActive ? 'var(--selected-bg)' : hovered ? 'var(--hover-bg)' : 'transparent',
           borderRadius: 'var(--radius-sm)',
           margin: '0 4px',
           transition: 'background var(--transition-fast)',
@@ -167,7 +167,7 @@ function FileTreeNode({ item, depth, onFileOpen, activePath }: FileTreeNodeProps
         <span style={{ width: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           {loading ? <LoadingIcon /> : isDir ? <FolderIcon open={expanded} /> : <FileIcon color={fileColor} />}
         </span>
-        <span style={{ fontWeight: isDir ? 500 : isActive ? 500 : 400, color: isActive ? 'var(--accent)' : undefined }}>{item.name}</span>
+        <span style={{ fontWeight: isDir ? 500 : isActive ? 500 : 400, color: isActive ? 'var(--text-primary)' : undefined }}>{item.name}</span>
       </div>
       {isDir && expanded && loaded && (
         <div>
@@ -208,19 +208,19 @@ function FilteredTreeNode({ node, depth, q, onFileOpen, activePath }: {
           paddingRight: '8px',
           height: '26px',
           cursor: isDir ? 'default' : 'pointer',
-          color: isDir ? 'var(--text-primary)' : isActive ? 'var(--accent)' : fileColor,
+          color: isDir || isActive ? 'var(--text-primary)' : fileColor,
           fontSize: '13px',
           fontFamily: 'var(--font-ui)',
           whiteSpace: 'nowrap',
           userSelect: 'none',
-          backgroundColor: isActive ? 'var(--accent-soft)' : hovered ? 'var(--bg-tertiary)' : 'transparent',
+          backgroundColor: isActive ? 'var(--selected-bg)' : hovered ? 'var(--hover-bg)' : 'transparent',
           borderRadius: 'var(--radius-sm)',
           margin: '0 4px',
           transition: 'background var(--transition-fast)',
         }}
       >
         <span style={{ width: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          {isDir ? <FolderIcon open={true} /> : <FileIcon color={isActive ? 'var(--accent)' : fileColor} />}
+          {isDir ? <FolderIcon open={true} /> : <FileIcon color={isActive ? 'var(--text-primary)' : fileColor} />}
         </span>
         <span style={{ fontWeight: isDir ? 500 : isActive ? 500 : 400 }}>
           <HighlightedName name={node.item.name} q={q} />
@@ -449,7 +449,7 @@ function FileTree({ onFileOpen, activePath }: FileTreeProps) {
           <div style={{ display: 'flex', gap: '6px' }}>
             <button
               onClick={() => void confirmCreate()}
-              style={{ padding: '3px 10px', cursor: 'pointer', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 'var(--radius-sm)', fontSize: '12px' }}
+              style={{ padding: '3px 10px', cursor: 'pointer', background: 'var(--button-primary-bg)', color: 'var(--button-primary-text)', border: 'none', borderRadius: 'var(--radius-sm)', fontSize: '12px' }}
             >
               确定
             </button>

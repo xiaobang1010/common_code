@@ -19,10 +19,10 @@ function railButtonStyle(active: boolean): React.CSSProperties {
     width: '28px',
     height: '28px',
     border: '1px solid',
-    borderColor: active ? 'var(--accent)' : 'transparent',
+    borderColor: active ? 'var(--border-strong)' : 'transparent',
     borderRadius: 'var(--radius-sm)',
-    background: active ? 'var(--accent-soft)' : 'transparent',
-    color: active ? 'var(--accent)' : 'var(--text-secondary)',
+    background: active ? 'var(--selected-bg)' : 'transparent',
+    color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
     cursor: 'pointer',
     transition: 'all var(--transition-fast)',
     position: 'relative',
@@ -60,7 +60,7 @@ function IconRail({ activeToolId, editorCollapsed, onToolClick, onToggleEditor }
             onMouseEnter={(e) => {
               if (!active) {
                 e.currentTarget.style.borderColor = 'var(--border)'
-                e.currentTarget.style.color = 'var(--accent)'
+                e.currentTarget.style.color = 'var(--text-primary)'
               }
             }}
             onMouseLeave={(e) => {
@@ -81,7 +81,7 @@ function IconRail({ activeToolId, editorCollapsed, onToolClick, onToggleEditor }
                   width: '5px',
                   height: '5px',
                   borderRadius: '50%',
-                  backgroundColor: 'var(--accent)',
+                  backgroundColor: 'var(--text-primary)',
                 }}
               />
             )}
@@ -100,7 +100,7 @@ function IconRail({ activeToolId, editorCollapsed, onToolClick, onToggleEditor }
         onMouseEnter={(e) => {
           if (editorCollapsed) {
             e.currentTarget.style.borderColor = 'var(--border)'
-            e.currentTarget.style.color = 'var(--accent)'
+            e.currentTarget.style.color = 'var(--text-primary)'
           }
         }}
         onMouseLeave={(e) => {

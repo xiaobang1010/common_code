@@ -132,7 +132,7 @@ export function Toggle({ checked, onChange, disabled, loading }: ToggleProps) {
         height: '18px',
         borderRadius: '10px',
         border: 'none',
-        backgroundColor: checked ? 'var(--accent)' : 'var(--bg-tertiary)',
+        backgroundColor: checked ? 'var(--text-primary)' : 'var(--bg-tertiary)',
         position: 'relative',
         cursor: isDisabled ? 'not-allowed' : 'pointer',
         opacity: isDisabled ? 0.5 : 1,

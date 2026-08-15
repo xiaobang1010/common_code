@@ -45,8 +45,8 @@ function Terminal({ instanceId, onReady }: TerminalProps) {
       theme: {
         background: '#0f1115',
         foreground: '#e6e9ef',
-        cursor: '#f5a623',
-        selectionBackground: 'rgba(245, 166, 35, 0.2)',
+        cursor: '#e6e9ef',
+        selectionBackground: 'rgba(255, 255, 255, 0.22)',
       },
       cursorBlink: true,
     })

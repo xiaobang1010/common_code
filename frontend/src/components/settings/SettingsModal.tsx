@@ -36,8 +36,8 @@ function LayoutSection({ onResetLayout }: { onResetLayout: () => void }) {
           alignSelf: 'flex-start',
           padding: '8px 16px',
           cursor: 'pointer',
-          background: 'var(--accent)',
-          color: '#fff',
+          background: 'var(--button-primary-bg)',
+          color: 'var(--button-primary-text)',
           border: 'none',
           borderRadius: 'var(--radius-sm)',
           fontSize: '12px',
@@ -161,8 +161,8 @@ function SettingsModal({ open, onClose, onResetLayout }: SettingsModalProps) {
                 onClick={() => setActiveSection(sec.id)}
                 style={{
                   border: 'none',
-                  background: isActive ? 'var(--accent-soft)' : 'transparent',
-                  color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
+                  background: isActive ? 'var(--selected-bg)' : 'transparent',
+                  color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
                   textAlign: 'left',
                   padding: '8px 10px',
                   borderRadius: 'var(--radius-sm)',
@@ -173,7 +173,7 @@ function SettingsModal({ open, onClose, onResetLayout }: SettingsModalProps) {
                 }}
                 onMouseEnter={(e) => {
                   if (!isActive) {
-                    e.currentTarget.style.background = 'var(--bg-tertiary)'
+                    e.currentTarget.style.background = 'var(--hover-bg)'
                     e.currentTarget.style.color = 'var(--text-primary)'
                   }
                 }}

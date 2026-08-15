@@ -236,7 +236,7 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
         >
           {/* 标题行：警告图标 + 权限确认 */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--warning)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
               <path d="M12 2 2 22h20L12 2z" />
               <path d="M12 9v4M12 17h.01" />
             </svg>
@@ -265,10 +265,10 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
             )}
           </div>
 
-          {/* 工具名 - 等宽字体琥珀色 */}
+          {/* 工具名 - 等宽字体，警示琥珀色 */}
           <div
             style={{
-              color: 'var(--accent)',
+              color: 'var(--warning)',
               fontSize: '13px',
               fontFamily: 'var(--font-mono)',
               fontWeight: 500,
@@ -340,7 +340,7 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
             >
               拒绝
             </button>
-            {/* 总是允许 - 描边按钮，hover 琥珀色 */}
+            {/* 总是允许 - 描边按钮，hover 中性提亮 */}
             <button
               onClick={() => onResolve('always_allow')}
               style={{
@@ -356,41 +356,39 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
                 transition: 'all var(--transition-fast)',
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = 'var(--accent-soft)'
-                e.currentTarget.style.borderColor = 'var(--accent)'
-                e.currentTarget.style.color = 'var(--accent)'
+                e.currentTarget.style.backgroundColor = 'var(--hover-bg)'
+                e.currentTarget.style.color = 'var(--text-primary)'
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.backgroundColor = 'transparent'
-                e.currentTarget.style.borderColor = 'var(--border-strong)'
                 e.currentTarget.style.color = 'var(--text-secondary)'
               }}
             >
               总是允许
             </button>
-            {/* 允许 - 琥珀渐变主按钮 */}
+            {/* 允许 - 中性高对比主按钮 */}
             <button
               onClick={() => onResolve('allow')}
               style={{
                 padding: '6px 16px',
-                border: 'none',
+                border: '1px solid rgba(255, 255, 255, 0.25)',
                 borderRadius: 'var(--radius-md)',
                 cursor: 'pointer',
                 fontSize: '12px',
                 fontFamily: 'var(--font-ui)',
                 fontWeight: 600,
-                background: 'linear-gradient(135deg, var(--accent), #ff7a45)',
-                color: '#1a1a1a',
-                boxShadow: '0 4px 12px rgba(245, 166, 35, 0.3)',
+                background: 'var(--button-primary-bg-hover)',
+                color: 'var(--button-primary-text)',
+                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.35)',
                 transition: 'all var(--transition-fast)',
               }}
               onMouseEnter={(e) => {
                 e.currentTarget.style.transform = 'translateY(-1px)'
-                e.currentTarget.style.boxShadow = '0 6px 16px rgba(245, 166, 35, 0.4)'
+                e.currentTarget.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.4)'
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.transform = 'translateY(0)'
-                e.currentTarget.style.boxShadow = '0 4px 12px rgba(245, 166, 35, 0.3)'
+                e.currentTarget.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.35)'
               }}
             >
               允许
@@ -428,7 +426,7 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
               style={{
                 padding: '8px 14px',
                 cursor: 'pointer',
-                backgroundColor: idx === selectedIdx ? 'var(--accent-soft)' : 'transparent',
+                backgroundColor: idx === selectedIdx ? 'var(--selected-bg)' : 'transparent',
                 color: 'var(--text-primary)',
                 fontSize: '13px',
                 display: 'flex',
@@ -437,7 +435,7 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
                 transition: 'background var(--transition-fast)',
               }}
             >
-              <span style={{ fontFamily: 'var(--font-mono)', color: idx === selectedIdx ? 'var(--accent)' : 'var(--text-primary)' }}>
+              <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
                 {cmd.name}
               </span>
               <span style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>
@@ -448,15 +446,15 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
         </div>
       )}
 
-      {/* 输入框容器 - 聚焦时有发光边框 */}
+      {/* 输入框容器 - 聚焦时中性边框抬升 */}
       <div
         style={{
           position: 'relative',
           borderRadius: 'var(--radius-lg)',
           background: 'var(--bg-tertiary)',
-          border: `1px solid ${isFocused ? 'var(--accent)' : 'var(--border)'}`,
+          border: `1px solid ${isFocused ? 'var(--border-strong)' : 'var(--border)'}`,
           boxShadow: isFocused
-            ? '0 0 0 3px var(--accent-soft), 0 0 20px var(--accent-glow)'
+            ? '0 0 0 3px var(--focus-ring)'
             : 'none',
           transition: 'all var(--transition)',
         }}
@@ -600,11 +598,11 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
                             style={{
                               padding: '6px 10px',
                               cursor: 'pointer',
-                              backgroundColor: isActive ? 'var(--accent-soft)' : 'transparent',
+                              backgroundColor: isActive ? 'var(--selected-bg)' : 'transparent',
                               transition: 'background var(--transition-fast)',
                             }}
                             onMouseEnter={(e) => {
-                              if (!isActive) e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)'
+                              if (!isActive) e.currentTarget.style.backgroundColor = 'var(--hover-bg)'
                             }}
                             onMouseLeave={(e) => {
                               if (!isActive) e.currentTarget.style.backgroundColor = 'transparent'
@@ -612,7 +610,7 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
                           >
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                               <span style={{
-                                color: isActive ? 'var(--accent)' : 'var(--text-primary)',
+                                color: 'var(--text-primary)',
                                 fontSize: '12px',
                                 fontFamily: 'var(--font-mono)',
                                 fontWeight: 500,
@@ -620,7 +618,7 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
                                 {model.model_id}
                               </span>
                               {isActive && (
-                                <span style={{ color: 'var(--accent)', fontSize: '11px' }}>✓</span>
+                                <span style={{ color: 'var(--text-primary)', fontSize: '11px' }}>✓</span>
                               )}
                             </div>
                             {model.context_window > 0 && (
@@ -647,7 +645,7 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
                 border: '1px solid var(--border)',
                 borderRadius: 'var(--radius-sm)',
                 background: 'transparent',
-                color: permissionMode === 'full_access' ? 'var(--accent)' : 'var(--text-tertiary)',
+                color: permissionMode === 'full_access' ? 'var(--warning)' : 'var(--text-tertiary)',
                 fontSize: '10px',
                 fontFamily: 'var(--font-ui)',
                 fontWeight: 500,
@@ -657,11 +655,11 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
               }}
               onMouseEnter={(e) => {
                 e.currentTarget.style.borderColor = 'var(--border-strong)'
-                e.currentTarget.style.color = permissionMode === 'full_access' ? 'var(--accent)' : 'var(--text-secondary)'
+                e.currentTarget.style.color = permissionMode === 'full_access' ? 'var(--warning)' : 'var(--text-secondary)'
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.borderColor = 'var(--border)'
-                e.currentTarget.style.color = permissionMode === 'full_access' ? 'var(--accent)' : 'var(--text-tertiary)'
+                e.currentTarget.style.color = permissionMode === 'full_access' ? 'var(--warning)' : 'var(--text-tertiary)'
               }}
             >
               {permissionMode === 'full_access' ? '完全访问' : '自动编辑'}
@@ -692,11 +690,11 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
                   style={{
                     padding: '8px 10px',
                     cursor: 'pointer',
-                    backgroundColor: permissionMode === 'default' ? 'var(--accent-soft)' : 'transparent',
+                    backgroundColor: permissionMode === 'default' ? 'var(--selected-bg)' : 'transparent',
                     transition: 'background var(--transition-fast)',
                   }}
                   onMouseEnter={(e) => {
-                    if (permissionMode !== 'default') e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)'
+                    if (permissionMode !== 'default') e.currentTarget.style.backgroundColor = 'var(--hover-bg)'
                   }}
                   onMouseLeave={(e) => {
                     if (permissionMode !== 'default') e.currentTarget.style.backgroundColor = 'transparent'
@@ -707,7 +705,7 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
                       自动编辑
                     </span>
                     {permissionMode === 'default' && (
-                      <span style={{ color: 'var(--accent)', fontSize: '11px' }}>✓</span>
+                      <span style={{ color: 'var(--text-primary)', fontSize: '11px' }}>✓</span>
                     )}
                   </div>
                   <div style={{ color: 'var(--text-tertiary)', fontSize: '10px', marginTop: '2px', fontFamily: 'var(--font-ui)' }}>
@@ -720,12 +718,12 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
                   style={{
                     padding: '8px 10px',
                     cursor: 'pointer',
-                    backgroundColor: permissionMode === 'full_access' ? 'var(--accent-soft)' : 'transparent',
+                    backgroundColor: permissionMode === 'full_access' ? 'var(--warning-soft)' : 'transparent',
                     transition: 'background var(--transition-fast)',
                     borderTop: '1px solid var(--border-subtle)',
                   }}
                   onMouseEnter={(e) => {
-                    if (permissionMode !== 'full_access') e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)'
+                    if (permissionMode !== 'full_access') e.currentTarget.style.backgroundColor = 'var(--hover-bg)'
                   }}
                   onMouseLeave={(e) => {
                     if (permissionMode !== 'full_access') e.currentTarget.style.backgroundColor = 'transparent'
@@ -736,7 +734,7 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
                       完全访问
                     </span>
                     {permissionMode === 'full_access' && (
-                      <span style={{ color: 'var(--accent)', fontSize: '11px' }}>✓</span>
+                      <span style={{ color: 'var(--warning)', fontSize: '11px' }}>✓</span>
                     )}
                   </div>
                   <div style={{ color: 'var(--text-tertiary)', fontSize: '10px', marginTop: '2px', fontFamily: 'var(--font-ui)' }}>
@@ -815,9 +813,9 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
                 border: 'none',
                 borderRadius: 'var(--radius-sm)',
                 background: value.trim() && !disabled
-                  ? 'linear-gradient(135deg, var(--accent), #ff7a45)'
+                  ? 'var(--button-primary-bg)'
                   : 'var(--bg-elevated)',
-                color: value.trim() && !disabled ? '#1a1a1a' : 'var(--text-tertiary)',
+                color: value.trim() && !disabled ? 'var(--button-primary-text)' : 'var(--text-tertiary)',
                 fontSize: '11px',
                 fontFamily: 'var(--font-ui)',
                 fontWeight: 600,
@@ -826,6 +824,12 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
                 display: 'flex',
                 alignItems: 'center',
                 gap: '4px',
+              }}
+              onMouseEnter={(e) => {
+                if (value.trim() && !disabled) e.currentTarget.style.background = 'var(--button-primary-bg-hover)'
+              }}
+              onMouseLeave={(e) => {
+                if (value.trim() && !disabled) e.currentTarget.style.background = 'var(--button-primary-bg)'
               }}
             >
               发送

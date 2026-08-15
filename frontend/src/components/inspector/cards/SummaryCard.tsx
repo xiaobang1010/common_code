@@ -100,7 +100,7 @@ function SummaryCard({ blockCount, usage }: SummaryCardProps) {
             style={{
               height: '100%',
               width: `${percent}%`,
-              backgroundColor: percent > 80 ? 'var(--error)' : 'var(--accent)',
+              backgroundColor: percent > 80 ? 'var(--error)' : 'var(--border-strong)',
               transition: 'width 0.3s',
             }}
           />
