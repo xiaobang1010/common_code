@@ -6,6 +6,7 @@ import Tabs from './editor/Tabs'
 import Breadcrumb from './editor/Breadcrumb'
 import CodeEditor from './editor/CodeEditor'
 import Terminal from './editor/Terminal'
+import TabContextMenu from './editor/TabContextMenu'
 import Resizer from './Resizer'
 import FileTree from './sidebar/FileTree'
 import SearchPanel from './sidebar/SearchPanel'
@@ -45,6 +46,12 @@ interface ConflictInfo {
   path: string
   currentMtime: number
   currentSize: number
+}
+
+// 批量关闭待确认信息：paths 为待关闭路径，anchorPath 为右键锚点标签（激活迁移目标）
+interface PendingBatchClose {
+  paths: string[]
+  anchorPath?: string
 }
 
 // 暴露给父组件的方法
@@ -230,6 +237,10 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
     const [activePath, setActivePath] = useState('')
     const [conflict, setConflict] = useState<ConflictInfo | null>(null)
     const [pendingClose, setPendingClose] = useState<string | null>(null)
+    // 批量关闭确认弹窗（关闭全部/关闭其他/关闭右侧命中未保存文件时弹一次）
+    const [pendingBatch, setPendingBatch] = useState<PendingBatchClose | null>(null)
+    // 标签右键菜单：屏幕坐标 + 锚点（kind=file 为文件路径，kind=tool 为工具标签 id）
+    const [tabMenu, setTabMenu] = useState<{ x: number; y: number; path: string; kind: 'file' | 'tool' } | null>(null)
     // .md 预览模式：切文件时回到源码态
     const [previewMode, setPreviewMode] = useState(false)
     // 快速打开（Ctrl+P）
@@ -470,23 +481,34 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
       [updateTabs]
     )
 
-    // 真正关闭 tab（无 dirty 或已处理）
-    const doClose = useCallback(
-      (path: string) => {
+    // 统一收尾：真正移除一批标签，处理激活迁移与自动收起判定。
+    // 收起与激活迁移都以「关闭前」的工具标签激活态为准：工具面板开着时保留其激活态、不收编辑区
+    const applyClose = useCallback(
+      (paths: string[], anchorPath?: string) => {
         const prev = openTabsRef.current
-        const next = prev.filter((t) => t.path !== path)
+        const closing = new Set(paths)
+        const wasToolActive = activeToolIdRef.current !== null
+        const next = prev.filter((t) => !closing.has(t.path))
         updateTabs(() => next)
-        if (path === activePathRef.current) {
-          const idx = prev.findIndex((t) => t.path === path)
-          const neighbor = next[idx] || next[idx - 1]
-          setActive(neighbor ? neighbor.path : '')
+        if (closing.has(activePathRef.current)) {
+          // 激活标签被关：优先迁到锚点标签（右键所在，必在范围外），否则按关闭区间取相邻幸存标签；「关闭全部」清空
+          let target = anchorPath && next.some((t) => t.path === anchorPath) ? anchorPath : ''
+          if (!target) {
+            const lastIdx = prev.reduce((acc, t, i) => (closing.has(t.path) ? i : acc), -1)
+            const neighbor = next[lastIdx] || next[lastIdx - 1]
+            target = neighbor ? neighbor.path : ''
+          }
+          activePathRef.current = target
+          setActivePath(target)
+          // 工具面板激活中不清工具激活态（面板保持可见），仅文件视图下才回清
+          if (!wasToolActive) onActivateFileRef.current()
         }
-        // 最后一个标签关闭且当前展开 → 自动收起
-        if (next.length === 0 && !collapsed) {
+        // 最后一个文件标签关掉：仅关闭前无激活工具标签时自动收起编辑区
+        if (next.length === 0 && !collapsed && !wasToolActive) {
           onToggleCollapse()
         }
       },
-      [updateTabs, setActive, collapsed, onToggleCollapse]
+      [updateTabs, collapsed, onToggleCollapse]
     )
 
     // 关闭文件标签：dirty 时先询问
@@ -495,7 +517,7 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
       if (tab && tab.bufferContent !== tab.diskContent) {
         setPendingClose(path)
       } else {
-        doClose(path)
+        applyClose([path])
       }
     }
 
@@ -505,15 +527,112 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
       const ok = await saveFile(path)
       setPendingClose(null)
       if (ok) {
-        doClose(path)
+        applyClose([path])
       }
     }
 
     const handleCloseDiscard = () => {
       const path = pendingClose
       setPendingClose(null)
-      if (path) doClose(path)
+      if (path) applyClose([path])
     }
+
+    // 批量关闭入口：范围内有未保存修改时弹一次批量确认，否则直接关
+    const closeTabs = useCallback(
+      (paths: string[], anchorPath?: string) => {
+        const hasDirty = openTabsRef.current.some(
+          (t) => paths.includes(t.path) && t.bufferContent !== t.diskContent
+        )
+        if (hasDirty) {
+          setPendingBatch({ paths, anchorPath })
+        } else {
+          applyClose(paths, anchorPath)
+        }
+      },
+      [applyClose]
+    )
+
+    // 批量确认「全部保存」：按 tab 顺序逐个保存，成功即关；
+    // 任一失败（含 409 冲突走既有冲突弹窗）即中止，失败与未处理标签保留、已关闭的保持关闭
+    const handleBatchSave = async () => {
+      const batch = pendingBatch
+      if (!batch) return
+      setPendingBatch(null)
+      const targets = openTabsRef.current.filter((t) => batch.paths.includes(t.path))
+      const closed: string[] = []
+      // 干净标签（含超限只读大文件，必然无未保存修改）不走 saveFile
+      // ——只读标签在 saveFile 里会被 editable 检查判为失败，不能让它中止批量流程
+      for (const t of targets) {
+        if (t.bufferContent === t.diskContent) closed.push(t.path)
+      }
+      for (const t of targets) {
+        if (t.bufferContent === t.diskContent) continue
+        const ok = await saveFile(t.path)
+        if (!ok) break
+        closed.push(t.path)
+      }
+      // 逐个 applyClose 会读到未刷新的旧列表、后关的把先关的复活，必须收集后一次关掉
+      if (closed.length > 0) applyClose(closed, batch.anchorPath)
+    }
+
+    // 批量确认「全不保存」：放弃修改直接关闭
+    const handleBatchDiscard = () => {
+      const batch = pendingBatch
+      setPendingBatch(null)
+      if (batch) applyClose(batch.paths, batch.anchorPath)
+    }
+
+    // ---- 标签右键菜单动作 ----
+
+    // 关闭其他：锚点标签保留，其余全关
+    const closeOthers = useCallback(
+      (path: string) => {
+        closeTabs(openTabsRef.current.filter((t) => t.path !== path).map((t) => t.path), path)
+      },
+      [closeTabs]
+    )
+
+    // 关闭右侧：锚点及其左侧保留，右侧全关
+    const closeRight = useCallback(
+      (path: string) => {
+        const idx = openTabsRef.current.findIndex((t) => t.path === path)
+        closeTabs(openTabsRef.current.slice(idx + 1).map((t) => t.path), path)
+      },
+      [closeTabs]
+    )
+
+    // ---- 工具标签右键菜单动作（关闭 = 隐藏面板，后台状态保留，作用范围限定工具标签组）----
+
+    const closeToolTab = useCallback((id: ToolId) => onCloseTool(id), [onCloseTool])
+
+    const closeToolOthers = useCallback(
+      (id: ToolId) => {
+        for (const t of TOOL_META) {
+          if (t.id !== id && toolTabsOpen.includes(t.id)) onCloseTool(t.id)
+        }
+      },
+      [toolTabsOpen, onCloseTool]
+    )
+
+    const closeToolRight = useCallback(
+      (id: ToolId) => {
+        const idx = TOOL_META.findIndex((t) => t.id === id)
+        for (const t of TOOL_META.slice(idx + 1)) {
+          if (toolTabsOpen.includes(t.id)) onCloseTool(t.id)
+        }
+      },
+      [toolTabsOpen, onCloseTool]
+    )
+
+    const closeToolAll = useCallback(() => {
+      for (const t of TOOL_META) {
+        if (toolTabsOpen.includes(t.id)) onCloseTool(t.id)
+      }
+    }, [toolTabsOpen, onCloseTool])
+
+    // 打开的工具标签中按展示顺序的最后一个（「关闭右侧」置灰判定用）
+    const openToolIds = TOOL_META.filter((t) => toolTabsOpen.includes(t.id))
+    const lastOpenToolId = openToolIds.length > 0 ? openToolIds[openToolIds.length - 1].id : undefined
 
     // 存在未保存修改时，刷新/关闭页面触发浏览器确认
     useEffect(() => {
@@ -556,6 +675,25 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
       window.addEventListener('keydown', handler)
       return () => window.removeEventListener('keydown', handler)
     }, [collapsed, onToggleCollapse])
+
+    // Ctrl/⌘+W 关闭当前激活文件标签；焦点在终端（xterm）内不拦截，保留删词等终端快捷键
+    const handleCloseRef = useRef(handleClose)
+    useEffect(() => {
+      handleCloseRef.current = handleClose
+    })
+    useEffect(() => {
+      const handler = (e: KeyboardEvent) => {
+        if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'w') return
+        const target = e.target as HTMLElement | null
+        if (target?.closest('.xterm')) return
+        const active = openTabsRef.current.find((t) => t.path === activePathRef.current)
+        if (!active) return
+        e.preventDefault()
+        handleCloseRef.current(active.path)
+      }
+      window.addEventListener('keydown', handler)
+      return () => window.removeEventListener('keydown', handler)
+    }, [])
 
     // 订阅文件变更事件：AI 写盘后把打开的对应 tab 标记为过期
     useEffect(() => {
@@ -633,6 +771,11 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
               activePath={activePath}
               onSwitch={setActive}
               onClose={handleClose}
+              onCloseAll={() => closeTabs(openTabs.map((t) => t.path))}
+              onContextMenuTab={(e, path) => {
+                e.preventDefault()
+                setTabMenu({ x: e.clientX, y: e.clientY, path, kind: 'file' })
+              }}
             />
           )}
           {/* 工具标签组：与文件标签同栏但分组（左侧细分隔线），默认只显示图标 */}
@@ -655,6 +798,10 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
                     position: 'relative',
                   }}
                   onClick={() => onOpenTool(id)}
+                  onContextMenu={(e) => {
+                    e.preventDefault()
+                    setTabMenu({ x: e.clientX, y: e.clientY, path: id, kind: 'tool' })
+                  }}
                   onMouseEnter={(e) => {
                     if (!active) {
                       e.currentTarget.style.color = 'var(--text-secondary)'
@@ -1217,6 +1364,97 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
             </div>
           </div>
         )}
+
+        {/* 批量关闭确认弹窗：列出全部未保存文件，一次决策（全部保存 / 全不保存 / 取消） */}
+        {pendingBatch && (
+          <div
+            style={{
+              position: 'fixed',
+              inset: 0,
+              backgroundColor: 'rgba(0,0,0,0.5)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 100,
+            }}
+            onClick={() => setPendingBatch(null)}
+          >
+            <div
+              style={{
+                backgroundColor: 'var(--bg-elevated)',
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-md)',
+                padding: '20px',
+                maxWidth: '420px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '14px',
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div style={{ color: 'var(--text-primary)', fontSize: '13px', fontFamily: 'var(--font-ui)' }}>
+                以下 {openTabs.filter((t) => pendingBatch.paths.includes(t.path) && t.bufferContent !== t.diskContent).length} 个文件有未保存的修改：
+                <br />
+                <span style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>
+                  {openTabs
+                    .filter((t) => pendingBatch.paths.includes(t.path) && t.bufferContent !== t.diskContent)
+                    .map((t) => t.name)
+                    .join('、')}
+                </span>
+                <br />
+                要保存这些修改吗？
+              </div>
+              <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+                <button
+                  onClick={() => void handleBatchSave()}
+                  style={{ padding: '6px 12px', cursor: 'pointer', background: 'var(--button-primary-bg)', color: 'var(--button-primary-text)', border: 'none', borderRadius: 'var(--radius-sm)', fontSize: '12px' }}
+                >
+                  全部保存
+                </button>
+                <button
+                  onClick={handleBatchDiscard}
+                  style={{ padding: '6px 12px', cursor: 'pointer', background: 'transparent', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', fontSize: '12px' }}
+                >
+                  全不保存
+                </button>
+                <button
+                  onClick={() => setPendingBatch(null)}
+                  style={{ padding: '6px 12px', cursor: 'pointer', background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', fontSize: '12px' }}
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 标签右键菜单：关闭 / 关闭其他 / 关闭右侧 / 关闭全部（文件标签关标签、工具标签隐藏面板） */}
+        {tabMenu &&
+          (tabMenu.kind === 'tool' ? (
+            <TabContextMenu
+              x={tabMenu.x}
+              y={tabMenu.y}
+              tabsCount={toolTabsOpen.length}
+              anchorIsLast={tabMenu.path === lastOpenToolId}
+              onClose={() => setTabMenu(null)}
+              onCloseTab={() => closeToolTab(tabMenu.path as ToolId)}
+              onCloseOthers={() => closeToolOthers(tabMenu.path as ToolId)}
+              onCloseRight={() => closeToolRight(tabMenu.path as ToolId)}
+              onCloseAll={closeToolAll}
+            />
+          ) : (
+            <TabContextMenu
+              x={tabMenu.x}
+              y={tabMenu.y}
+              tabsCount={openTabs.length}
+              anchorIsLast={openTabs.length > 0 && openTabs[openTabs.length - 1].path === tabMenu.path}
+              onClose={() => setTabMenu(null)}
+              onCloseTab={() => handleClose(tabMenu.path)}
+              onCloseOthers={() => closeOthers(tabMenu.path)}
+              onCloseRight={() => closeRight(tabMenu.path)}
+              onCloseAll={() => closeTabs(openTabs.map((t) => t.path))}
+            />
+          ))}
       </div>
     )
   }
