@@ -560,7 +560,13 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
       setPendingBatch(null)
       const targets = openTabsRef.current.filter((t) => batch.paths.includes(t.path))
       const closed: string[] = []
+      // 干净标签（含超限只读大文件，必然无未保存修改）不走 saveFile
+      // ——只读标签在 saveFile 里会被 editable 检查判为失败，不能让它中止批量流程
       for (const t of targets) {
+        if (t.bufferContent === t.diskContent) closed.push(t.path)
+      }
+      for (const t of targets) {
+        if (t.bufferContent === t.diskContent) continue
         const ok = await saveFile(t.path)
         if (!ok) break
         closed.push(t.path)
