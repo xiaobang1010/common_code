@@ -7,7 +7,6 @@ import QuestionCard from './QuestionCard'
 
 interface Props {
   onSend: (prompt: string) => void
-  disabled: boolean
   // 是否正在流式输出（用于显示停止按钮）
   isStreaming: boolean
   // 停止当前对话
@@ -40,7 +39,7 @@ const BUILTIN_COMMANDS = [
   { name: '/spec', desc: '查看规格' },
 ]
 
-function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, onResolve, questionRequest, onAnswer, permissionMode, onPermissionModeChange, currentTaskSessionId }: Props) {
+function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, questionRequest, onAnswer, permissionMode, onPermissionModeChange, currentTaskSessionId }: Props) {
   const [value, setValue] = useState('')
   // 用户手动关闭补全后置 true，阻止自动弹出，直到下次输入变化
   const [commandsDismissed, setCommandsDismissed] = useState(false)
@@ -52,6 +51,9 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
   const permMenuRef = useRef<HTMLDivElement>(null)
   // 当前会话 id：区分"本会话在跑"与"其他会话在跑"
   const currentSessionId = useChatStore(s => s.sessionId)
+  // 当前会话任务进行中：前台流式，或当前查看的会话正好是后台运行任务的会话。
+  // 两种形态都禁用输入、显示停止按钮（停止作用于当前查看会话）
+  const taskActive = isStreaming || (currentTaskSessionId !== null && currentSessionId === currentTaskSessionId)
 
   // ---- 模型快速切换相关状态 ----
   // modelVersion 来自 store，外部（如设置面板）切换模型时会变化，触发重新拉取供应商列表
@@ -139,7 +141,7 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
 
   const handleSend = () => {
     const trimmed = value.trim()
-    if (!trimmed || disabled) return
+    if (!trimmed || taskActive) return
     onSend(trimmed)
     setValue('')
   }
@@ -464,14 +466,14 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
           value={value}
           onChange={e => setValue(e.target.value)}
           onKeyDown={handleKeyDown}
-          disabled={disabled}
+          disabled={taskActive}
           onFocus={() => setIsFocused(true)}
           onBlur={() => setIsFocused(false)}
           placeholder={
-            disabled && currentTaskSessionId && currentSessionId !== currentTaskSessionId
-              ? '当前有任务运行中，可继续输入草稿'
-              : disabled
-                ? 'AI 正在思考...'
+            taskActive
+              ? 'AI 正在思考...'
+              : currentTaskSessionId && currentSessionId !== currentTaskSessionId
+                ? '当前有任务运行中，可继续输入草稿'
                 : '描述你想做什么，或输入 / 命令'
           }
           rows={2}
@@ -487,7 +489,7 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
             fontFamily: 'var(--font-ui)',
             lineHeight: 1.5,
             outline: 'none',
-            opacity: disabled ? 0.6 : 1,
+            opacity: taskActive ? 0.6 : 1,
           }}
         />
 
@@ -767,8 +769,8 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
               {value.startsWith('/') ? 'Tab 选中命令' : 'Shift+Enter 换行'}
             </span>
           </div>
-          {isStreaming ? (
-            // 流式输出中：显示停止按钮
+          {taskActive ? (
+            // 任务进行中（前台流式或本会话后台任务）：显示停止按钮
             <button
               onClick={onStop}
               title="停止生成"
@@ -806,30 +808,30 @@ function ChatInput({ onSend, disabled, isStreaming, onStop, permissionRequest, o
             // 非流式：显示发送按钮
             <button
               onClick={handleSend}
-              disabled={disabled || !value.trim()}
+              disabled={!value.trim()}
               style={{
                 pointerEvents: 'auto',
                 padding: '4px 10px',
                 border: 'none',
                 borderRadius: 'var(--radius-sm)',
-                background: value.trim() && !disabled
+                background: value.trim()
                   ? 'var(--button-primary-bg)'
                   : 'var(--bg-elevated)',
-                color: value.trim() && !disabled ? 'var(--button-primary-text)' : 'var(--text-tertiary)',
+                color: value.trim() ? 'var(--button-primary-text)' : 'var(--text-tertiary)',
                 fontSize: '11px',
                 fontFamily: 'var(--font-ui)',
                 fontWeight: 600,
-                cursor: value.trim() && !disabled ? 'pointer' : 'default',
+                cursor: value.trim() ? 'pointer' : 'default',
                 transition: 'all var(--transition-fast)',
                 display: 'flex',
                 alignItems: 'center',
                 gap: '4px',
               }}
               onMouseEnter={(e) => {
-                if (value.trim() && !disabled) e.currentTarget.style.background = 'var(--button-primary-bg-hover)'
+                if (value.trim()) e.currentTarget.style.background = 'var(--button-primary-bg-hover)'
               }}
               onMouseLeave={(e) => {
-                if (value.trim() && !disabled) e.currentTarget.style.background = 'var(--button-primary-bg)'
+                if (value.trim()) e.currentTarget.style.background = 'var(--button-primary-bg)'
               }}
             >
               发送

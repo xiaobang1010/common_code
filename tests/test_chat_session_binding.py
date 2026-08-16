@@ -197,10 +197,14 @@ async def test_immediate_persist_snapshot_plus_user(workspace, env):
     # 引擎进入后、回复产出前：DB 已保存"快照 + 本条用户消息"
     await engine.started.wait()
     session = store.get_session(sid)
-    assert session.messages == [
-        {"role": "user", "content": "旧历史"},
-        {"role": "user", "content": "新消息"},
+    # 立即持久化的「新消息」带 _ts（routes 打标），按 role/content 断言忽略 _ts
+    assert [(m["role"], m["content"]) for m in session.messages] == [
+        ("user", "旧历史"),
+        ("user", "新消息"),
     ]
+    # 正向断言：快照 user 已打 _ts（旧历史前缀来自 DB，不打标）
+    assert isinstance(session.messages[1]["_ts"], (int, float))
+    assert session.messages[1]["_ts"] > 0
 
     engine.release.set()
     await consumer

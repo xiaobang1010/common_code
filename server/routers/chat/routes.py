@@ -43,11 +43,14 @@ async def get_state() -> dict:
     messages: Any = server.state.engine.mutable_messages
     view_session = server.state.engine_session_id
     run = server.state.running_runs.get(view_session) if view_session else None
+    started_at: float | None = None
     if run is not None and not run.finished.is_set():
         messages = run.engine.mutable_messages
+        started_at = run.started_at
 
     return {
         "messages": messages,
+        "started_at": started_at,
         "model": state.model,
         "token_usage": {
             "input_tokens": usage.input_tokens,
@@ -166,7 +169,7 @@ async def chat_event_stream(prompt: str, session_id: str = ""):
     if session_store is not None:
         try:
             session_store.save_messages(
-                run_session_id, [*prefix_messages, {"role": "user", "content": prompt}]
+                run_session_id, [*prefix_messages, {"role": "user", "content": prompt, "_ts": time.time() * 1000}]
             )
             if session is not None and not session.title and prompt.strip():
                 session_store.update_session_title(run_session_id, prompt.strip()[:40])
