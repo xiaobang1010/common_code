@@ -239,8 +239,8 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
     const [pendingClose, setPendingClose] = useState<string | null>(null)
     // 批量关闭确认弹窗（关闭全部/关闭其他/关闭右侧命中未保存文件时弹一次）
     const [pendingBatch, setPendingBatch] = useState<PendingBatchClose | null>(null)
-    // 标签右键菜单：屏幕坐标 + 锚点标签路径
-    const [tabMenu, setTabMenu] = useState<{ x: number; y: number; path: string } | null>(null)
+    // 标签右键菜单：屏幕坐标 + 锚点（kind=file 为文件路径，kind=tool 为工具标签 id）
+    const [tabMenu, setTabMenu] = useState<{ x: number; y: number; path: string; kind: 'file' | 'tool' } | null>(null)
     // .md 预览模式：切文件时回到源码态
     const [previewMode, setPreviewMode] = useState(false)
     // 快速打开（Ctrl+P）
@@ -601,6 +601,39 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
       [closeTabs]
     )
 
+    // ---- 工具标签右键菜单动作（关闭 = 隐藏面板，后台状态保留，作用范围限定工具标签组）----
+
+    const closeToolTab = useCallback((id: ToolId) => onCloseTool(id), [onCloseTool])
+
+    const closeToolOthers = useCallback(
+      (id: ToolId) => {
+        for (const t of TOOL_META) {
+          if (t.id !== id && toolTabsOpen.includes(t.id)) onCloseTool(t.id)
+        }
+      },
+      [toolTabsOpen, onCloseTool]
+    )
+
+    const closeToolRight = useCallback(
+      (id: ToolId) => {
+        const idx = TOOL_META.findIndex((t) => t.id === id)
+        for (const t of TOOL_META.slice(idx + 1)) {
+          if (toolTabsOpen.includes(t.id)) onCloseTool(t.id)
+        }
+      },
+      [toolTabsOpen, onCloseTool]
+    )
+
+    const closeToolAll = useCallback(() => {
+      for (const t of TOOL_META) {
+        if (toolTabsOpen.includes(t.id)) onCloseTool(t.id)
+      }
+    }, [toolTabsOpen, onCloseTool])
+
+    // 打开的工具标签中按展示顺序的最后一个（「关闭右侧」置灰判定用）
+    const openToolIds = TOOL_META.filter((t) => toolTabsOpen.includes(t.id))
+    const lastOpenToolId = openToolIds.length > 0 ? openToolIds[openToolIds.length - 1].id : undefined
+
     // 存在未保存修改时，刷新/关闭页面触发浏览器确认
     useEffect(() => {
       const handler = (e: BeforeUnloadEvent) => {
@@ -741,7 +774,7 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
               onCloseAll={() => closeTabs(openTabs.map((t) => t.path))}
               onContextMenuTab={(e, path) => {
                 e.preventDefault()
-                setTabMenu({ x: e.clientX, y: e.clientY, path })
+                setTabMenu({ x: e.clientX, y: e.clientY, path, kind: 'file' })
               }}
             />
           )}
@@ -765,6 +798,10 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
                     position: 'relative',
                   }}
                   onClick={() => onOpenTool(id)}
+                  onContextMenu={(e) => {
+                    e.preventDefault()
+                    setTabMenu({ x: e.clientX, y: e.clientY, path: id, kind: 'tool' })
+                  }}
                   onMouseEnter={(e) => {
                     if (!active) {
                       e.currentTarget.style.color = 'var(--text-secondary)'
@@ -1391,20 +1428,33 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
           </div>
         )}
 
-        {/* 标签右键菜单：关闭 / 关闭其他 / 关闭右侧 / 关闭全部 */}
-        {tabMenu && (
-          <TabContextMenu
-            x={tabMenu.x}
-            y={tabMenu.y}
-            tabsCount={openTabs.length}
-            anchorIsLast={openTabs.length > 0 && openTabs[openTabs.length - 1].path === tabMenu.path}
-            onClose={() => setTabMenu(null)}
-            onCloseTab={() => handleClose(tabMenu.path)}
-            onCloseOthers={() => closeOthers(tabMenu.path)}
-            onCloseRight={() => closeRight(tabMenu.path)}
-            onCloseAll={() => closeTabs(openTabs.map((t) => t.path))}
-          />
-        )}
+        {/* 标签右键菜单：关闭 / 关闭其他 / 关闭右侧 / 关闭全部（文件标签关标签、工具标签隐藏面板） */}
+        {tabMenu &&
+          (tabMenu.kind === 'tool' ? (
+            <TabContextMenu
+              x={tabMenu.x}
+              y={tabMenu.y}
+              tabsCount={toolTabsOpen.length}
+              anchorIsLast={tabMenu.path === lastOpenToolId}
+              onClose={() => setTabMenu(null)}
+              onCloseTab={() => closeToolTab(tabMenu.path as ToolId)}
+              onCloseOthers={() => closeToolOthers(tabMenu.path as ToolId)}
+              onCloseRight={() => closeToolRight(tabMenu.path as ToolId)}
+              onCloseAll={closeToolAll}
+            />
+          ) : (
+            <TabContextMenu
+              x={tabMenu.x}
+              y={tabMenu.y}
+              tabsCount={openTabs.length}
+              anchorIsLast={openTabs.length > 0 && openTabs[openTabs.length - 1].path === tabMenu.path}
+              onClose={() => setTabMenu(null)}
+              onCloseTab={() => handleClose(tabMenu.path)}
+              onCloseOthers={() => closeOthers(tabMenu.path)}
+              onCloseRight={() => closeRight(tabMenu.path)}
+              onCloseAll={() => closeTabs(openTabs.map((t) => t.path))}
+            />
+          ))}
       </div>
     )
   }
