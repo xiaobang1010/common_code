@@ -1,4 +1,4 @@
-import { useState, useEffect, memo } from 'react'
+import { useState, useEffect, memo, useCallback, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
@@ -11,93 +11,221 @@ interface Props {
   blockId: string
 }
 
-// 计算工作块耗时（容忍 block 尚未就绪的防御）
-function useDuration(block: WorkBlock | undefined) {
-  const [, force] = useState(0)
-  useEffect(() => {
-    if (block?.status === 'running') {
-      const timer = setInterval(() => force((n) => n + 1), 1000)
-      return () => clearInterval(timer)
-    }
-  }, [block?.status, block?.startTime])
-  const end = block ? block.endTime || Date.now() : 0
-  return block ? end - block.startTime : 0
+// ---------- 事件行动词映射（toolName 小写归一后匹配，未知工具兜底「已执行」+ 原名） ----------
+const VERB_BY_TOOL: Record<string, string> = {
+  bash: '已执行命令',
+  read: '已读取',
+  write: '已写入',
+  edit: '已修改',
+  grep: '已搜索',
+  glob: '已查找',
+  askuserquestion: '已提问',
+  skill: '已运行技能',
+  agent: '已委派子任务',
+  sendmessage: '已发送消息',
+  teamcreate: '已创建团队',
+  taskcreate: '已创建任务',
+  taskupdate: '已更新任务',
+  tasklist: '已查看任务',
+  taskget: '已获取任务',
+  summarizeteam: '已汇总团队',
+  error: '出错',
 }
 
-// 工具步骤卡片（复用原 ChatMessage 的 ToolStepCard 逻辑）
-// memo：步骤对象引用稳定时跳过重渲，避免父块更新时全部步骤重绘
-const ToolStepView = memo(function ToolStepView({ step }: { step: WorkStep }) {
-  const [expanded, setExpanded] = useState(false)
-  const isRunning = step.isRunning
-  const isError = step.toolName === 'error'
+// 正常结束的退出原因；其余视为异常，需要弱提示与原因说明
+const NORMAL_EXITS = new Set(['', 'completed', 'command'])
 
+// 异常退出原因 → 行尾弱提示 / 展开首行原因（error 的展开首行附带错误步骤摘要，见 exitReasonLine）
+const EXIT_HINT: Record<string, string> = {
+  aborted: '已中断',
+  error: '出错',
+  model_error: '模型出错',
+  prompt_too_long: '输入过长',
+  max_output_tokens_exhausted: '输出超限',
+}
+const EXIT_REASON: Record<string, string> = {
+  aborted: '已中断：用户主动停止',
+  model_error: '模型出错',
+  prompt_too_long: '输入过长',
+  max_output_tokens_exhausted: '输出超限',
+}
+
+// 展开区首行原因：error 附错误步骤的 result 摘要；未知原因原样展示
+function exitReasonLine(block: WorkBlock): string {
+  const reason = block.exitReason ?? ''
+  if (NORMAL_EXITS.has(reason)) return ''
+  if (reason === 'error') {
+    const detail = block.steps.find(s => s.toolName === 'error')?.result?.replace(/^错误:\s*/, '').trim()
+    return detail ? `出错：${detail}` : '出错'
+  }
+  return EXIT_REASON[reason] ?? reason
+}
+
+// 事件行图标按语义分组复用，单色（外层 currentColor 决定：错误红、其余中性灰）
+const ICON_PATHS: Record<string, React.ReactNode> = {
+  file: (<><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z" /><path d="M14 2v6h6" /></>),
+  search: (<><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" /></>),
+  pencil: (<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />),
+  filePlus: (<><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z" /><path d="M14 2v6h6M12 18v-6M9 15h6" /></>),
+  terminal: (<><path d="M4 17l6-6-6-6" /><path d="M12 19h8" /></>),
+  zap: (<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />),
+  help: (<><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><path d="M12 17h.01" /></>),
+  bot: (<><rect x="4" y="8" width="16" height="12" rx="2" /><path d="M12 8V4" /><path d="M8 13h.01M16 13h.01" /></>),
+  send: (<><path d="M22 2L11 13" /><path d="M22 2l-7 20-4-9-9-4z" /></>),
+  users: (<><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></>),
+  list: (<><path d="M8 6h13M8 12h13M8 18h13" /><path d="M3 6h.01M3 12h.01M3 18h.01" /></>),
+  alert: (<><circle cx="12" cy="12" r="10" /><path d="M12 8v4M12 16h.01" /></>),
+  dot: (<circle cx="12" cy="12" r="3" fill="currentColor" stroke="none" />),
+}
+
+function iconKind(toolName: string): string {
+  const n = toolName.toLowerCase()
+  if (n === 'bash') return 'terminal'
+  if (n === 'read') return 'file'
+  if (n === 'grep' || n === 'glob') return 'search'
+  if (n === 'write') return 'filePlus'
+  if (n === 'edit') return 'pencil'
+  if (n === 'skill') return 'zap'
+  if (n === 'askuserquestion') return 'help'
+  if (n === 'agent') return 'bot'
+  if (n === 'sendmessage') return 'send'
+  if (n === 'teamcreate') return 'users'
+  if (n === 'taskcreate' || n === 'taskupdate' || n === 'tasklist' || n === 'taskget' || n === 'summarizeteam') return 'list'
+  if (n === 'error') return 'alert'
+  return 'dot'
+}
+
+function StepIcon({ kind }: { kind: string }) {
   return (
-    <div
-      style={{
-        borderRadius: 'var(--radius-md)',
-        backgroundColor: 'var(--bg-base)',
-        border: '1px solid var(--border-subtle)',
-        borderLeft: `2px solid ${isError ? 'var(--error)' : isRunning ? 'var(--info)' : 'var(--success)'}`,
-        overflow: 'hidden',
-      }}
-    >
-      <div
-        onClick={() => setExpanded(!expanded)}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px',
-          padding: '7px 12px',
-          cursor: 'pointer',
-          fontSize: '12px',
-          fontFamily: 'var(--font-mono)',
-          color: isError ? 'var(--error)' : isRunning ? 'var(--info)' : 'var(--text-secondary)',
-          userSelect: 'none',
-          transition: 'background var(--transition-fast)',
-        }}
-        onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)')}
-        onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-      >
-        {isRunning ? (
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }}>
-            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-          </svg>
-        ) : isError ? (
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-            <circle cx="12" cy="12" r="10" />
-            <path d="M12 8v4M12 16h.01" />
-          </svg>
-        ) : (
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--success)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-            <path d="M20 6L9 17l-5-5" />
-          </svg>
-        )}
-        <span style={{ fontWeight: 500 }}>
-          {isRunning ? '执行中' : isError ? '错误' : '已完成'} · {step.toolName}
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+      {ICON_PATHS[kind] ?? ICON_PATHS.dot}
+    </svg>
+  )
+}
+
+// 从 args JSON 提取首个可读参数（路径/命令/问题等）作为事件行对象名
+function extractObject(args: string): string | null {
+  if (!args) return null
+  try {
+    const parsed = JSON.parse(args)
+    if (parsed && typeof parsed === 'object') {
+      for (const value of Object.values(parsed)) {
+        if (typeof value === 'string' && value.trim()) return value.trim()
+        if (typeof value === 'number') return String(value)
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+// 中间截断：超长路径两端保留，完整内容放 title
+function truncateMiddle(text: string, max = 48): string {
+  if (text.length <= max) return text
+  const keep = Math.floor((max - 1) / 2)
+  return `${text.slice(0, keep)}…${text.slice(-keep)}`
+}
+
+// 工具步骤事件行：单行低调行（灰图标 + 动词 + 等宽对象名 + 状态位），点击展开详情
+// memo：步骤对象引用稳定时跳过重渲，避免父块更新时全部步骤重绘
+const EventLine = memo(function EventLine({ step }: { step: WorkStep }) {
+  const [expanded, setExpanded] = useState(false)
+  const isError = step.toolName === 'error'
+  const isRunning = !!step.isRunning && !isError
+  const known = VERB_BY_TOOL[step.toolName.toLowerCase()]
+  const verb = known ?? '已执行'
+  // 错误步骤展示错误摘要；已知工具展示 args 提取的对象名；未知工具以原始 toolName 兜底
+  const objectText = isError
+    ? (step.result || '').replace(/^错误:\s*/, '')
+    : extractObject(step.args) ?? (known ? null : step.toolName)
+  // 可展开条件：有详情内容，或运行中（可看「等待结果...」占位）
+  const clickable = !!(step.reasoning || step.args || step.result) || isRunning
+  const rowColor = isError ? 'var(--error)' : 'var(--text-tertiary)'
+
+  const row = (
+    <>
+      {isRunning ? (
+        <svg className="work-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }}>
+          <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+        </svg>
+      ) : (
+        <StepIcon kind={iconKind(step.toolName)} />
+      )}
+      <span style={{ flexShrink: 0 }}>{verb}</span>
+      {objectText && (
+        <span
+          title={objectText}
+          style={{
+            fontFamily: 'var(--font-mono)',
+            color: isError ? 'var(--error)' : 'var(--text-secondary)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            flex: 1,
+            minWidth: 0,
+          }}
+        >
+          {truncateMiddle(objectText)}
         </span>
-        <span style={{ marginLeft: 'auto', color: 'var(--text-tertiary)', fontSize: '10px' }}>
+      )}
+      {isError && <span style={{ marginLeft: 'auto', flexShrink: 0 }}>失败</span>}
+      {clickable && (
+        <span style={{ marginLeft: isError ? 0 : 'auto', flexShrink: 0, fontSize: '10px' }}>
           {expanded ? '▾' : '▸'}
         </span>
-      </div>
+      )}
+    </>
+  )
+
+  const rowStyle: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    width: '100%',
+    padding: '3px 0',
+    background: 'transparent',
+    border: 'none',
+    fontSize: '12px',
+    fontFamily: 'var(--font-ui)',
+    color: rowColor,
+    textAlign: 'left',
+    userSelect: 'text',
+    borderRadius: 'var(--radius-sm)',
+    cursor: clickable ? 'pointer' : 'default',
+  }
+
+  return (
+    <div>
+      {clickable ? (
+        <button
+          className="work-row"
+          type="button"
+          onClick={() => setExpanded(!expanded)}
+          aria-expanded={expanded}
+          style={rowStyle}
+          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--hover-bg)')}
+          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+        >
+          {row}
+        </button>
+      ) : (
+        <div style={rowStyle}>{row}</div>
+      )}
 
       {expanded && (
-        <div style={{ borderTop: '1px solid var(--border-subtle)', padding: '10px 12px' }}>
+        <div style={{ padding: '2px 0 8px 20px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
           {step.reasoning && (
-            <div style={{ marginBottom: '10px' }}>
-              <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '4px', letterSpacing: '1px', textTransform: 'uppercase' }}>
+            <div>
+              <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '2px', letterSpacing: '1px', textTransform: 'uppercase' }}>
                 思考过程
               </div>
               <div style={{
                 fontSize: '11px',
-                fontFamily: 'var(--font-ui)',
                 color: 'var(--text-tertiary)',
                 lineHeight: 1.6,
                 whiteSpace: 'pre-wrap',
                 wordBreak: 'break-word',
-                padding: '8px 10px',
-                backgroundColor: 'var(--bg-tertiary)',
-                borderRadius: 'var(--radius-sm)',
-                borderLeft: '2px solid var(--text-tertiary)',
                 maxHeight: '300px',
                 overflow: 'auto',
               }}>
@@ -106,18 +234,18 @@ const ToolStepView = memo(function ToolStepView({ step }: { step: WorkStep }) {
             </div>
           )}
           {step.args && (
-            <div style={{ marginBottom: '8px' }}>
-              <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '4px', letterSpacing: '1px', textTransform: 'uppercase' }}>
+            <div>
+              <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '2px', letterSpacing: '1px', textTransform: 'uppercase' }}>
                 参数
               </div>
-              <pre style={{ margin: 0, fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+              <pre style={{ margin: 0, fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
                 {step.args}
               </pre>
             </div>
           )}
           {step.result && (
             <div>
-              <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '4px', letterSpacing: '1px', textTransform: 'uppercase' }}>
+              <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '2px', letterSpacing: '1px', textTransform: 'uppercase' }}>
                 结果
               </div>
               <pre style={{ margin: 0, fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '200px', overflow: 'auto' }}>
@@ -130,6 +258,101 @@ const ToolStepView = memo(function ToolStepView({ step }: { step: WorkStep }) {
               等待结果...
             </div>
           )}
+        </div>
+      )}
+    </div>
+  )
+})
+
+// 状态行：主行（工作中/已工作 + 耗时）+ 细分隔线 + 活动行。
+// 1s tick 收敛在本组件内：时间刷新与 idleMs 重算共用，事件行列表与最终回复不随 tick 重渲
+const StatusLine = memo(function StatusLine({ block, expanded, onToggle }: {
+  block: WorkBlock
+  expanded: boolean
+  onToggle: (() => void) | null
+}) {
+  // 本地 1s tick：仅运行中的回合刷新
+  const [, force] = useState(0)
+  useEffect(() => {
+    if (block.status === 'running') {
+      const timer = setInterval(() => force((n) => n + 1), 1000)
+      return () => clearInterval(timer)
+    }
+  }, [block.status, block.startTime])
+
+  const isRunning = block.status === 'running'
+  const duration = (block.endTime || Date.now()) - block.startTime
+  const idleMs = Date.now() - lastActivityAtRef.current
+
+  // 行尾弱提示：仅异常结束显示，收敛但不消失
+  const hint = !isRunning && block.exitReason && !NORMAL_EXITS.has(block.exitReason)
+    ? EXIT_HINT[block.exitReason] ?? block.exitReason
+    : ''
+
+  // 活动行：连接异常 > 工具执行 > 生成回复 > 阶段事件 > 等待
+  const activity = (() => {
+    if (!isRunning) return ''
+    if (idleMs > 10000) return '连接异常，可在输入区停止后重试'
+    const runningStep = block.steps.find(s => s.isRunning)
+    if (runningStep) return `正在执行工具 ${runningStep.toolName}`
+    if (block.finalReplyStreaming && block.finalReply) return '正在生成回复'
+    if (block.phase === 'model_requested') return '正在调用模型'
+    if (block.phase === 'memory_ready') return '已加载上下文'
+    return '等待模型响应'
+  })()
+
+  const rowStyle: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'baseline',
+    gap: '8px',
+    width: '100%',
+    padding: '2px 0 6px',
+    background: 'transparent',
+    border: 'none',
+    fontSize: '12px',
+    fontFamily: 'var(--font-ui)',
+    color: 'var(--text-secondary)',
+    textAlign: 'left',
+    userSelect: 'text',
+    borderRadius: 'var(--radius-sm)',
+    cursor: onToggle ? 'pointer' : 'default',
+  }
+  const mainRow = (
+    <>
+      <span style={{ fontWeight: 500 }}>{isRunning ? '工作中' : '已工作'}</span>
+      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>{formatDuration(duration)}</span>
+      {hint && <span style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>· {hint}</span>}
+      {onToggle && (
+        <span style={{ marginLeft: 'auto', color: 'var(--text-tertiary)', fontSize: '10px' }}>
+          {expanded ? '▾' : '▸'}
+        </span>
+      )}
+    </>
+  )
+
+  return (
+    <div>
+      {onToggle ? (
+        <button
+          className="work-row"
+          type="button"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          style={rowStyle}
+          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--hover-bg)')}
+          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+        >
+          {mainRow}
+        </button>
+      ) : (
+        <div style={rowStyle}>{mainRow}</div>
+      )}
+      <div style={{ borderBottom: '1px solid var(--border-subtle)' }} />
+      {activity && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '5px 0 8px', fontSize: '11px', color: 'var(--text-tertiary)', fontFamily: 'var(--font-ui)' }}>
+          <span className="work-pulse" style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: 'var(--text-tertiary)', animation: 'breathe 1.6s ease-in-out infinite', flexShrink: 0 }} />
+          {/* role=status 提供隐式 aria-live=polite：阶段文案变化才播报，逐秒计时不播报 */}
+          <span role="status">{activity}</span>
         </div>
       )}
     </div>
@@ -272,18 +495,21 @@ const lightMarkdownComponents = {
 function WorkBlockView({ blockId }: Props) {
   // 局部订阅：只监听自己的工作块，其他 block 更新时不重渲
   const block = useChatStore(s => s.blocksById[blockId])
-  const abort = useChatStore(s => s.abort)
   const [expanded, setExpanded] = useState(block?.status === 'running')
-  const duration = useDuration(block)
   const isRunning = block?.status === 'running'
-  const toolCount = block ? block.steps.filter(s => s.toolName !== 'error').length : 0
 
-  // 状态变化时自动折叠
+  // 展开策略：正常完成自动折叠；异常结束保持展开，让原因可见。
+  // 用 prevStatusRef 只响应 running→done 的切换，历史回合加载时不自动展开
+  const prevStatusRef = useRef(block?.status)
   useEffect(() => {
-    if (block?.status === 'done') {
-      setExpanded(false)
+    if (block?.status === 'done' && prevStatusRef.current === 'running') {
+      const abnormal = !!block.exitReason && !NORMAL_EXITS.has(block.exitReason)
+      setExpanded(abnormal)
     }
+    prevStatusRef.current = block?.status
   }, [block?.status])
+
+  const toggleExpanded = useCallback(() => setExpanded(v => !v), [])
 
   // 流式结束后延迟约 250ms 再升级完整高亮：流式期间与延迟窗口内保持轻量渲染，
   // 避免长回复完成瞬间从轻量渲染切到 Prism 高亮的可见跳变
@@ -299,48 +525,21 @@ function WorkBlockView({ blockId }: Props) {
 
   if (!block) return null
 
-  // 卡片显示条件：有工具步骤时始终显示；无步骤时仅在运行态且尚未出文本时显示等待占位。
-  // 首 token 一到（finalReply 非空），占位让位给文本流，不出现「工作中」与文本并存
-  const showCard = block.steps.length > 0 || (isRunning && !block.finalReply)
+  const hasSteps = block.steps.length > 0
+  // 流程区显示规则：有步骤始终显示；无步骤运行中且未出文本时显示等待占位；
+  // 无步骤异常结束保留状态行（行尾灰字承载异常）；其余组合让位给文本流
+  const showFlow = hasSteps
+    || (isRunning && !block.finalReply)
+    || (!isRunning && !!(block.exitReason && !NORMAL_EXITS.has(block.exitReason)))
 
-  // 距上次 SSE 活动（含 heartbeat）的间隔。heartbeat 只证明连接活着、不证明模型有产出，
-  // 文案保持保守，不伪装成进展；由 useDuration 的 1s tick 驱动重算，不额外挂状态更新
-  const idleMs = Date.now() - lastActivityAtRef.current
+  // 运行中只显示最近 3 条步骤，其余折叠；结束后展开显示全部
+  const [showAllSteps, setShowAllSteps] = useState(false)
+  const foldSteps = isRunning && !showAllSteps && block.steps.length > 3
+  const recentSteps = foldSteps ? block.steps.slice(-3) : block.steps
+  const hiddenCount = block.steps.length - recentSteps.length
 
-  // 纯计时文案：占位形态在无任何阶段信号时的兜底
-  const waitText = (() => {
-    const secs = Math.floor(duration / 1000)
-    if (secs > 10) return '响应较慢，可停止后重试'
-    if (secs >= 3) return `等待模型响应 · 已等待 ${formatDuration(duration)}`
-    if (secs >= 1) return '等待模型响应'
-    return '工作中'
-  })()
-
-  // 卡片头部状态文案，按固定优先级推导：
-  // 连接健康 > 流式文本 > 运行中步骤 > 后端 phase > 计时文案。
-  // 连接异常仅在 5s+ 无任何事件时触发，此时覆盖一切阶段文案最诚实
-  const statusText = (() => {
-    if (!isRunning) return `已工作 ${formatDuration(duration)}`
-    if (idleMs > 10000) return '连接异常，可停止后重试'
-    if (idleMs > 5000) return '连接不稳定，仍在等待'
-    if (block.finalReplyStreaming && block.finalReply) return '正在生成回复'
-    if (block.steps.some(s => s.isRunning)) return '正在执行工具'
-    if (block.phase === 'memory_ready') return '已加载上下文'
-    if (block.phase === 'model_requested') return '正在调用模型'
-    return waitText
-  })()
-  // 连接异常时突出停止入口，避免卡片永久转圈
-  const connectionAbnormal = idleMs > 10000
-
-  // 退出原因文案
-  const exitText = (() => {
-    if (!block.exitReason) return ''
-    if (block.exitReason === 'completed') return '已完成'
-    if (block.exitReason === 'aborted') return '已中断'
-    if (block.exitReason === 'error') return '出错'
-    if (block.exitReason === 'command') return '命令'
-    return block.exitReason
-  })()
+  // 异常结束且展开时，展开区首行显示原因
+  const reasonText = !isRunning && expanded ? exitReasonLine(block) : ''
 
   return (
     <div className="work-block" style={{ display: 'flex', flexDirection: 'column', gap: '10px', animation: 'fade-in-up 280ms ease-out' }}>
@@ -364,100 +563,49 @@ function WorkBlockView({ blockId }: Props) {
         {block.userMessage}
       </div>
 
-      {/* 工作块卡片：运行态即显示（无步骤时是等待占位形态），结束后仅保留有步骤的卡片 */}
-      {showCard && (
-        <div
-          style={{
-            borderRadius: 'var(--radius-md)',
-            backgroundColor: 'var(--bg-base)',
-            border: '1px solid var(--border-subtle)',
-            overflow: 'hidden',
-          }}
-        >
-          {/* 头部：占位形态（无步骤）只展示状态与计时，不可展开 */}
-          <div
-            onClick={block.steps.length > 0 ? () => setExpanded(!expanded) : undefined}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              padding: '8px 12px',
-              cursor: block.steps.length > 0 ? 'pointer' : 'default',
-              fontSize: '12px',
-              fontFamily: 'var(--font-ui)',
-              color: 'var(--text-secondary)',
-              userSelect: 'none',
-              transition: 'background var(--transition-fast)',
-              borderBottom: expanded && block.steps.length > 0 ? '1px solid var(--border-subtle)' : 'none',
-            }}
-            onMouseOver={(e) => (e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)')}
-            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-          >
-            {isRunning ? (
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--info)" strokeWidth="2" strokeLinecap="round" style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }}>
-                <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-              </svg>
-            ) : (
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--success)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-                <path d="M20 6L9 17l-5-5" />
-              </svg>
-            )}
-            <span style={{ fontWeight: 500, color: isRunning ? 'var(--info)' : 'var(--text-secondary)' }}>
-              {statusText}
-            </span>
-            {toolCount > 0 && (
-              <span style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>
-                {toolCount} 个工具调用
-              </span>
-            )}
-            {exitText && !isRunning && (
-              <span style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>
-                · {exitText}
-              </span>
-            )}
-            {/* 运行中的停止入口：占位与步骤形态共用，点击不触发卡片折叠；连接异常时高亮 */}
-            {isRunning && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation()
-                  abort()
-                }}
-                style={{
-                  marginLeft: 'auto',
-                  background: 'transparent',
-                  border: `1px solid ${connectionAbnormal ? 'var(--error)' : 'var(--border-subtle)'}`,
-                  borderRadius: 'var(--radius-sm)',
-                  color: connectionAbnormal ? 'var(--error)' : 'var(--text-secondary)',
-                  fontSize: '11px',
-                  padding: '2px 10px',
-                  cursor: 'pointer',
-                  transition: 'border-color var(--transition-fast), color var(--transition-fast)',
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.borderColor = 'var(--error)'
-                  e.currentTarget.style.color = 'var(--error)'
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.borderColor = connectionAbnormal ? 'var(--error)' : 'var(--border-subtle)'
-                  e.currentTarget.style.color = connectionAbnormal ? 'var(--error)' : 'var(--text-secondary)'
-                }}
-              >
-                停止
-              </button>
-            )}
-            {block.steps.length > 0 && (
-              <span style={{ marginLeft: 'auto', color: 'var(--text-tertiary)', fontSize: '10px' }}>
-                {expanded ? '▾' : '▸'}
-              </span>
-            )}
-          </div>
-
-          {/* 展开后的中间步骤 */}
-          {expanded && block.steps.length > 0 && (
-            <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              {block.steps.map(step => (
-                <ToolStepView key={step.id} step={step} />
+      {/* 流程区：状态行 + 细分隔线 + 活动行 + 事件行，纯文本流排布 */}
+      {showFlow && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          <StatusLine
+            block={block}
+            expanded={expanded}
+            onToggle={hasSteps ? toggleExpanded : null}
+          />
+          {expanded && hasSteps && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+              {reasonText && (
+                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', padding: '2px 0', fontFamily: 'var(--font-ui)' }}>
+                  {reasonText}
+                </div>
+              )}
+              {recentSteps.map(step => (
+                <EventLine key={step.id} step={step} />
               ))}
+              {foldSteps && (
+                <button
+                  className="work-row"
+                  type="button"
+                  onClick={() => setShowAllSteps(true)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    width: '100%',
+                    padding: '3px 0',
+                    background: 'transparent',
+                    border: 'none',
+                    fontSize: '11px',
+                    fontFamily: 'var(--font-ui)',
+                    color: 'var(--text-tertiary)',
+                    textAlign: 'left',
+                    cursor: 'pointer',
+                    borderRadius: 'var(--radius-sm)',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--hover-bg)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                >
+                  +{hiddenCount} 条历史步骤
+                </button>
+              )}
             </div>
           )}
         </div>
