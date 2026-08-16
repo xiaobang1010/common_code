@@ -373,7 +373,11 @@ def _build_messages(messages: list[Any]) -> list[dict[str, Any]]:
 
     # 如果第一个元素是 dict，假设已经是 OpenAI 格式
     if isinstance(messages[0], dict):
-        return messages  # type: ignore[return-value]
+        # 剥离内部元字段（下划线前缀，如 _ts），避免泄漏给模型 API
+        return [
+            {k: v for k, v in m.items() if not k.startswith("_")}
+            for m in messages
+        ]
 
     # 否则使用 to_openai_messages 转换
     return to_openai_messages(messages)

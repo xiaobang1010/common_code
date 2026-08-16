@@ -55,7 +55,6 @@ function AIPanel({ hasWorkspace, onOpenWorkspace, currentTaskSessionId }: AIPane
       >
         <ChatInput
           onSend={sendMessage}
-          disabled={isStreaming}
           isStreaming={isStreaming}
           onStop={abort}
           permissionRequest={permissionRequest}

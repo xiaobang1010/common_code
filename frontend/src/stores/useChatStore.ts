@@ -108,7 +108,7 @@ const genId = () => `msg-${Date.now()}-${idCounter++}`
 
 // 格式化耗时为 "X分Y秒" 或 "Y秒"
 export function formatDuration(ms: number): string {
-  const s = Math.floor(ms / 1000)
+  const s = Math.floor(Math.max(0, ms) / 1000)
   if (s < 60) return `${s}秒`
   const m = Math.floor(s / 60)
   const rest = s % 60
@@ -147,7 +147,7 @@ interface ChatState {
 
   sendMessage: (prompt: string) => Promise<void>
   abort: () => Promise<void>
-  loadMessages: (rawMessages: Record<string, unknown>[]) => void
+  loadMessages: (rawMessages: Record<string, unknown>[], opts?: { runningStartedAt?: number }) => void
   clearMessages: () => void
   resolvePermission: (decision: 'allow' | 'deny' | 'always_allow') => Promise<void>
   answerQuestion: (answer: string) => Promise<void>
@@ -232,6 +232,12 @@ export const useChatStore = create<ChatState>((set, get) => {
         const toolName = evt.tool_call_name
         const reasoning = pendingReasoningRef.current
         pendingReasoningRef.current = ''
+        // 本轮首次出现工具调用：此前流式的 content 是「调工具前的过渡句」，
+        // 立即清空 finalReply，避免过渡文字先显示后消失的闪现
+        if (!hasToolStartedRef.current) {
+          finalReplyRef.current = ''
+          updateBlock(blockId, b => ({ ...b, finalReply: '', finalReplyStreaming: false }))
+        }
         hasToolStartedRef.current = true
         updateBlock(blockId, b => {
           const last = b.steps[b.steps.length - 1]
@@ -612,27 +618,39 @@ export const useChatStore = create<ChatState>((set, get) => {
     }
   }
 
-  // 从后端历史消息恢复：扁平消息列表 -> 工作块数组
-  const loadMessages = (rawMessages: Record<string, unknown>[]) => {
+  // 从后端历史消息恢复：扁平消息列表 -> 工作块数组。
+  // 消息可携带内部时间戳 _ts（epoch 毫秒），用于还原回合真实耗时；旧数据无 _ts 时回退 Date.now()。
+  // opts.runningStartedAt（毫秒）表示该会话有运行中任务，最后一块据此标记 running，
+  // 恢复「工作中 X秒」逐秒计时与事件行运行中 spinner。
+  const loadMessages = (rawMessages: Record<string, unknown>[], opts?: { runningStartedAt?: number }) => {
     const newBlocks: WorkBlock[] = []
     let currentBlock: WorkBlock | null = null
+    let userMsgIndex = 0
+    const sessionId = sessionIdRef.current ?? 'default'
+    const runningStartedAt = opts?.runningStartedAt
+    // 消息 _ts → 时间戳（毫秒），缺省回退加载时刻
+    const tsOf = (raw: Record<string, unknown>) => {
+      const t = raw._ts
+      return typeof t === 'number' ? t : Date.now()
+    }
 
     for (const raw of rawMessages) {
       const role = raw.role as string
       const content = (raw.content as string) || ''
 
       if (role === 'user') {
-        // 新工作块
+        // 新工作块：id 用「会话 + 消息序号」稳定派生，轮询刷新时不重挂载
         if (currentBlock) newBlocks.push(currentBlock)
+        const start = tsOf(raw)
         currentBlock = {
-          id: genId(),
+          id: `${sessionId}:b${userMsgIndex++}`,
           userMessage: content,
           steps: [],
           finalReply: '',
           finalReplyStreaming: false,
           status: 'done',
-          startTime: Date.now(),
-          endTime: Date.now(),
+          startTime: start,
+          endTime: start,
           exitReason: 'completed',
         }
       } else if (role === 'assistant') {
@@ -657,6 +675,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           // 纯文本：作为最终回复
           currentBlock.finalReply = content
         }
+        if (currentBlock) currentBlock.endTime = tsOf(raw)
       } else if (role === 'tool') {
         // 工具结果：填到最近的未完成工具步骤
         if (currentBlock) {
@@ -664,10 +683,29 @@ export const useChatStore = create<ChatState>((set, get) => {
           if (lastTool) {
             lastTool.result = content.slice(0, 500)
           }
+          currentBlock.endTime = tsOf(raw)
         }
       }
     }
     if (currentBlock) newBlocks.push(currentBlock)
+
+    // 运行中的后台任务：最后一块标记 running，恢复耗时与事件行 spinner
+    if (newBlocks.length > 0 && typeof runningStartedAt === 'number' && Number.isFinite(runningStartedAt)) {
+      const last = newBlocks[newBlocks.length - 1]
+      last.status = 'running'
+      last.startTime = runningStartedAt
+      last.endTime = undefined
+      last.exitReason = undefined
+      const lastTool = [...last.steps].reverse().find(s => s.type === 'tool' && !s.result)
+      if (lastTool) lastTool.isRunning = true
+    }
+
+    // 钳制 endTime >= startTime，避免新旧消息混合出现负耗时
+    for (const b of newBlocks) {
+      if (b.endTime !== undefined && b.endTime < b.startTime) {
+        b.endTime = b.startTime
+      }
+    }
 
     const blockIds = newBlocks.map(b => b.id)
     const blocksById: Record<string, WorkBlock> = {}

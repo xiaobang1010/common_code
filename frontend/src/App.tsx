@@ -8,7 +8,7 @@ import Resizer from './components/Resizer'
 import SettingsModal from './components/settings/SettingsModal'
 import WorkspaceSelector from './components/ai/WorkspaceSelector'
 import BranchSelector from './components/ai/BranchSelector'
-import { useChatStore } from './stores/useChatStore'
+import { useChatStore, lastActivityAtRef } from './stores/useChatStore'
 import { useSettingsStore } from './stores/useSettingsStore'
 import { useSessions } from './hooks/useSessions'
 import { TOOL_META, type ToolId } from './components/editor/toolMeta'
@@ -293,13 +293,18 @@ function App() {
     const timer = setInterval(async () => {
       // 刷新运行态标记
       sessions.loadAllSessions()
+      // 前台正在 SSE 流式时跳过重建：直播块由 SSE 实时驱动，避免被轮询快照孤儿化
+      if (useChatStore.getState().isStreaming) return
       // 拉取任务引擎实时消息（消息数变化才重建视图，避免闪烁）
       try {
         const resp = await fetch('/api/state')
         const data = await resp.json()
+        // 轮询成功说明后端存活：刷新活动时间，避免状态行误报「连接异常」
+        lastActivityAtRef.current = Date.now()
         if (Array.isArray(data.messages) && data.messages.length !== lastMsgCountRef.current) {
           lastMsgCountRef.current = data.messages.length
-          loadMessages(data.messages)
+          const runningStartedAt = typeof data.started_at === 'number' ? data.started_at * 1000 : undefined
+          loadMessages(data.messages, { runningStartedAt })
         }
       } catch {
         // 忽略瞬时失败
@@ -334,6 +339,25 @@ function App() {
     }
   }, [sessions, setSessionId, clearMessages])
 
+  // 统一以 /api/state 为准加载当前会话消息：响应含 started_at 表示目标会话有运行中任务，
+  // 据此标记「工作中」；snapshot 为 switchSession 等返回的 DB 快照，作为 /api/state 失败时的回退。
+  const loadMessagesWithRunningState = useCallback(async (snapshot?: Record<string, unknown>[] | null) => {
+    lastMsgCountRef.current = 0
+    try {
+      const resp = await fetch('/api/state')
+      const data = await resp.json()
+      // 后端已响应：刷新活动时间，避免切回后台任务时状态行误报「连接异常」
+      lastActivityAtRef.current = Date.now()
+      const messages = Array.isArray(data.messages) ? (data.messages as Record<string, unknown>[]) : snapshot
+      const runningStartedAt = typeof data.started_at === 'number' ? data.started_at * 1000 : undefined
+      if (messages) loadMessages(messages, { runningStartedAt })
+      else clearMessages()
+    } catch {
+      if (snapshot) loadMessages(snapshot)
+      else clearMessages()
+    }
+  }, [loadMessages, clearMessages])
+
   // 切换会话：加载消息到聊天面板（不中止后台任务，任务继续写回原会话）。
   // 切换失败时（404/网络错误）：不改本地状态、不清空界面，提示用户——
   // 否则界面显示已切换而后端引擎仍是旧会话，下次发消息会把旧会话历史
@@ -342,17 +366,13 @@ function App() {
     // 断开当前 SSE 连接：任务在后台继续跑，本地恢复可发送状态
     disconnectStream()
     try {
-      const messages = await sessions.switchSession(sessionId)
+      const snapshot = await sessions.switchSession(sessionId)
       setSessionId(sessionId)
-      if (messages) {
-        loadMessages(messages)
-      } else {
-        clearMessages()
-      }
+      await loadMessagesWithRunningState(snapshot)
     } catch (e) {
       alert(`切换会话失败：${e instanceof Error ? e.message : '未知错误'}`)
     }
-  }, [sessions, setSessionId, loadMessages, clearMessages])
+  }, [sessions, setSessionId, loadMessagesWithRunningState])
 
   // 删除会话：如果删的是当前会话，加载新的当前会话。
   // 删除后的内嵌切换失败时：会话已删、本地 id 必须更新，后端已重置引擎，
@@ -388,11 +408,7 @@ function App() {
       const result = await sessions.switchToSessionInWorkspace(sessionId, workspacePath)
       if (result) {
         setSessionId(sessionId)
-        if (result.messages) {
-          loadMessages(result.messages)
-        } else {
-          clearMessages()
-        }
+        await loadMessagesWithRunningState(result.messages)
         // 更新分支信息
         if (result.branch !== undefined) {
           setCurrentBranch(result.branch)
@@ -410,7 +426,7 @@ function App() {
     } catch (e) {
       alert(`切换会话失败：${e instanceof Error ? e.message : '未知错误'}`)
     }
-  }, [sessions, setSessionId, loadMessages, clearMessages])
+  }, [sessions, setSessionId, loadMessagesWithRunningState])
 
   // 切换工作区：更新分支，加载新当前会话（不中止后台任务）。
   // 嵌套切换失败时提示用户，本地状态不动（后端引擎未覆盖，不会串数据）
@@ -422,9 +438,9 @@ function App() {
       // 加载新当前会话的消息
       if (result.sessionId) {
         try {
-          const messages = await sessions.switchSession(result.sessionId)
+          const snapshot = await sessions.switchSession(result.sessionId)
           setSessionId(result.sessionId)
-          if (messages) loadMessages(messages)
+          await loadMessagesWithRunningState(snapshot)
         } catch (e) {
           alert(`切换会话失败：${e instanceof Error ? e.message : '未知错误'}`)
         }
@@ -433,7 +449,7 @@ function App() {
         clearMessages()
       }
     }
-  }, [sessions, setSessionId, loadMessages, clearMessages])
+  }, [sessions, setSessionId, loadMessagesWithRunningState, clearMessages])
 
   // 浏览选择目录
   const handleBrowse = useCallback(async () => {

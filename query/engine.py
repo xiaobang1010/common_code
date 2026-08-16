@@ -9,6 +9,7 @@ QueryEngine 持有会话状态（消息历史、token 用量、轮次），
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Callable
 
@@ -285,7 +286,7 @@ class QueryEngine:
             user_context["hook_context"] = hook_result.reason
 
         # 把 user 消息加到 mutable_messages
-        self._mutable_messages.append({"role": "user", "content": prompt})
+        self._mutable_messages.append({"role": "user", "content": prompt, "_ts": time.time() * 1000})
 
         # 构建循环级快照（session_id 整个会话不变）
         query_config = build_query_config(session_id=self._session_id)

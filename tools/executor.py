@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -70,6 +71,7 @@ def tool_result_to_openai_message(result: ToolExecutionResult) -> dict:
         "role": "tool",
         "tool_call_id": result.tool_call_id,
         "content": result.content or "",
+        "_ts": time.time() * 1000,
     }
 
 

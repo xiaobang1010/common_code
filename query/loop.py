@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import time
 from dataclasses import asdict, dataclass, field, replace
 from typing import TYPE_CHECKING, Any, AsyncGenerator
 
@@ -221,7 +222,7 @@ def _build_assistant_message(
 ) -> dict:
     """从流式事件中收集的内容和工具调用构建 assistant 消息。"""
     content = "".join(content_parts) if content_parts else ""
-    msg: dict[str, Any] = {"role": "assistant", "content": content}
+    msg: dict[str, Any] = {"role": "assistant", "content": content, "_ts": time.time() * 1000}
     if tool_calls:
         msg["tool_calls"] = tool_calls
     return msg

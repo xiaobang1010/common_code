@@ -282,10 +282,11 @@ async def test_auto_create_first_round_writeback(workspace, env):
     inst1 = await get_inst(engine, 1)
     await inst1.started.wait()
     session = store.get_session(sid)
-    assert session.messages == [
-        {"role": "user", "content": "首轮消息"},
-        {"role": "assistant", "content": "回复内容"},
-        {"role": "user", "content": "第二轮消息"},
+    # 立即持久化的「第二轮消息」带 _ts（routes 打标），按 role/content 断言忽略 _ts
+    assert [(m["role"], m["content"]) for m in session.messages] == [
+        ("user", "首轮消息"),
+        ("assistant", "回复内容"),
+        ("user", "第二轮消息"),
     ]
     inst1.release.set()
     await consumer2
@@ -385,6 +386,25 @@ async def test_state_returns_running_task_messages(workspace, env):
 
     state = await get_state()
     assert state["messages"] == inst.mutable_messages  # 实时消息
+
+    inst.release.set()
+    await consumer
+
+
+@pytest.mark.asyncio
+async def test_state_reports_started_at(workspace, env):
+    """运行任务时 /api/state 返回 started_at，供前端标记「工作中」。"""
+    engine, store = env
+    store.add_workspace(str(workspace))
+    sid = store.create_session(str(workspace)).id
+
+    consumer = asyncio.create_task(collect(chat_event_stream("消息", sid)))
+    inst = await get_inst(engine, 0)
+    await inst.started.wait()
+
+    state = await get_state()
+    assert isinstance(state["started_at"], float)
+    assert state["started_at"] > 0
 
     inst.release.set()
     await consumer
