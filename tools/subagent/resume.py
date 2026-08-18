@@ -3,69 +3,21 @@
 当 SendMessage 到已停止的子代理时，从磁盘 transcript 加载历史消息，
 追加新 prompt，重新运行子代理。
 
+任务注册与状态查询统一走 tools/subagent/registry.py 的 SubagentTaskRegistry。
+
 参考 Claude Code 的 resumeAgentBackground 流程。
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from typing import Any
 
 from tools.protocol import ToolUseContext
 from tools.subagent.context import SubagentContext, create_subagent_context
+from tools.subagent.registry import MODE_BACKGROUND, STATUS_COMPLETED, get_subagent_registry
 from tools.subagent.transcript import get_agent_transcript, read_agent_metadata
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# 活跃子代理注册表（进程内）
-# ---------------------------------------------------------------------------
-
-# agent_id → {"ctx": SubagentContext, "status": "running"/"stopped"}
-_active_subagents: dict[str, dict[str, Any]] = {}
-
-
-def register_subagent(agent_id: str, ctx: SubagentContext) -> None:
-    """注册活跃子代理。"""
-    _active_subagents[agent_id] = {"ctx": ctx, "status": "running"}
-
-
-def mark_subagent_stopped(agent_id: str) -> None:
-    """标记子代理为已停止。"""
-    if agent_id in _active_subagents:
-        _active_subagents[agent_id]["status"] = "stopped"
-
-
-def unregister_subagent(agent_id: str) -> None:
-    """注销子代理。"""
-    _active_subagents.pop(agent_id, None)
-
-
-def get_subagent_status(agent_id: str) -> str | None:
-    """获取子代理状态。None 表示不在注册表中。"""
-    entry = _active_subagents.get(agent_id)
-    return entry["status"] if entry else None
-
-
-def get_subagent_ctx(agent_id: str) -> SubagentContext | None:
-    """获取子代理上下文。"""
-    entry = _active_subagents.get(agent_id)
-    return entry["ctx"] if entry else None
-
-
-def queue_pending_message(agent_id: str, message: str) -> bool:
-    """向正在运行的子代理的消息队列追加消息。
-
-    Returns:
-        True 成功入队，False 子代理不在运行中
-    """
-    entry = _active_subagents.get(agent_id)
-    if entry is None or entry["status"] != "running":
-        return False
-    entry["ctx"].pending_messages.append(message)
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -129,8 +81,13 @@ async def resume_agent_background(
     # 追加历史消息 + 新 prompt
     ctx.initial_messages = resumed_messages + [{"role": "user", "content": prompt}]
 
-    # 注册为活跃
-    register_subagent(agent_id, ctx)
+    # 注册为活跃（后台模式）
+    get_subagent_registry().register(
+        agent_id,
+        ctx,
+        agent_type=agent_def.agent_type,
+        mode=MODE_BACKGROUND,
+    )
 
     # 6. 运行子代理
     from tools.subagent.runner import run_agent
@@ -149,6 +106,8 @@ async def resume_agent_background(
                 if content:
                     final_text = content
     finally:
-        mark_subagent_stopped(agent_id)
+        get_subagent_registry().set_result(
+            agent_id, status=STATUS_COMPLETED, final_text=final_text
+        )
 
     return final_text

@@ -23,6 +23,7 @@ from server.routers import (
     plugins_router,
     memory_router,
     agents_router,
+    subagents_router,
     sessions_router,
     workspaces_router,
 )
@@ -49,6 +50,7 @@ app.include_router(config_router)
 app.include_router(plugins_router)
 app.include_router(memory_router)
 app.include_router(agents_router)
+app.include_router(subagents_router)
 app.include_router(sessions_router)
 app.include_router(workspaces_router)
 

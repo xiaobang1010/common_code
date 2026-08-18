@@ -120,34 +120,6 @@ def _list_all_tasks(team_name: str) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# find_available_task — 查找可认领的任务（无阻塞）
-# ---------------------------------------------------------------------------
-
-
-def find_available_task(team_name: str) -> dict[str, Any] | None:
-    """查找可认领的任务：pending + 无 owner + 所有 blocked_by 已完成。
-
-    Args:
-        team_name: 团队名
-
-    Returns:
-        第一个可认领的任务，或 None
-    """
-    tasks = _list_all_tasks(team_name)
-    unresolved = {t["id"] for t in tasks if t.get("status") != "completed"}
-
-    for task in tasks:
-        if (
-            task.get("status") == "pending"
-            and task.get("owner") is None
-            and all(bid not in unresolved for bid in task.get("blocked_by", []))
-        ):
-            return task
-
-    return None
-
-
-# ---------------------------------------------------------------------------
 # TaskCreate 工具
 # ---------------------------------------------------------------------------
 

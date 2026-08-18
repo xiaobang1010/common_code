@@ -53,6 +53,8 @@ class RunContext:
     started_at: float = 0.0
     # 每任务独立的收尾事件：任务 finally 置位；abort/删除等待它
     finished: asyncio.Event = field(default_factory=asyncio.Event)
+    # 任务级中断事件：/api/abort 置位后传导给引擎与前台子代理，触发优雅退出
+    abort_event: asyncio.Event = field(default_factory=asyncio.Event)
     # SSE 订阅者队列集合：生成器注册/注销；无订阅者时任务事件丢弃
     subscribers: set = field(default_factory=set)
 

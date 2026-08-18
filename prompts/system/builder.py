@@ -10,6 +10,7 @@ from prompts.system.sections import (
     _SKILL_GUIDANCE,
     _SUBAGENT_GUIDANCE,
     _TEAM_GUIDANCE,
+    build_subagent_guidance,
 )
 
 
@@ -62,14 +63,14 @@ def get_system_prompt_sections(
     except ImportError:
         pass
 
-    # ⑤ Subagent 使用指导（当 Agent 工具启用时）
+    # ⑤ Subagent 使用指导（动态：代理清单含自定义 .md 代理，加载后自动出现在提示词）
     try:
         from tools.subagent.built_in_agents import get_built_in_agents
         agents = get_built_in_agents()
         if agents:
             sections.append(
                 SystemPromptSection(
-                    content=_SUBAGENT_GUIDANCE,
+                    content=build_subagent_guidance(),
                     cache_scope=None,
                     name="subagent_guidance",
                 )

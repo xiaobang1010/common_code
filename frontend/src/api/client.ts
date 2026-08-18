@@ -73,6 +73,26 @@ export interface AgentInfo {
   source: string
 }
 
+/** 自定义子智能体加载诊断（GET /api/agents 附带） */
+export interface AgentDiagnostic {
+  file: string
+  source: string
+  code: string
+  message: string
+}
+
+/** 自定义子智能体创建/更新请求 */
+export interface AgentCreateInput {
+  name: string
+  description: string
+  system_prompt?: string
+  tools?: string[] | null
+  disallowed_tools?: string[]
+  model?: string | null
+  max_turns?: number | null
+  background?: boolean
+}
+
 /** 技能信息（GET /api/skills 返回的完整字段） */
 export interface SkillInfo {
   name: string
@@ -288,7 +308,16 @@ export const memoryApi = {
 
 /** 子智能体 */
 export const agentsApi = {
-  list: () => apiGet<{ agents: AgentInfo[] }>('/api/agents'),
+  list: () => apiGet<{ agents: AgentInfo[]; diagnostics?: AgentDiagnostic[] }>('/api/agents'),
+  create: (data: AgentCreateInput) => apiPost<{ ok: boolean; file: string }>('/api/agents', data),
+  remove: (name: string) =>
+    fetch(`/api/agents/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(async (res) => {
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok || json.ok === false) {
+        throw new Error(json.error || `DELETE /api/agents/${name} 失败：${res.status}`)
+      }
+      return json as { ok: boolean }
+    }),
 }
 
 /** 技能管理 */

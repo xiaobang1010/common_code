@@ -139,6 +139,22 @@ async def execute_tool_call(
             is_error=True,
         )
 
+    # ---- 2.5 子代理上下文防线 ----
+    # 工具池过滤（resolve_agent_tools）已移除 Agent 工具防递归，
+    # 这里按执行上下文再兜底一道：子代理内禁止派生 Agent/Task，
+    # 防止经 MCP 或白名单遗漏路径绕过工具池过滤造成无限套娃
+    from tools.subagent.tools import is_subagent_context
+    if is_subagent_context(context) and tool_matches_name(tool, "Agent"):
+        return ToolExecutionResult(
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            content=(
+                "Nested subagent dispatch is not allowed: "
+                "subagents cannot spawn further subagents."
+            ),
+            is_error=True,
+        )
+
     # ---- 3. validateInput ----
     if tool.validate_input is not None:
         try:
@@ -221,10 +237,26 @@ async def execute_tool_call(
                 perm_decision = {"decision": "deny", "reason": "User denied permission"}
         else:
             # 没有 prompt 回调，默认拒绝（安全第一）
-            perm_decision = {
-                "decision": "deny",
-                "reason": "Permission required but no prompt available",
-            }
+            # 子代理上下文：无弹窗通道，说明拒绝原因与当前子代理的工具边界，
+            # 避免模型只看到失败不知原因（黑箱失败）
+            from tools.subagent.tools import is_subagent_context
+            if is_subagent_context(context):
+                allowed = ", ".join(sorted({t.name for t in tools}))
+                perm_decision = {
+                    "decision": "deny",
+                    "reason": (
+                        "Permission required but subagents cannot ask the user "
+                        "for approval, so this tool call was denied. "
+                        f"Tools available in this subagent: {allowed}. "
+                        "If this action needs approval, run it in the main "
+                        "conversation instead."
+                    ),
+                }
+            else:
+                perm_decision = {
+                    "decision": "deny",
+                    "reason": "Permission required but no prompt available",
+                }
 
     if perm_decision is not None:
         # 权限被拒绝，先跑 PermissionDenied hooks

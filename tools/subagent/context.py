@@ -51,6 +51,7 @@ class SubagentContext:
     initial_messages: list[dict] = field(default_factory=list)
     abort_event: asyncio.Event | None = None
     pending_messages: list[str] = field(default_factory=list)
+    usage: dict[str, int] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

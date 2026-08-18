@@ -103,6 +103,17 @@ async def main() -> None:
 
     server_state.session_store = SessionStore()
 
+    # team 层启动恢复：扫描全部团队，释放崩溃 teammate 名下的任务
+    # （best-effort，失败不影响服务启动）
+    try:
+        from tools.team.manager import recover_all_teams
+
+        recovered = recover_all_teams()
+        if recovered:
+            print(f"团队崩溃恢复: {recovered}", file=sys.stderr)
+    except Exception as e:
+        print(f"团队崩溃恢复跳过: {e}", file=sys.stderr)
+
     # 4. 启动服务，写端口 JSON 给 Electron
     port = find_free_port()
     uvicorn_config = uvicorn.Config(

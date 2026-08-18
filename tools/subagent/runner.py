@@ -114,9 +114,17 @@ async def run_agent(
         ctx.max_turns,
     )
 
+    # 运行统计：tool 消息计数 + 起始时间（finally 汇总写入 ctx.usage）
+    started_at = asyncio.get_event_loop().time()
+    tool_uses = 0
+
     # 6. 运行 query_loop，yield 消息
+    # 传入 ctx.tool_use_context 使每轮工具执行上下文携带 agent_id，
+    # is_subagent_context() 由此对子代理循环内返回 True
     try:
-        async for event in query_loop(engine, query_config):
+        async for event in query_loop(
+            engine, query_config, tool_use_context=ctx.tool_use_context
+        ):
             # 检查 abort_event
             if ctx.abort_event is not None and ctx.abort_event.is_set():
                 logger.info("子代理 %s 被 abort 中断", ctx.agent_id)
@@ -125,6 +133,9 @@ async def run_agent(
 
             # 只 yield dict 类型的消息（跳过 StreamEvent）
             if isinstance(event, dict):
+                # 工具调用计数
+                if event.get("role") == "tool":
+                    tool_uses += 1
                 # 增量写入 transcript
                 last_uuid = record_sidechain_transcript(
                     [event], ctx.agent_id, last_uuid,
@@ -153,9 +164,19 @@ async def run_agent(
             "content": f"Subagent error: {e}",
         }
     finally:
-        # 7. 清理资源
+        # 7. 汇总运行统计并清理资源
+        ctx.usage = {
+            "total_tokens": int(engine.total_usage),
+            "tool_uses": tool_uses,
+            "duration_ms": int((asyncio.get_event_loop().time() - started_at) * 1000),
+        }
         ctx.initial_messages.clear()
-        logger.info("子代理 %s 执行结束", ctx.agent_id)
+        logger.info(
+            "子代理 %s 执行结束 (tokens=%d, tool_uses=%d)",
+            ctx.agent_id,
+            ctx.usage["total_tokens"],
+            ctx.usage["tool_uses"],
+        )
 
 
 # ---------------------------------------------------------------------------
