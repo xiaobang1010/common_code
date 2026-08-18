@@ -8,6 +8,7 @@ QueryEngine 持有会话状态（消息历史、token 用量、轮次），
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from dataclasses import dataclass, field
@@ -41,11 +42,13 @@ class QueryEngineConfig:
             签名 (tool_name, tool_input, reason) -> "allow"|"deny"|"always_allow"，None 表示无弹窗
         question_prompt: AskUserQuestion 提问回调，模型主动提问时调用。
             签名 async (question, options) -> 用户回答文本，None 表示无提问通道
+        abort_event: 会话级中断事件。/api/abort 置位后经 ToolUseContext.abort_controller
+            传导到前台子代理触发优雅退出；None 表示无中断通道
         deps: I/O 依赖
     """
 
     cwd: str = ""
-    model: str = ""  # 空字符串表示用 get_default_model() 解析，避免硬编码错误模型名
+    model: str = ""  # 空字符串表示用 get_default_model() 解析，避免硬编码错误模型
     max_tokens: int = 8192
     temperature: float = 1.0
     permission_mode: str = "default"
@@ -55,6 +58,7 @@ class QueryEngineConfig:
     permission_check: Callable | None = None
     permission_prompt: Callable | None = None
     question_prompt: Callable | None = None
+    abort_event: asyncio.Event | None = None
     deps: QueryDeps = field(default_factory=production_deps)
 
 
@@ -173,14 +177,16 @@ class QueryEngine:
         self,
         config: QueryEngineConfig,
         initial_messages: list[dict] | None = None,
+        session_id: str = "",
     ) -> None:
         self._config = config
         self._deps = config.deps
         self._mutable_messages: list[dict] = initial_messages or []
         self._total_usage: int = 0
         self._turn_count: int = 0
-        # 整个会话一个 sessionId
-        self._session_id: str = config.deps.get_uuid()
+        # 整个会话一个 sessionId；调用方可显式指定（如聊天会话 id，
+        # 供子代理注册表按父会话关联与通知投递），缺省生成
+        self._session_id: str = session_id or config.deps.get_uuid()
         # 会话级 ALWAYS_ALLOW 集合：用户选过 always_allow 的工具后续直接放行
         self._always_allowed: set[str] = set()
 

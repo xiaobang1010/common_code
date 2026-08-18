@@ -187,6 +187,40 @@ def team_exists(team_name: str) -> bool:
     return _get_team_dir(team_name).exists()
 
 
+def list_teams() -> list[str]:
+    """列出全部团队名（扫描 ~/.agent/teams/ 目录）。"""
+    teams_root = _get_agent_home() / TEAMS_DIR
+    if not teams_root.is_dir():
+        return []
+    return sorted(p.name for p in teams_root.iterdir() if p.is_dir())
+
+
+# ---------------------------------------------------------------------------
+# recover_all_teams — 启动时崩溃恢复入口（服务启动调用）
+# ---------------------------------------------------------------------------
+
+
+def recover_all_teams() -> dict[str, list[str]]:
+    """对全部团队执行崩溃恢复扫描。
+
+    服务启动时调用（best-effort），返回 {team: 恢复的 teammate 名单}。
+    单个团队异常不影响其他团队。
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    results: dict[str, list[str]] = {}
+    for team_name in list_teams():
+        try:
+            recovered = recover_crashed_teammates(team_name)
+            if recovered:
+                results[team_name] = recovered
+                logger.info("团队 %s 崩溃恢复: %s", team_name, recovered)
+        except Exception as e:  # noqa: BLE001 启动恢复必须容错
+            logger.warning("团队 %s 崩溃恢复失败: %s", team_name, e)
+    return results
+
+
 # ---------------------------------------------------------------------------
 # add_member / remove_member / get_members — 成员管理
 # ---------------------------------------------------------------------------

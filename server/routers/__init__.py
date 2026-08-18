@@ -10,6 +10,7 @@ from server.routers.config import router as config_router
 from server.routers.plugins import router as plugins_router
 from server.routers.memory import router as memory_router
 from server.routers.agents import router as agents_router
+from server.routers.subagents import router as subagents_router
 from server.routers.sessions import router as sessions_router
 from server.routers.workspaces import router as workspaces_router
 
@@ -24,6 +25,7 @@ __all__ = [
     "plugins_router",
     "memory_router",
     "agents_router",
+    "subagents_router",
     "sessions_router",
     "workspaces_router",
 ]

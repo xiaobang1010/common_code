@@ -5,6 +5,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 // @ts-ignore
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { useChatStore, formatDuration, lastActivityAtRef, type WorkBlock, type WorkStep } from '../../stores/useChatStore'
+import SubagentCard from './SubagentCard'
 
 interface Props {
   // 只订阅自己的工作块：流式更新只触发本组件重渲
@@ -195,6 +196,9 @@ const EventLine = memo(function EventLine({ step }: { step: WorkStep }) {
     cursor: clickable ? 'pointer' : 'default',
   }
 
+  // Agent 步骤：事件行下方渲染独立状态卡片（状态/耗时/usage/输出预览/停止）
+  const isAgentStep = step.toolName === 'Agent' || step.toolName === 'Task'
+
   return (
     <div>
       {clickable ? (
@@ -211,6 +215,12 @@ const EventLine = memo(function EventLine({ step }: { step: WorkStep }) {
         </button>
       ) : (
         <div style={rowStyle}>{row}</div>
+      )}
+
+      {isAgentStep && (
+        <div style={{ padding: '0 0 6px 20px' }}>
+          <SubagentCard step={step} />
+        </div>
       )}
 
       {expanded && (

@@ -458,7 +458,7 @@ async def resolve_permission_decision(
 ) -> dict | None:
     """权限策略协调器 - 协调 hook 决策与规则层决策。
 
-    策略（与 TS 版 resolveHookPermissionDecision 对齐）：
+    策略（与既有 hook 决策协调约定对齐）：
     - hook 做出 allow 决策 -> 仍需调用 permission_check 检查 deny/ask 规则
     - hook 做出 deny 决策 -> 直接返回 deny，不调 permission_check
     - hook 无决策（decided=False）-> 调用 permission_check

@@ -136,7 +136,7 @@ class GlobalConfig:
     def to_dict(self) -> dict[str, Any]:
         """转换为 JSON 友好的字典，使用 camelCase 键名。"""
         d = asdict(self)
-        # 转换键名为 camelCase 以与 TS 版本兼容
+        # 转换键名为 camelCase，与既有调用方约定保持一致
         result: dict[str, Any] = {}
         key_map = {
             "num_startups": "numStartups",
@@ -526,7 +526,7 @@ def get_initial_settings(
 ) -> Settings:
     """多源设置合并。
 
-    合并优先级（从低到高，对齐 TS 版）：
+    合并优先级（从低到高）：
     1. 用户设置 (~/.agent/settings.json)
     2. 项目设置 (.agent/settings.json)
     3. 本地项目设置 (.agent/settings.local.json)

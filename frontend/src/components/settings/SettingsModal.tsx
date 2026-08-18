@@ -7,7 +7,7 @@ import LLMSettingsSection from './LLMSettingsSection'
 import PluginSettingsSection from './PluginSettingsSection'
 import MemorySettingsSection from './MemorySettingsSection'
 import SubagentSettingsSection from './SubagentSettingsSection'
-import MultiagentPlaceholder from './MultiagentPlaceholder'
+import MultiagentSection from './MultiagentSection'
 import SkillsSettingsSection from './SkillsSettingsSection'
 
 // 七个分区
@@ -93,7 +93,7 @@ function SettingsModal({ open, onClose, onResetLayout }: SettingsModalProps) {
       case 'subagents':
         return <SubagentSettingsSection />
       case 'multiagent':
-        return <MultiagentPlaceholder />
+        return <MultiagentSection />
       case 'skills':
         return <SkillsSettingsSection />
       case 'layout':

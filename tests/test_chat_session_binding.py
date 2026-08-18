@@ -75,7 +75,7 @@ def env(workspace, monkeypatch):
     engine = FakeEngine()
     monkeypatch.setattr(server.state, "engine", engine)
     monkeypatch.setattr(server.state, "running_runs", {})
-    def fake_query_engine(config, initial_messages=None):
+    def fake_query_engine(config, initial_messages=None, session_id=""):
         # 模拟 QueryEngine(config, initial_messages)：快照装入任务引擎
         engine.mutable_messages = list(initial_messages or [])
         return engine
