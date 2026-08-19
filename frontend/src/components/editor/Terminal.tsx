@@ -5,7 +5,8 @@ import '@xterm/xterm/css/xterm.css'
 
 // 终端 IPC 接口类型
 interface ElectronTerminalAPI {
-  create: (cwd?: string) => Promise<string>
+  // create 返回 { id, shell }：shell 名供终端标签标题展示
+  create: (cwd?: string) => Promise<{ id: string; shell: string }>
   input: (id: string, data: string) => void
   resize: (id: string, cols: number, rows: number) => Promise<void>
   dispose: (id: string) => Promise<void>
@@ -21,8 +22,8 @@ function getTerminalAPI(): ElectronTerminalAPI | undefined {
 interface TerminalProps {
   // 父组件分配的唯一实例 id，变化时会重新创建终端
   instanceId: string
-  // 终端创建完成后的回调，把 pty id 回传给父组件管理
-  onReady?: (ptyId: string) => void
+  // 终端创建完成后的回调，把 pty id 与 shell 名回传给父组件管理
+  onReady?: (ptyId: string, shell: string) => void
 }
 
 // 单个终端实例：通过 Electron 主进程的 node-pty 接入真实 PowerShell。
@@ -70,32 +71,32 @@ function Terminal({ instanceId, onReady }: TerminalProps) {
     let cleanupOutput: (() => void) | undefined
     let ptyId: string | undefined
 
-    api.create().then((id) => {
+    api.create().then((res) => {
       if (disposed) {
-        api.dispose(id)
+        api.dispose(res.id)
         return
       }
-      ptyId = id
-      onReady?.(id)
+      ptyId = res.id
+      onReady?.(res.id, res.shell)
 
       // 转发用户输入到 pty
       term.onData((data) => {
-        api.input(id, data)
+        api.input(res.id, data)
       })
 
       // 转发尺寸变化到 pty
       term.onResize(({ cols, rows }) => {
-        api.resize(id, cols, rows)
+        api.resize(res.id, cols, rows)
       })
 
       // 接收 pty 输出
       cleanupOutput = api.onOutput((outputId, data) => {
-        if (outputId === id) {
+        if (outputId === res.id) {
           term.write(data)
         }
       })
 
-      api.resize(id, term.cols, term.rows)
+      api.resize(res.id, term.cols, term.rows)
     })
 
     // 容器尺寸变化时重新拟合

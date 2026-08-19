@@ -1,120 +1,90 @@
+import { useState } from 'react'
 import { TOOL_META, type ToolId } from './editor/toolMeta'
 
 interface IconRailProps {
-  // 当前激活工具标签：对应图标高亮
-  activeToolId: ToolId | null
-  // 编辑区展开状态：编辑区图标高亮
-  editorCollapsed: boolean
-  // 点图标直达对应面板、再点收起
+  // 点图标直达对应工具标签：展开面板并激活该标签
   onToolClick: (id: ToolId) => void
-  onToggleEditor: () => void
 }
 
-// 图标轨按钮统一样式
-function railButtonStyle(active: boolean): React.CSSProperties {
+// 卡片内图标按钮统一样式
+function cardButtonStyle(hovered: boolean): React.CSSProperties {
   return {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     width: '28px',
     height: '28px',
-    border: '1px solid',
-    borderColor: active ? 'var(--border-strong)' : 'transparent',
+    border: 'none',
     borderRadius: 'var(--radius-sm)',
-    background: active ? 'var(--selected-bg)' : 'transparent',
-    color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+    background: hovered ? 'var(--bg-base)' : 'transparent',
+    color: hovered ? 'var(--text-primary)' : 'var(--text-secondary)',
     cursor: 'pointer',
     transition: 'all var(--transition-fast)',
-    position: 'relative',
-    flexShrink: 0,
   }
 }
 
-// 右缘图标轨：扩展面板与编辑区的折叠态入口（36-44px 极窄）
-// 一个图标对应一个面板，点图标直达、再点收回；激活图标带状态点
-function IconRail({ activeToolId, editorCollapsed, onToolClick, onToggleEditor }: IconRailProps) {
+// 收起态入口：右上角圆润悬浮卡片（替代原右缘全高图标轨）。
+// 固定在标题栏下方右上角，图标竖排卡内；hover/focus 时图标左侧浮出文字气泡。
+// 面板展开时由 App 决定不渲染本卡片。
+function IconRail({ onToolClick }: IconRailProps) {
+  const [hovered, setHovered] = useState<ToolId | null>(null)
+
   return (
     <div
       style={{
-        width: '40px',
-        flexShrink: 0,
-        height: '100%',
+        position: 'fixed',
+        top: '44px', // 标题栏 38px 下方留出间距，避免遮挡标题栏交互区
+        right: '14px',
         display: 'flex',
         flexDirection: 'column',
-        alignItems: 'center',
-        gap: '4px',
-        paddingTop: '8px',
-        backgroundColor: 'var(--bg-base)',
-        borderLeft: '1px solid var(--border)',
-        overflow: 'hidden',
+        alignItems: 'stretch',
+        gap: '2px',
+        padding: '6px',
+        borderRadius: 'var(--radius-lg)',
+        backgroundColor: 'var(--bg-elevated)',
+        boxShadow: 'var(--shadow-md)',
+        border: '1px solid var(--border-subtle)',
+        zIndex: 40,
+        userSelect: 'none',
       }}
     >
-      {TOOL_META.map(({ id, title, icon }) => {
-        const active = activeToolId === id
-        return (
-          <button
-            key={id}
-            onClick={() => onToolClick(id)}
-            title={title}
-            style={railButtonStyle(active)}
-            onMouseEnter={(e) => {
-              if (!active) {
-                e.currentTarget.style.borderColor = 'var(--border)'
-                e.currentTarget.style.color = 'var(--text-primary)'
-              }
-            }}
-            onMouseLeave={(e) => {
-              if (!active) {
-                e.currentTarget.style.borderColor = 'transparent'
-                e.currentTarget.style.color = 'var(--text-secondary)'
-              }
-            }}
-          >
-            {icon}
-            {/* 激活状态点 */}
-            {active && (
-              <span
-                style={{
-                  position: 'absolute',
-                  left: '2px',
-                  top: '2px',
-                  width: '5px',
-                  height: '5px',
-                  borderRadius: '50%',
-                  backgroundColor: 'var(--text-primary)',
-                }}
-              />
-            )}
-          </button>
-        )
-      })}
-
-      {/* 分隔线 */}
-      <div style={{ width: '20px', height: '1px', backgroundColor: 'var(--border)', margin: '4px 0', flexShrink: 0 }} />
-
-      {/* 编辑区展开/收起图标：原「» 编辑器」竖条并入此轨 */}
-      <button
-        onClick={onToggleEditor}
-        title={editorCollapsed ? '展开编辑区' : '收起编辑区'}
-        style={railButtonStyle(!editorCollapsed)}
-        onMouseEnter={(e) => {
-          if (editorCollapsed) {
-            e.currentTarget.style.borderColor = 'var(--border)'
-            e.currentTarget.style.color = 'var(--text-primary)'
-          }
-        }}
-        onMouseLeave={(e) => {
-          if (editorCollapsed) {
-            e.currentTarget.style.borderColor = 'transparent'
-            e.currentTarget.style.color = 'var(--text-secondary)'
-          }
-        }}
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-          <path d="M14 2v6h6" />
-        </svg>
-      </button>
+      {TOOL_META.map(({ id, title, icon }) => (
+        <button
+          key={id}
+          onClick={() => onToolClick(id)}
+          aria-label={title}
+          title={title}
+          onMouseEnter={() => setHovered(id)}
+          onMouseLeave={() => setHovered(null)}
+          onFocus={() => setHovered(id)}
+          onBlur={() => setHovered(null)}
+          style={{ ...cardButtonStyle(hovered === id), position: 'relative' }}
+        >
+          {icon}
+          {/* 文字气泡：hover/focus 时浮在图标左侧 */}
+          {hovered === id && (
+            <span
+              style={{
+                position: 'absolute',
+                right: '100%',
+                marginRight: '8px',
+                whiteSpace: 'nowrap',
+                fontSize: '11px',
+                fontFamily: 'var(--font-ui)',
+                color: 'var(--text-primary)',
+                padding: '2px 8px',
+                borderRadius: 'var(--radius-sm)',
+                backgroundColor: 'var(--bg-elevated)',
+                border: '1px solid var(--border)',
+                boxShadow: 'var(--shadow-sm)',
+                pointerEvents: 'none',
+              }}
+            >
+              {title}
+            </span>
+          )}
+        </button>
+      ))}
     </div>
   )
 }

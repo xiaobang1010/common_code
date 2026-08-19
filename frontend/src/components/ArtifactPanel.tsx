@@ -32,12 +32,13 @@ interface OpenTab {
   error: string         // 保存/读取错误提示
   stale: boolean        // 磁盘已被外部（AI）修改，需重新加载
   revision: number      // 内容整体重置时 +1，用于触发编辑器重挂载
+  pinned: boolean       // 是否固定为正式标签（未固定且干净的标签参与预览槽复用）
 }
 
 // 终端会话信息
 interface TerminalTab {
   id: string       // 前端分配的实例 id
-  title: string    // 显示名称
+  title: string    // 显示名称（pty 就绪后回填 shell 名，如 powershell）
   ptyId?: string   // 后端 pty id，创建后填充
 }
 
@@ -55,12 +56,12 @@ interface PendingBatchClose {
 }
 
 // 暴露给父组件的方法
-export interface EditorAreaHandle {
+export interface ArtifactPanelHandle {
   openFile: (path: string) => void
 }
 
-// EditorArea 的 props
-interface EditorAreaProps {
+// ArtifactPanel 的 props
+interface ArtifactPanelProps {
   collapsed: boolean
   onToggleCollapse: () => void
   // 当前工作区路径，null 表示未选择工作区（树列显示占位提示用）
@@ -104,8 +105,13 @@ function TerminalToolContent() {
     })
   }, [activeId])
 
-  const handleReady = useCallback((tabId: string, ptyId: string) => {
-    setTabs((prev) => prev.map((t) => (t.id === tabId ? { ...t, ptyId } : t)))
+  // pty 就绪：记录 ptyId 并把标签标题回填为实际 shell 名（如 powershell），替代固定 TERMINAL
+  const handleReady = useCallback((tabId: string, ptyId: string, shell: string) => {
+    setTabs((prev) =>
+      prev.map((t) =>
+        t.id === tabId ? { ...t, ptyId, title: shell.replace(/\.exe$/i, '') } : t
+      )
+    )
   }, [])
 
   return (
@@ -224,14 +230,32 @@ function TerminalToolContent() {
         </button>
       </div>
       {/* 终端内容区 - 只渲染当前激活的会话，切换重建 */}
-      <div style={{ flex: 1, overflow: 'hidden' }}>
-        <Terminal key={activeId} instanceId={activeId} onReady={(ptyId) => handleReady(activeId, ptyId)} />
+      <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
+        <Terminal key={activeId} instanceId={activeId} onReady={(ptyId, shell) => handleReady(activeId, ptyId, shell)} />
+        {/* 弱提示：会话未就绪/尚无输出时非纯空白，不抢焦点不打断 */}
+        {!tabs.find((t) => t.id === activeId)?.ptyId && (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'var(--text-tertiary)',
+              fontSize: '12px',
+              fontFamily: 'var(--font-ui)',
+              pointerEvents: 'none',
+            }}
+          >
+            暂无终端输出
+          </div>
+        )}
       </div>
     </div>
   )
 }
 
-const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
+const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
   ({ collapsed, onToggleCollapse, workspacePath, toolTabsOpen, activeToolId, onOpenTool, onCloseTool, onActivateFile }, ref) => {
     const [openTabs, setOpenTabs] = useState<OpenTab[]>([])
     const [activePath, setActivePath] = useState('')
@@ -340,7 +364,26 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
       return () => window.removeEventListener('keydown', handler)
     }, [])
 
-    // 打开文件：已打开则切换标签，否则请求内容后新增标签
+    // 由文件读取结果构建标签页对象（pinned 默认 false = 预览标签）
+    const makeTab = (path: string, data: Awaited<ReturnType<typeof filesApi.read>>): OpenTab => ({
+      path,
+      name: path.split('/').pop() || path,
+      language: data.language,
+      bufferContent: data.content,
+      diskContent: data.content,
+      baseMtime: data.mtime,
+      baseSize: data.size,
+      editable: data.editable,
+      saving: false,
+      error: '',
+      stale: false,
+      revision: 0,
+      pinned: false,
+    })
+
+    // 打开文件：已打开则切换标签，否则请求内容后新增标签。
+    // 预览槽复用：当前没有固定且干净的预览标签时，整体替换该槽（path/名字/内容/基线都换掉），
+    // 连续浏览不逐文件堆积；只有固定标签（pinned=true）或脏标签才新增
     const openFile = useCallback(
       async (path: string) => {
         if (collapsed) {
@@ -354,24 +397,14 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
         }
         try {
           const data = await filesApi.read(path)
-          const name = path.split('/').pop() || path
-          updateTabs((prev) => [
-            ...prev,
-            {
-              path,
-              name,
-              language: data.language,
-              bufferContent: data.content,
-              diskContent: data.content,
-              baseMtime: data.mtime,
-              baseSize: data.size,
-              editable: data.editable,
-              saving: false,
-              error: '',
-              stale: false,
-              revision: 0,
-            },
-          ])
+          const slot = openTabsRef.current.find((t) => !t.pinned && t.bufferContent === t.diskContent)
+          if (slot) {
+            updateTabs((prev) =>
+              prev.map((t) => (t.path === slot.path ? { ...makeTab(path, data), revision: t.revision + 1 } : t))
+            )
+          } else {
+            updateTabs((prev) => [...prev, makeTab(path, data)])
+          }
           setActive(path)
         } catch (e) {
           console.error('读取文件失败', e)
@@ -382,12 +415,25 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
 
     useImperativeHandle(ref, () => ({ openFile }), [openFile])
 
-    // 编辑器内容变更：只更新缓冲，不回灌 value，保持 Monaco 自身 undo 栈
+    // 编辑器内容变更：只更新缓冲，不回灌 value，保持 Monaco 自身 undo 栈。
+    // 预览标签首次产生 dirty 时自动固定（pinned=true），此后不再参与预览槽复用
     const handleEditorChange = useCallback(
       (path: string, value: string) => {
         updateTabs((prev) =>
-          prev.map((t) => (t.path === path && t.bufferContent !== value ? { ...t, bufferContent: value } : t))
+          prev.map((t) =>
+            t.path === path && t.bufferContent !== value
+              ? { ...t, bufferContent: value, pinned: t.bufferContent === t.diskContent ? true : t.pinned }
+              : t
+          )
         )
+      },
+      [updateTabs]
+    )
+
+    // 双击文件树节点显式固定预览标签：该文件转为正式标签（pinned=true），不再参与预览槽复用
+    const pinFile = useCallback(
+      (path: string) => {
+        updateTabs((prev) => prev.map((t) => (t.path === path ? { ...t, pinned: true } : t)))
       },
       [updateTabs]
     )
@@ -730,12 +776,225 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
       setPreviewMode(false)
     }, [activePath])
 
-    // 工具面板内容：全部保持挂载（非激活用 display:none 隐藏），终端会话不丢失
+    // 文件上下文：树列只在此显示（files 标签激活，或已打开文件且未切到其它工具）。
+    // 打开文件后树不消失 = 只要 activeToolId 为 null 且存在激活文件，树就保留
+    const inFilesContext = activeToolId === 'files' || (activeToolId === null && !!activeTab)
+
+    // 文件视图节点：无工具激活（activeToolId===null）与「文件」工具（activeToolId==='files'）共用
+    const fileViewNode = activeTab ? (
+      <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        {activeTab.stale && (
+          <div
+            style={{
+              padding: '6px 12px',
+              backgroundColor: 'var(--bg-elevated)',
+              color: 'var(--warning)',
+              fontSize: '12px',
+              fontFamily: 'var(--font-ui)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px',
+            }}
+          >
+            {activeTab.bufferContent !== activeTab.diskContent ? (
+              <span>文件已被 AI 修改，你有未保存更改。</span>
+            ) : (
+              <>
+                <span>磁盘已变更，可能由 AI 更新。</span>
+                <button
+                  onClick={() => void reloadTab(activeTab.path)}
+                  style={{ border: 'none', background: 'transparent', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '12px', padding: 0 }}
+                >
+                  点击重新加载
+                </button>
+              </>
+            )}
+          </div>
+        )}
+        {!activeTab.editable && (
+          <div
+            style={{
+              padding: '6px 12px',
+              backgroundColor: 'var(--bg-elevated)',
+              color: 'var(--text-tertiary)',
+              fontSize: '12px',
+              fontFamily: 'var(--font-ui)',
+            }}
+          >
+            文件过大，仅支持查看
+          </div>
+        )}
+        {activeTab.error && (
+          <div
+            style={{
+              padding: '6px 12px',
+              backgroundColor: 'var(--bg-elevated)',
+              color: 'var(--error)',
+              fontSize: '12px',
+              fontFamily: 'var(--font-ui)',
+            }}
+          >
+            {activeTab.error}
+          </div>
+        )}
+        {/* .md 预览切换按钮：查看增强，默认源码编辑 */}
+        {isMarkdown && (
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '6px', padding: '6px 10px 0', flexShrink: 0 }}>
+            <button
+              onClick={() => setPreviewMode(false)}
+              disabled={!previewMode}
+              title="源码视图"
+              style={{
+                border: '1px solid var(--border)',
+                background: !previewMode ? 'var(--selected-bg)' : 'transparent',
+                color: !previewMode ? 'var(--text-primary)' : 'var(--text-secondary)',
+                cursor: previewMode ? 'pointer' : 'default',
+                padding: '3px 12px',
+                borderRadius: 'var(--radius-sm)',
+                fontSize: '11px',
+                fontFamily: 'var(--font-ui)',
+              }}
+            >
+              代码
+            </button>
+            <button
+              onClick={() => setPreviewMode(true)}
+              disabled={previewMode}
+              title="预览视图"
+              style={{
+                border: '1px solid var(--border)',
+                background: previewMode ? 'var(--selected-bg)' : 'transparent',
+                color: previewMode ? 'var(--text-primary)' : 'var(--text-secondary)',
+                cursor: previewMode ? 'default' : 'pointer',
+                padding: '3px 12px',
+                borderRadius: 'var(--radius-sm)',
+                fontSize: '11px',
+                fontFamily: 'var(--font-ui)',
+              }}
+            >
+              预览
+            </button>
+          </div>
+        )}
+        <div style={{ flex: 1, overflow: 'hidden' }}>
+          {isMarkdown && previewMode ? (
+            <div style={{ height: '100%', overflow: 'auto', padding: '4px 16px 16px', fontSize: '13px', color: 'var(--text-primary)' }}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                {activeTab.bufferContent}
+              </ReactMarkdown>
+            </div>
+          ) : (
+            <CodeEditor
+              key={`${activeTab.path}:${activeTab.revision}`}
+              content={activeTab.bufferContent}
+              language={activeTab.language}
+              readOnly={!activeTab.editable}
+              onChange={(value) => handleEditorChange(activeTab.path, value)}
+            />
+          )}
+        </div>
+      </div>
+    ) : null
+
+    // 文件空态节点：无打开文件时的占位（含最近打开入口与折叠态「展开文件树」兜底）
+    const filesEmptyNode = !activeTab ? (
+      <div
+        style={{
+          flex: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: '8px',
+          color: 'var(--text-tertiary)',
+          userSelect: 'none',
+        }}
+      >
+        <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-secondary)', fontFamily: 'var(--font-ui)' }}>Files</span>
+        <span style={{ fontSize: '12px', fontFamily: 'var(--font-ui)' }}>本次任务生成·修改的文件</span>
+        <span style={{ fontSize: '12px', fontFamily: 'var(--font-ui)' }}>没有已打开的文件</span>
+        {treeCollapsed && inFilesContext && (
+          <button
+            onClick={() => setTreeCollapsed(false)}
+            title="展开文件树"
+            style={{
+              marginTop: '10px',
+              border: '1px solid var(--border)',
+              background: 'transparent',
+              color: 'var(--text-secondary)',
+              cursor: 'pointer',
+              fontSize: '12px',
+              fontFamily: 'var(--font-ui)',
+              padding: '4px 14px',
+              borderRadius: 'var(--radius-sm)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M15 6l-6 6 6 6" />
+            </svg>
+            展开文件树
+          </button>
+        )}
+        {recentFiles.length > 0 && (
+          <div
+            style={{
+              marginTop: '14px',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: '4px',
+              maxWidth: '80%',
+            }}
+          >
+            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontFamily: 'var(--font-ui)' }}>最近打开</span>
+            {recentFiles.map((p) => (
+              <button
+                key={p}
+                onClick={() => void openFile(p)}
+                title={p}
+                style={{
+                  border: 'none',
+                  background: 'transparent',
+                  color: 'var(--text-secondary)',
+                  cursor: 'pointer',
+                  fontSize: '12px',
+                  fontFamily: 'var(--font-ui)',
+                  padding: '2px 8px',
+                  borderRadius: 'var(--radius-sm)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  maxWidth: '100%',
+                  transition: 'all var(--transition-fast)',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'var(--bg-tertiary)'
+                  e.currentTarget.style.color = 'var(--text-primary)'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'transparent'
+                  e.currentTarget.style.color = 'var(--text-secondary)'
+                }}
+              >
+                {p}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    ) : null
+
+    // 工具面板内容：全部保持挂载（非激活用 display:none 隐藏），终端会话不丢失。
+    // files 工具内容 = 文件视图或空态（文件视图见 fileViewNode 的展示分支）
     const blockCount = useChatStore((s) => s.blockIds.length)
     const tokenUsage = useChatStore((s) => s.tokenUsage)
     const toolContents: Record<ToolId, ReactNode> = {
-      summary: <SummaryCard blockCount={blockCount} usage={tokenUsage} />,
+      summary: <SummaryCard blockCount={blockCount} usage={tokenUsage} onOpenFile={openFile} />,
       terminal: <TerminalToolContent />,
+      files: fileViewNode ?? filesEmptyNode,
       search: <SearchPanel onFileOpen={openFile} />,
       review: <ReviewCard onFileOpen={openFile} />,
     }
@@ -767,7 +1026,7 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
         >
           {openTabs.length > 0 && (
             <Tabs
-              tabs={openTabs.map((t) => ({ path: t.path, name: t.name, dirty: t.bufferContent !== t.diskContent }))}
+              tabs={openTabs.map((t) => ({ path: t.path, name: t.name, dirty: t.bufferContent !== t.diskContent, pinned: t.pinned }))}
               activePath={activePath}
               onSwitch={setActive}
               onClose={handleClose}
@@ -778,8 +1037,9 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
               }}
             />
           )}
-          {/* 工具标签组：与文件标签同栏但分组（左侧细分隔线），默认只显示图标 */}
-          <div style={{ display: 'flex', alignItems: 'stretch', borderLeft: '1px solid var(--border-subtle)', flexShrink: 0 }}>
+          {/* 工具标签组：与文件标签同栏但分组（左侧细分隔线），图标 + 名字常显。
+              空间不足时本组可横向滚动；激活标签名字优先完整、未激活缩略省略 */}
+          <div style={{ display: 'flex', alignItems: 'stretch', borderLeft: '1px solid var(--border-subtle)', flex: '0 1 auto', minWidth: 0, overflowX: 'auto', overflowY: 'hidden' }}>
             {TOOL_META.filter(({ id }) => toolTabsOpen.includes(id)).map(({ id, title, icon }) => {
               const active = activeToolId === id
               return (
@@ -796,6 +1056,7 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
                     borderBottom: active ? '2px solid var(--border-strong)' : '2px solid transparent',
                     transition: 'all var(--transition-fast)',
                     position: 'relative',
+                    flexShrink: 0,
                   }}
                   onClick={() => onOpenTool(id)}
                   onContextMenu={(e) => {
@@ -817,10 +1078,20 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
                   title={title}
                 >
                   <span style={{ display: 'flex', alignItems: 'center' }}>{icon}</span>
-                  {/* 激活时显示名称，未激活靠 hover 的 title 提示 */}
-                  {active && (
-                    <span style={{ fontSize: '11px', fontFamily: 'var(--font-ui)', fontWeight: 500 }}>{title}</span>
-                  )}
+                  {/* 名字常显：未激活浅色（继承外层容器）、激活加粗高亮；窄屏优先完整展示激活名，未激活省略 */}
+                  <span
+                    style={{
+                      fontSize: '11px',
+                      fontFamily: 'var(--font-ui)',
+                      fontWeight: active ? 500 : 400,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      maxWidth: active ? 120 : 72,
+                    }}
+                  >
+                    {title}
+                  </span>
                   {/* 关闭按钮：只隐藏面板，不销毁后台状态 */}
                   <button
                     onClick={(e) => {
@@ -881,33 +1152,7 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
               {activeTab.saving ? '保存中…' : '保存'}
             </button>
           )}
-          {/* 文件树开关：控制右缘树窄列展开/收起 */}
-          <button
-            onClick={() => setTreeCollapsed((v) => !v)}
-            title={treeCollapsed ? '展开文件树' : '收起文件树'}
-            style={{
-              border: 'none',
-              background: 'transparent',
-              color: treeCollapsed ? 'var(--text-tertiary)' : 'var(--text-primary)',
-              cursor: 'pointer',
-              padding: '0 10px',
-              marginLeft: 'auto',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              transition: 'all var(--transition-fast)',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'var(--bg-tertiary)'
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'transparent'
-            }}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
-            </svg>
-          </button>
+          {/* 顶栏不再常驻文件树开关：树列展开/收起改由文件上下文内控制（树列头部收起按钮 + 折叠态展开条/空态入口） */}
           <button
             onClick={onToggleCollapse}
             title="折叠编辑器"
@@ -937,127 +1182,14 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
           </button>
         </div>
 
-        {/* 面包屑：仅文件视图显示激活文件的完整路径 */}
-        {activeTab && activeToolId === null && <Breadcrumb path={activeTab.path} />}
+        {/* 面包屑：文件上下文（无工具激活或文件工具内）显示激活文件的完整路径 */}
+        {activeTab && (activeToolId === null || activeToolId === 'files') && <Breadcrumb path={activeTab.path} />}
 
         {/* 中部：内容区（文件/工具二选一）+ 右缘文件树窄列 */}
         <div ref={contentAreaRef} style={{ flex: 1, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
           <div style={{ flex: 1, minWidth: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-            {/* 文件视图：有激活文件且未激活工具标签时展示 */}
-            {activeTab && activeToolId === null && (
-              <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-                {activeTab.stale && (
-                  <div
-                    style={{
-                      padding: '6px 12px',
-                      backgroundColor: 'var(--bg-elevated)',
-                      color: 'var(--warning)',
-                      fontSize: '12px',
-                      fontFamily: 'var(--font-ui)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '10px',
-                    }}
-                  >
-                    {activeTab.bufferContent !== activeTab.diskContent ? (
-                      <span>文件已被 AI 修改，你有未保存更改。</span>
-                    ) : (
-                      <>
-                        <span>磁盘已变更，可能由 AI 更新。</span>
-                        <button
-                          onClick={() => void reloadTab(activeTab.path)}
-                          style={{ border: 'none', background: 'transparent', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '12px', padding: 0 }}
-                        >
-                          点击重新加载
-                        </button>
-                      </>
-                    )}
-                  </div>
-                )}
-                {!activeTab.editable && (
-                  <div
-                    style={{
-                      padding: '6px 12px',
-                      backgroundColor: 'var(--bg-elevated)',
-                      color: 'var(--text-tertiary)',
-                      fontSize: '12px',
-                      fontFamily: 'var(--font-ui)',
-                    }}
-                  >
-                    文件过大，仅支持查看
-                  </div>
-                )}
-                {activeTab.error && (
-                  <div
-                    style={{
-                      padding: '6px 12px',
-                      backgroundColor: 'var(--bg-elevated)',
-                      color: 'var(--error)',
-                      fontSize: '12px',
-                      fontFamily: 'var(--font-ui)',
-                    }}
-                  >
-                    {activeTab.error}
-                  </div>
-                )}
-                {/* .md 预览切换按钮：查看增强，默认源码编辑 */}
-                {isMarkdown && (
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '6px', padding: '6px 10px 0', flexShrink: 0 }}>
-                    <button
-                      onClick={() => setPreviewMode(false)}
-                      disabled={!previewMode}
-                      title="源码视图"
-                      style={{
-                        border: '1px solid var(--border)',
-                        background: !previewMode ? 'var(--selected-bg)' : 'transparent',
-                        color: !previewMode ? 'var(--text-primary)' : 'var(--text-secondary)',
-                        cursor: previewMode ? 'pointer' : 'default',
-                        padding: '3px 12px',
-                        borderRadius: 'var(--radius-sm)',
-                        fontSize: '11px',
-                        fontFamily: 'var(--font-ui)',
-                      }}
-                    >
-                      代码
-                    </button>
-                    <button
-                      onClick={() => setPreviewMode(true)}
-                      disabled={previewMode}
-                      title="预览视图"
-                      style={{
-                        border: '1px solid var(--border)',
-                        background: previewMode ? 'var(--selected-bg)' : 'transparent',
-                        color: previewMode ? 'var(--text-primary)' : 'var(--text-secondary)',
-                        cursor: previewMode ? 'default' : 'pointer',
-                        padding: '3px 12px',
-                        borderRadius: 'var(--radius-sm)',
-                        fontSize: '11px',
-                        fontFamily: 'var(--font-ui)',
-                      }}
-                    >
-                      预览
-                    </button>
-                  </div>
-                )}
-                <div style={{ flex: 1, overflow: 'hidden' }}>
-                  {isMarkdown && previewMode ? (
-                    <div style={{ height: '100%', overflow: 'auto', padding: '4px 16px 16px', fontSize: '13px', color: 'var(--text-primary)' }}>
-                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                        {activeTab.bufferContent}
-                      </ReactMarkdown>
-                    </div>
-                  ) : (
-                    <CodeEditor
-                      key={`${activeTab.path}:${activeTab.revision}`}
-                      content={activeTab.bufferContent}
-                      language={activeTab.language}
-                      readOnly={!activeTab.editable}
-                      onChange={(value) => handleEditorChange(activeTab.path, value)}
-                    />
-                  )}
-                </div>
-              </div>
-            )}
+            {/* 文件视图：无工具激活时展示（内容见 fileViewNode，files 工具内通过 toolContents 复用同一节点） */}
+            {activeToolId === null && fileViewNode}
 
             {/* 工具视图：激活工具标签时展示（面板与文件共用中部区域，一次只显示一个）。
                 整体保持挂载、仅 CSS 隐藏，工具标签关闭后后台状态不销毁 */}
@@ -1086,74 +1218,13 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
               ))}
             </div>
 
-            {/* 无打开文件且无激活工具标签时的空态：最近打开的文件入口 */}
-            {!activeTab && activeToolId === null && (
-              <div
-                style={{
-                  flex: 1,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '8px',
-                  color: 'var(--text-tertiary)',
-                  userSelect: 'none',
-                }}
-              >
-                <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-secondary)', fontFamily: 'var(--font-ui)' }}>Files</span>
-                <span style={{ fontSize: '12px', fontFamily: 'var(--font-ui)' }}>没有已打开的文件</span>
-                {recentFiles.length > 0 && (
-                  <div
-                    style={{
-                      marginTop: '14px',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: 'center',
-                      gap: '4px',
-                      maxWidth: '80%',
-                    }}
-                  >
-                    <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontFamily: 'var(--font-ui)' }}>最近打开</span>
-                    {recentFiles.map((p) => (
-                      <button
-                        key={p}
-                        onClick={() => void openFile(p)}
-                        title={p}
-                        style={{
-                          border: 'none',
-                          background: 'transparent',
-                          color: 'var(--text-secondary)',
-                          cursor: 'pointer',
-                          fontSize: '12px',
-                          fontFamily: 'var(--font-ui)',
-                          padding: '2px 8px',
-                          borderRadius: 'var(--radius-sm)',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                          maxWidth: '100%',
-                          transition: 'all var(--transition-fast)',
-                        }}
-                        onMouseEnter={(e) => {
-                          e.currentTarget.style.background = 'var(--bg-tertiary)'
-                          e.currentTarget.style.color = 'var(--text-primary)'
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.background = 'transparent'
-                          e.currentTarget.style.color = 'var(--text-secondary)'
-                        }}
-                      >
-                        {p}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
+            {/* 无打开文件且无激活工具标签时的空态（内容见 filesEmptyNode，files 工具内通过 toolContents 复用） */}
+            {activeToolId === null && filesEmptyNode}
           </div>
 
-          {/* 右缘文件树窄列：默认 220px，可拖拽 160-320px，可折叠 */}
-          {!treeCollapsed && (
+          {/* 右缘文件树窄列：默认 220px，可拖拽 160-320px，可折叠。
+              只在文件上下文（files 标签激活或打开文件后未切走）内显示；折叠时退出全宽、留右侧展开窄条 */}
+          {inFilesContext && !treeCollapsed && (
             <>
               <Resizer direction="horizontal" onResize={handleTreeResize} />
               <div
@@ -1168,7 +1239,7 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
                   overflow: 'hidden',
                 }}
               >
-                {/* 树列头部：标题 + 收起按钮 */}
+                {/* 树列头部：标题 + 收起按钮（收起后由右侧展开窄条承接展开） */}
                 <div
                   style={{
                     height: '32px',
@@ -1223,7 +1294,7 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
                 </div>
                 <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
                   {workspacePath ? (
-                    <FileTree onFileOpen={openFile} activePath={activePath} />
+                    <FileTree onFileOpen={openFile} activePath={activePath} onPinFile={pinFile} />
                   ) : (
                     <div
                       style={{
@@ -1239,6 +1310,49 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
                 </div>
               </div>
             </>
+          )}
+
+          {/* 树列折叠态展开窄条：文件上下文内保留相同右侧位置的展开入口（与树列头部收起对应） */}
+          {inFilesContext && treeCollapsed && (
+            <div
+              style={{
+                width: 24,
+                flexShrink: 0,
+                borderLeft: '1px solid var(--border)',
+                backgroundColor: 'var(--bg-base)',
+                display: 'flex',
+                flexDirection: 'column',
+              }}
+            >
+              <button
+                onClick={() => setTreeCollapsed(false)}
+                title="展开文件树"
+                style={{
+                  border: 'none',
+                  background: 'transparent',
+                  color: 'var(--text-tertiary)',
+                  cursor: 'pointer',
+                  padding: 0,
+                  height: '100%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  transition: 'all var(--transition-fast)',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'var(--bg-tertiary)'
+                  e.currentTarget.style.color = 'var(--text-primary)'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'transparent'
+                  e.currentTarget.style.color = 'var(--text-tertiary)'
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M15 6l-6 6 6 6" />
+                </svg>
+              </button>
+            </div>
           )}
         </div>
 
@@ -1460,6 +1574,6 @@ const EditorArea = forwardRef<EditorAreaHandle, EditorAreaProps>(
   }
 )
 
-EditorArea.displayName = 'EditorArea'
+ArtifactPanel.displayName = 'ArtifactPanel'
 
-export default EditorArea
+export default ArtifactPanel
