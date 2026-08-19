@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 
-// 工具标签标识（概要/终端/搜索/审查）：开关状态由 App 层持有，供标题栏开关与图标轨共用
-export type ToolId = 'summary' | 'terminal' | 'search' | 'review'
+// 工具标签标识（概要/终端/文件/搜索/审查）：开关状态由 App 层持有，供标题栏开关与入口卡片共用
+export type ToolId = 'summary' | 'terminal' | 'files' | 'search' | 'review'
 
 // 图标统一样式参数
 const iconProps = {
@@ -33,6 +33,14 @@ const TerminalIcon = (
   </svg>
 )
 
+// 文件图标：文件夹（与文件树/文件标签语义一致）
+const FilesIcon = (
+  <svg {...iconProps}>
+    <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+    <path d="M3 12h18" />
+  </svg>
+)
+
 // 搜索图标：文档 + 放大镜（与审查卡的纯放大镜区分）
 const SearchIcon = (
   <svg {...iconProps}>
@@ -51,10 +59,11 @@ const ReviewIcon = (
   </svg>
 )
 
-// 工具标签元信息：顺序即标签栏与图标轨的展示顺序
+// 工具标签元信息：顺序即标签栏与入口卡片的展示顺序（默认三标签 + 按需打开）
 export const TOOL_META: { id: ToolId; title: string; icon: ReactNode }[] = [
   { id: 'summary', title: '概要', icon: SummaryIcon },
   { id: 'terminal', title: '终端', icon: TerminalIcon },
+  { id: 'files', title: '文件', icon: FilesIcon },
   { id: 'search', title: '搜索', icon: SearchIcon },
   { id: 'review', title: '审查', icon: ReviewIcon },
 ]
