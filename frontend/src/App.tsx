@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import Sidebar from './components/Sidebar'
-import EditorArea, { type EditorAreaHandle } from './components/EditorArea'
+import ArtifactPanel, { type ArtifactPanelHandle } from './components/ArtifactPanel'
 import AIPanel from './components/AIPanel'
 import TitleBar from './components/TitleBar'
 import IconRail from './components/IconRail'
@@ -29,25 +29,50 @@ const LAYOUT_KEYS = {
   treeCollapsed: 'layout.treeCollapsed',
   toolTabsOpen: 'layout.toolTabsOpen',
   activeToolId: 'layout.activeToolId',
+  toolTabsMigrated: 'layout.toolTabsMigrated',
 } as const
+
+// 默认工具标签集：转为「产物区」定位后，面板展开默认呈现 概要/终端/文件，激活概要
+const DEFAULT_TOOL_TABS: ToolId[] = ['summary', 'terminal', 'files']
+
+// 初始化工具标签开关集（含一次性旧持久化迁移）：
+// 旧版本默认标签集为空，且用户「关闭全部」也会产生空集——两者无法从值上区分。
+// 用迁移标记区分：仅当存在旧记录（不含 files，旧版本无此工具）时补齐默认三标签并写标记一次，
+// 之后用户关空得到的空集保持为空（「关闭全部 = 面板全隐藏」不变量不被重置）
+function loadInitialToolTabs(): ToolId[] {
+  const raw = localStorage.getItem(LAYOUT_KEYS.toolTabsOpen)
+  let ids: ToolId[] = []
+  if (raw !== null) {
+    try {
+      const v = JSON.parse(raw)
+      ids = Array.isArray(v) ? v.filter((x): x is ToolId => TOOL_META.some((t) => t.id === x)) : []
+    } catch {
+      ids = []
+    }
+  } else {
+    // 全新安装：直接采用新默认集
+    ids = DEFAULT_TOOL_TABS
+  }
+  if (localStorage.getItem(LAYOUT_KEYS.toolTabsMigrated) !== '1') {
+    if (raw !== null && !ids.includes('files')) {
+      // 旧版本数据：补齐默认三标签，仅迁移这一次
+      ids = Array.from(new Set([...ids, ...DEFAULT_TOOL_TABS]))
+    }
+    localStorage.setItem(LAYOUT_KEYS.toolTabsMigrated, '1')
+  }
+  return ids
+}
 
 function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  // 编辑器按需显示：默认隐藏，打开文件时才出现
+  // 右侧面板（产物区）：默认收起；展开后默认呈现概要产物视图，打开文件不再是唯一展开时机
   const [editorCollapsed, setEditorCollapsed] = useState(true)
 
-  // 工具标签（概要/终端/搜索/审查）开关状态：由 App 持有，标题栏开关/图标轨/快捷键共用
-  const [toolTabsOpen, setToolTabsOpen] = useState<ToolId[]>(() => {
-    try {
-      const v = JSON.parse(localStorage.getItem(LAYOUT_KEYS.toolTabsOpen) || '[]')
-      return Array.isArray(v) ? v.filter((x): x is ToolId => TOOL_META.some((t) => t.id === x)) : []
-    } catch {
-      return []
-    }
-  })
+  // 工具标签（概要/终端/文件/搜索/审查）开关状态：由 App 持有，标题栏开关/入口卡片/快捷键共用
+  const [toolTabsOpen, setToolTabsOpen] = useState<ToolId[]>(() => loadInitialToolTabs())
   const [activeToolId, setActiveToolId] = useState<ToolId | null>(() => {
     const v = localStorage.getItem(LAYOUT_KEYS.activeToolId)
-    return v && TOOL_META.some((t) => t.id === v) ? (v as ToolId) : null
+    return v && TOOL_META.some((t) => t.id === v) ? (v as ToolId) : 'summary'
   })
   // 最近使用的工具标签：标题栏开关展开编辑区时聚焦它
   const lastToolIdRef = useRef<ToolId | null>(activeToolId)
@@ -75,7 +100,7 @@ function App() {
   const fetchState = useChatStore(s => s.fetchState)
   const isStreaming = useChatStore(s => s.isStreaming)
   const sessions = useSessions()
-  const editorRef = useRef<EditorAreaHandle>(null)
+  const editorRef = useRef<ArtifactPanelHandle>(null)
 
   // 当前任务标题（标题栏展示）：从分组数据找当前会话，侧栏折叠时仍可见
   const currentTaskTitle = useMemo(() => {
@@ -152,19 +177,19 @@ function App() {
     localStorage.setItem(LAYOUT_KEYS.activeToolId, activeToolId ?? '')
   }, [activeToolId])
 
-  // 恢复默认布局：清持久化并重置各宽度与面板开关（树状态由 EditorArea 监听事件重置）
+  // 恢复默认布局：清持久化并重置各宽度与面板开关（树状态由 ArtifactPanel 监听事件重置）
   const resetLayout = useCallback(() => {
     Object.values(LAYOUT_KEYS).forEach((k) => localStorage.removeItem(k))
     setSidebarWidth(240)
     setEditorWidth(0)
-    setToolTabsOpen([])
-    setActiveToolId(null)
+    setToolTabsOpen(DEFAULT_TOOL_TABS)
+    setActiveToolId('summary')
     setSidebarCollapsed(false)
     setEditorCollapsed(true)
     window.dispatchEvent(new Event('layout-reset'))
   }, [])
 
-  // 窄屏退让：树列折叠由 EditorArea 按编辑区/窗口宽度处理；
+  // 窄屏退让：树列折叠由 ArtifactPanel 按编辑区/窗口宽度处理；
   // 这里兜底：窗口仍不足以容纳「会话栏 + 对话区 360 + 编辑区 360」时会话栏自动折叠为窄条
   useEffect(() => {
     const onResize = () => {
@@ -237,18 +262,6 @@ function App() {
   const activateFile = useCallback(() => {
     setActiveToolId(null)
   }, [])
-
-  // 图标轨点击：已激活则收回，否则直达对应面板
-  const handleRailToolClick = useCallback(
-    (id: ToolId) => {
-      if (activeToolId === id && !editorCollapsed) {
-        closeTool(id)
-      } else {
-        openTool(id)
-      }
-    },
-    [activeToolId, editorCollapsed, closeTool, openTool]
-  )
 
   // 标题栏面板开关：展开编辑区并聚焦最近工具标签；已展开则收起
   const togglePanel = useCallback(() => {
@@ -605,9 +618,9 @@ function App() {
           />
         </div>
 
-        {/* 编辑器：按需显示（有打开文件才出现）。
+        {/* 右侧面板（产物区）：默认收起，展开后默认呈现概要产物视图；打开文件不再是唯一展开时机。
             树位置保持恒定（折叠时仅隐藏分隔条、宽度交给内容），
-            避免折叠/展开切换导致 EditorArea 重建丢失已打开标签 */}
+            避免折叠/展开切换导致 ArtifactPanel 重建丢失已打开标签 */}
         <div style={{ display: editorCollapsed ? 'none' : 'flex', height: '100%', flexShrink: 0 }}>
           <Resizer direction="horizontal" onResize={handleEditorResize} />
         </div>
@@ -619,7 +632,7 @@ function App() {
             display: editorCollapsed ? 'none' : 'block',
           }}
         >
-          <EditorArea
+          <ArtifactPanel
             ref={editorRef}
             collapsed={editorCollapsed}
             onToggleCollapse={toggleEditor}
@@ -631,15 +644,10 @@ function App() {
             onActivateFile={activateFile}
           />
         </div>
-
-        {/* 右缘图标轨：面板与编辑区的折叠态入口，始终可见 */}
-        <IconRail
-          activeToolId={activeToolId}
-          editorCollapsed={editorCollapsed}
-          onToolClick={handleRailToolClick}
-          onToggleEditor={toggleEditor}
-        />
       </div>
+
+      {/* 收起态右上角悬浮卡片：面板展开时不渲染；图标点击直达对应工具标签 */}
+      {editorCollapsed && <IconRail onToolClick={openTool} />}
 
       {/* 状态信息已并入输入区底部行（ChatInput），无独立状态栏 */}
 

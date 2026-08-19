@@ -44,15 +44,26 @@ function AIPanel({ hasWorkspace, onOpenWorkspace, currentTaskSessionId }: AIPane
       {/* 对话流 */}
       <ChatStream hasWorkspace={hasWorkspace} onOpenWorkspace={onOpenWorkspace} />
 
-      {/* 底部输入区 */}
+      {/* 底部输入区：外层仅纵向间距，横向留白由限宽列承担（与消息列同一宽度基准对齐） */}
       <div
         style={{
-          padding: '12px 16px 14px',
+          padding: '12px 0 14px',
           borderTop: '1px solid var(--border)',
           flexShrink: 0,
           background: 'linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.15))',
         }}
       >
+        {/* 限宽列：与 ChatStream 消息列共用 --content-max-width 与 --content-pad-x，
+            保证输入框与消息内容同宽、左缘对齐（宽窄屏均成立） */}
+        <div
+          style={{
+            maxWidth: 'var(--content-max-width)',
+            width: '100%',
+            margin: '0 auto',
+            boxSizing: 'border-box',
+            padding: '0 var(--content-pad-x)',
+          }}
+        >
         <ChatInput
           onSend={sendMessage}
           isStreaming={isStreaming}
@@ -65,6 +76,7 @@ function AIPanel({ hasWorkspace, onOpenWorkspace, currentTaskSessionId }: AIPane
           onPermissionModeChange={setPermissionMode}
           currentTaskSessionId={currentTaskSessionId}
         />
+        </div>
       </div>
     </div>
   )

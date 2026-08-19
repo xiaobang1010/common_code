@@ -4,6 +4,8 @@ interface Tab {
   path: string
   name: string
   dirty: boolean
+  // 是否固定为正式标签：未固定且干净 = 预览标签（斜体浅色呈现，不参与持久化语义）
+  pinned: boolean
 }
 
 interface TabsProps {
@@ -11,7 +13,7 @@ interface TabsProps {
   activePath: string
   onSwitch: (path: string) => void
   onClose: (path: string) => void
-  // 关闭全部标签页：由 EditorArea 的批量关闭逻辑承接
+  // 关闭全部标签页：由 ArtifactPanel 的批量关闭逻辑承接
   onCloseAll: () => void
   // 标签右键：交给父层弹上下文菜单
   onContextMenuTab: (e: MouseEvent, path: string) => void
@@ -49,6 +51,8 @@ function Tabs({ tabs, activePath, onSwitch, onClose, onCloseAll, onContextMenuTa
       <div style={{ display: 'flex', overflowX: 'auto', height: '100%' }}>
         {tabs.map((tab) => {
           const active = tab.path === activePath
+          // 预览标签：未固定且无未保存修改（猜测性打开的干净文件）
+          const isPreview = !tab.pinned && !tab.dirty
           return (
             <div
               key={tab.path}
@@ -91,7 +95,12 @@ function Tabs({ tabs, activePath, onSwitch, onClose, onCloseAll, onContextMenuTa
                 }
               }}
             >
-              <span style={{ fontWeight: active ? 500 : 400 }} title={tab.path}>{displayName(tab)}</span>
+              <span
+                style={{ fontWeight: active ? 500 : 400, fontStyle: isPreview ? 'italic' : 'normal' }}
+                title={isPreview ? '预览中，编辑后保留' : tab.path}
+              >
+                {displayName(tab)}
+              </span>
               {tab.dirty && (
                 <span
                   title="未保存"

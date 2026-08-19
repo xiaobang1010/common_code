@@ -103,19 +103,20 @@ cd ../electron && npm install
 ### 3. 启动
 
 ```bash
-cd frontend && npm run build
-cd ../electron && npx electron .
+python launch.py
 ```
 
-或双击 `launch.bat` 一键启动。
+或双击 `launch.bat`（等价于 `python launch.py`，参数透传）。默认先构建前端再启动；
+加 `--no-build` 跳过构建，快速重启。后端日志实时输出到当前终端，关闭 Electron 窗口
+或在终端按 Ctrl+C 都会连进程树一起干净退出，无残留进程。
 
 ### 开发模式
 
 三个终端分别跑：
 
 ```bash
-cd frontend && npm run dev          # 前端 dev server
-uv run python -m server            # Python 后端（8000 端口）
-cd electron && npm run dev          # Electron
+uv run python -m server            # Python 后端（随机端口，启动日志会打出实际端口）
+cd frontend && API_PORT=<后端端口> npm run dev   # 前端 dev server（/api 代理到后端）
+cd electron && npm run dev          # Electron（加载 5173 的 dev server）
 ```
 
