@@ -41,6 +41,10 @@
   --code-border: rgba(255, 255, 255, 0.08);
   --code-text: #c9cdd6;
 
+  /* 对话区限宽可读列：消息列与底部输入区共用的宽度基准与横向留白 */
+  --content-max-width: 880px;
+  --content-pad-x: 24px;
+
   /* 主按钮 - 中性高对比，唯一主操作 */
   --button-primary-bg: rgba(255, 255, 255, 0.14);
   --button-primary-bg-hover: rgba(255, 255, 255, 0.20);
@@ -132,12 +136,13 @@ body {
   background: rgba(255, 255, 255, 0.22);
 }
 
-/* 内容区链接 - 中性浅色 + 下划线，hover 提亮 */
+/* 内容区链接 - 中性浅色 + 下划线，hover 提亮；长 URL 允许在任意字符处换行，不撑破限宽列 */
 .markdown-link {
   color: var(--text-primary);
   text-decoration: underline;
   text-underline-offset: 2px;
   text-decoration-color: var(--border-strong);
+  overflow-wrap: anywhere;
 }
 .markdown-link:hover {
   color: #ffffff;
