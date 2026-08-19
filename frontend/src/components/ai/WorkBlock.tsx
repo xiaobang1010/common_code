@@ -446,6 +446,14 @@ export const markdownComponents = {
   ol({ children }: { children?: React.ReactNode }) {
     return <ol style={{ margin: '6px 0', paddingLeft: '20px' }}>{children}</ol>
   },
+  // 表格可能很宽：外层包横向滚动容器，让宽表格在限宽列内部滚动而不撑破列边界
+  table({ children }: { children?: React.ReactNode }) {
+    return (
+      <div style={{ overflowX: 'auto' }}>
+        <table>{children}</table>
+      </div>
+    )
+  },
   h1({ children }: { children?: React.ReactNode }) {
     return <h1 style={{ fontSize: '17px', fontWeight: 600, margin: '12px 0 6px' }}>{children}</h1>
   },
