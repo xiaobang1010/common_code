@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
+import tempfile
+
 from server.file_events import notify_file_changed
 from server.paths import MAX_EDITABLE_BYTES
 from tools.implementations.file_edit_tool.schema import FileEditInput
@@ -43,6 +47,18 @@ async def handle_edit(inp: FileEditInput, context: ToolUseContext) -> dict:
     Raises:
         ToolExecutionError: 路径越界 / 无变更 / 文件不存在 / 未找到匹配 / 匹配不唯一
     """
+    # 读写盘丢线程池执行，大文件编辑时不阻塞事件循环
+    result = await asyncio.to_thread(_edit_sync, inp)
+
+    # 写盘成功后在事件循环侧广播文件变更事件（asyncio.Queue 非线程安全）
+    mtime = result.pop("mtime")
+    size = result.pop("size")
+    notify_file_changed(result["file_path"], "edit", mtime, size)
+    return result
+
+
+def _edit_sync(inp: FileEditInput) -> dict:
+    """同步编辑内核：由 handle_edit 放入线程池执行。"""
     # 路径沙箱：解析并校验工作区边界
     file_path = resolve_workspace_path(inp.file_path)
     _validate_edit_input(inp, file_path)
@@ -91,12 +107,26 @@ async def handle_edit(inp: FileEditInput, context: ToolUseContext) -> dict:
     if size > MAX_EDITABLE_BYTES:
         raise file_too_large_error(inp.file_path, MAX_EDITABLE_BYTES)
 
-    # 写回文件
+    # 原子写回：临时文件建在目标同目录，替换前恢复原文件权限，
+    # 中断或失败时不留半截文件
     file_path.parent.mkdir(parents=True, exist_ok=True)
-    file_path.write_text(updated, encoding="utf-8")
-
-    # 写盘成功后广播文件变更事件（供前端刷新文件树 / 标记过期）
-    notify_file_changed(str(file_path), "edit", int(file_path.stat().st_mtime), size)
+    existed = file_path.exists()
+    orig_mode = file_path.stat().st_mode if existed else None
+    fd, tmp_path = tempfile.mkstemp(
+        dir=file_path.parent, prefix=".cc-edit-", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(updated)
+        if existed:
+            os.chmod(tmp_path, orig_mode)
+        os.replace(tmp_path, file_path)
+    except OSError:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
     # 变更统计（增删行数）
     removed = len(content.splitlines())
@@ -106,6 +136,8 @@ async def handle_edit(inp: FileEditInput, context: ToolUseContext) -> dict:
         "replacements": replacements,
         "added_lines": max(0, added - removed),
         "removed_lines": max(0, removed - added),
+        "mtime": int(file_path.stat().st_mtime),
+        "size": size,
     }
 
 

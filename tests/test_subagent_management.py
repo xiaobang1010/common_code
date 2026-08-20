@@ -58,28 +58,28 @@ async def test_list_detail_output_stop(registry):
     )
 
     # 列表（按会话过滤）
-    listing = await routes.list_subagents(session_id="sess_api")
+    listing = routes.list_subagents(session_id="sess_api")
     assert [s["agent_id"] for s in listing["subagents"]] == ["agent_api1"]
     assert listing["subagents"][0]["status"] == STATUS_RUNNING
-    assert await routes.list_subagents(session_id="sess_other") == {"subagents": []}
+    assert routes.list_subagents(session_id="sess_other") == {"subagents": []}
 
     # 详情
-    detail = await routes.get_subagent("agent_api1")
+    detail = routes.get_subagent("agent_api1")
     assert detail["agent_type"] == "Explore"
     assert detail["parent_session_id"] == "sess_api"
 
     # 详情 404
-    missing = await routes.get_subagent("agent_nope")
+    missing = routes.get_subagent("agent_nope")
     assert missing.status_code == 404
 
     # 输出：运行中无 final_text，返回中间输出占位
-    output = await routes.get_subagent_output("agent_api1")
+    output = routes.get_subagent_output("agent_api1")
     assert output["status"] == STATUS_RUNNING
     assert "no output yet" in output["output"]
 
     # 完成后输出最终结果
     registry.set_result("agent_api1", status=STATUS_COMPLETED, final_text="答案")
-    output2 = await routes.get_subagent_output("agent_api1")
+    output2 = routes.get_subagent_output("agent_api1")
     assert output2["output"] == "答案"
 
     # 停止已完成任务是幂等的
@@ -235,7 +235,7 @@ async def test_transcript_endpoint_404_for_unknown_agent():
     """transcript 端点对无磁盘记录的子代理返回 404。"""
     from server.routers.subagents import routes
 
-    result = await routes.get_subagent_transcript("agent_nope_ts")
+    result = routes.get_subagent_transcript("agent_nope_ts")
     assert result.status_code == 404
 
 

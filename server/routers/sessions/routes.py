@@ -74,7 +74,7 @@ def get_git_branch(workspace_path: str) -> str:
 
 
 @router.post("/api/sessions")
-async def create_session(body: dict) -> dict:
+def create_session(body: dict) -> dict:
     """创建会话。
 
     请求体：{"workspace_path": "...", "title": "可选"}
@@ -98,7 +98,7 @@ async def create_session(body: dict) -> dict:
 
 
 @router.get("/api/sessions")
-async def list_sessions(workspace_path: str = "") -> dict:
+def list_sessions(workspace_path: str = "") -> dict:
     """列出指定工作区的会话。
 
     参数 workspace_path：工作区路径。
@@ -125,7 +125,7 @@ async def list_sessions(workspace_path: str = "") -> dict:
 
 
 @router.get("/api/sessions/grouped")
-async def list_sessions_grouped() -> dict:
+def list_sessions_grouped() -> dict:
     """按工作区分组返回所有会话。
 
     返回 {"groups": [{"workspace": {path, name, last_used_at},
@@ -170,7 +170,7 @@ async def list_sessions_grouped() -> dict:
 
 
 @router.get("/api/sessions/{session_id}")
-async def get_session(session_id: str) -> dict:
+def get_session(session_id: str) -> dict:
     """获取单个会话详情（含完整 messages）。
 
     返回 {"session": {...}, "messages": [...]}。
@@ -219,7 +219,7 @@ async def delete_session(session_id: str) -> dict:
 
 
 @router.patch("/api/sessions/{session_id}")
-async def update_session(session_id: str, body: dict) -> dict:
+def update_session(session_id: str, body: dict) -> dict:
     """更新会话：支持 title（重命名）与 pinned（置顶）。"""
     if "title" in body:
         server.state.session_store.update_session_title(session_id, str(body["title"]))
@@ -229,7 +229,7 @@ async def update_session(session_id: str, body: dict) -> dict:
 
 
 @router.post("/api/sessions/{session_id}/switch")
-async def switch_session(session_id: str) -> dict:
+def switch_session(session_id: str) -> dict:
     """切换会话：中止运行中任务，加载消息到引擎，必要时切换工作区。
 
     如果会话的 workspace_path 与当前工作区不同，先切换工作区（更新 project_root + 重建引擎）。

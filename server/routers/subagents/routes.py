@@ -18,7 +18,7 @@ router = APIRouter()
 
 
 @router.get("/api/subagents")
-async def list_subagents(session_id: str = "") -> dict:
+def list_subagents(session_id: str = "") -> dict:
     """列出子代理任务。
 
     查询参数 session_id 可选：按父会话过滤（聊天会话 id）。
@@ -37,7 +37,7 @@ async def list_subagents(session_id: str = "") -> dict:
 
 
 @router.get("/api/subagents/{agent_id}")
-async def get_subagent(agent_id: str) -> JSONResponse:
+def get_subagent(agent_id: str) -> JSONResponse:
     """返回单个子代理任务的完整信息（状态/usage/时间/output_file）。"""
     from tools.subagent.registry import get_subagent_registry
 
@@ -59,7 +59,7 @@ async def get_subagent(agent_id: str) -> JSONResponse:
 
 
 @router.get("/api/subagents/{agent_id}/output")
-async def get_subagent_output(agent_id: str) -> JSONResponse:
+def get_subagent_output(agent_id: str) -> JSONResponse:
     """返回子代理输出：已完成返回最终结果，运行中返回当前中间输出与活动信息。"""
     from tools.subagent.registry import get_subagent_registry
     from tools.subagent.transcript import get_agent_transcript
@@ -110,7 +110,7 @@ async def get_subagent_output(agent_id: str) -> JSONResponse:
 
 
 @router.get("/api/subagents/{agent_id}/transcript")
-async def get_subagent_transcript(agent_id: str) -> JSONResponse:
+def get_subagent_transcript(agent_id: str) -> JSONResponse:
     """返回子代理的完整过程记录（从磁盘 transcript 重建）。"""
     from tools.subagent.transcript import get_agent_transcript
 

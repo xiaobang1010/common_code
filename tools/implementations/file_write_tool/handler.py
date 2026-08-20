@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
+import tempfile
+
 from server.file_events import notify_file_changed
 from server.paths import MAX_EDITABLE_BYTES
 from tools.implementations.file_write_tool.schema import FileWriteInput
@@ -28,6 +32,19 @@ async def handle_write(inp: FileWriteInput, context: ToolUseContext) -> dict:
     Raises:
         ToolExecutionError: 路径越界 / 覆盖缺基线 / 基线不一致 / 文件过大
     """
+    # 磁盘 IO 丢线程池执行，写大文件时不阻塞事件循环
+    result = await asyncio.to_thread(_write_sync, inp)
+
+    # 写盘成功后在事件循环侧广播文件变更事件（供前端刷新文件树 / 标记过期）。
+    # asyncio.Queue 非线程安全，广播必须留在事件循环上执行
+    notify_file_changed(
+        result["file_path"], "write", result.pop("mtime"), result["bytes_written"]
+    )
+    return result
+
+
+def _write_sync(inp: FileWriteInput) -> dict:
+    """同步写文件内核：由 handle_write 放入线程池执行。"""
     # 路径沙箱：解析并校验工作区边界
     file_path = resolve_workspace_path(inp.file_path)
 
@@ -47,15 +64,31 @@ async def handle_write(inp: FileWriteInput, context: ToolUseContext) -> dict:
         raise file_too_large_error(inp.file_path, MAX_EDITABLE_BYTES)
 
     file_path.parent.mkdir(parents=True, exist_ok=True)
-    file_path.write_text(inp.content, encoding="utf-8")
 
-    # 写盘成功后广播文件变更事件（供前端刷新文件树 / 标记过期）
-    notify_file_changed(str(file_path), "write", int(file_path.stat().st_mtime), size)
+    # 原子写：临时文件建在目标同目录（同文件系统），替换前恢复原文件权限，
+    # 中断或失败时不留半截文件
+    orig_mode = file_path.stat().st_mode if existed else None
+    fd, tmp_path = tempfile.mkstemp(
+        dir=file_path.parent, prefix=".cc-write-", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(inp.content)
+        if existed:
+            os.chmod(tmp_path, orig_mode)
+        os.replace(tmp_path, file_path)
+    except OSError:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
     return {
         "file_path": str(file_path),
         "action": "overwritten" if existed else "created",
         "bytes_written": size,
+        "mtime": int(file_path.stat().st_mtime),
     }
 
 

@@ -19,7 +19,7 @@ router = APIRouter()
 
 
 @router.get("/api/workspaces")
-async def list_workspaces() -> dict:
+def list_workspaces() -> dict:
     """列出所有工作区。
 
     返回 {"workspaces": [{path, name, last_used_at, session_count}]}
@@ -41,7 +41,7 @@ async def list_workspaces() -> dict:
 
 
 @router.post("/api/workspaces")
-async def add_workspace(body: dict) -> dict:
+def add_workspace(body: dict) -> dict:
     """添加工作区。
 
     请求体：{"path": "..."}
@@ -63,7 +63,7 @@ async def add_workspace(body: dict) -> dict:
 
 
 @router.post("/api/workspaces/switch")
-async def switch_workspace(body: dict) -> dict:
+def switch_workspace(body: dict) -> dict:
     """切换工作区。
 
     更新工作目录，重建 QueryEngine，更新最后使用时间，获取当前 git 分支。
@@ -176,7 +176,7 @@ async def delete_workspace(body: dict) -> dict:
 
 
 @router.post("/api/workspaces/update")
-async def update_workspace(body: dict) -> dict:
+def update_workspace(body: dict) -> dict:
     """更新工作区：支持 alias（别名重命名）与 pinned（置顶）。
 
     请求体：{"path": "...", "alias": "...", "pinned": true}

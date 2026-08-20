@@ -566,9 +566,14 @@ async def query_loop(
         # ---- 3. 构建 API 请求 ----
         from prompts import build_system_messages, get_system_prompt_sections
 
-        sections = engine_config.system_prompt_sections or get_system_prompt_sections(
-            project_info=_build_project_info()
-        )
+        if engine_config.system_prompt_sections:
+            sections = engine_config.system_prompt_sections
+        else:
+            # 工作区信息构建含 subprocess（git 分支探测）与配置读取，
+            # 丢线程池避免阻塞事件循环（心跳、权限桥都在上面）
+            sections = get_system_prompt_sections(
+                project_info=await asyncio.to_thread(_build_project_info)
+            )
         system_messages = build_system_messages(sections)
 
         if system_context:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from tools.implementations.file_read_tool.schema import FileReadInput
 from tools.implementations.runtime.errors import (
     file_not_found_error,
@@ -30,6 +32,12 @@ async def handle_read(inp: FileReadInput, context: ToolUseContext) -> dict:
     Raises:
         ToolExecutionError: 路径越界 / 文件不存在 / 不是文件
     """
+    # 磁盘 IO 丢线程池执行，读大文件时不阻塞事件循环（心跳、权限桥都在上面）
+    return await asyncio.to_thread(_read_sync, inp)
+
+
+def _read_sync(inp: FileReadInput) -> dict:
+    """同步读文件内核：由 handle_read 放入线程池执行。"""
     # 路径沙箱：解析并校验工作区边界
     file_path = resolve_workspace_path(inp.file_path)
 

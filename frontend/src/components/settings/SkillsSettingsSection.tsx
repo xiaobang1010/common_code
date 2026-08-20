@@ -223,7 +223,17 @@ function SkillsSettingsSection() {
       )}
 
       <StatusMessage type="success" message={success} />
-      <StatusMessage type="error" message={error} />
+      {error ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px' }}>
+          <span style={{ fontSize: '12px', color: 'var(--error)' }}>{error}</span>
+          <button
+            onClick={() => void load()}
+            style={{ cursor: 'pointer', background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-secondary)', borderRadius: 'var(--radius-sm)', fontSize: '12px', padding: '2px 10px' }}
+          >
+            重试
+          </button>
+        </div>
+      ) : null}
 
       {/* 新建 / 导入弹窗 */}
       {modal !== 'none' && (

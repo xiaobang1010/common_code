@@ -13,7 +13,7 @@ router = APIRouter()
 
 
 @router.get("/api/skills")
-async def list_skills() -> dict:
+def list_skills() -> dict:
     """返回所有用户可调用的 skill 列表（含来源与完整元数据）。
 
     返回：{"skills": [{"name", "description", "when_to_use", "source",
@@ -49,7 +49,7 @@ async def list_skills() -> dict:
 
 
 @router.post("/api/skills/create")
-async def create_skill(body: dict) -> dict:
+def create_skill(body: dict) -> dict:
     """新建技能。请求体：{"name", "description", "when_to_use", "allowed_tools"}"""
     from tools.skills.loader import create_skill_file
 
@@ -74,7 +74,7 @@ async def create_skill(body: dict) -> dict:
 
 
 @router.post("/api/skills/import")
-async def import_skill(body: dict) -> dict:
+def import_skill(body: dict) -> dict:
     """导入技能。请求体：{"name", "content"}"""
     from tools.skills.loader import import_skill_file
 
@@ -97,7 +97,7 @@ async def import_skill(body: dict) -> dict:
 
 
 @router.post("/api/skills/refresh")
-async def refresh_skills() -> dict:
+def refresh_skills() -> dict:
     """刷新技能缓存，重新扫描文件系统。"""
     from tools.skills.loader import clear_cache
     clear_cache()
@@ -110,7 +110,7 @@ async def refresh_skills() -> dict:
 
 
 @router.post("/api/skills/delete")
-async def delete_skill(body: dict) -> dict:
+def delete_skill(body: dict) -> dict:
     """删除用户级技能。请求体：{"name"}"""
     from tools.skills.loader import delete_skill_file
 

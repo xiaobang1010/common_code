@@ -114,7 +114,7 @@ async def switch_memory_provider(body: dict) -> dict:
 
     name = body.get("name", "")
     registry = get_registry()
-    ok = registry.set_active(name)
+    ok = await asyncio.to_thread(registry.set_active, name)
     if not ok:
         return {"ok": False, "error": f"Memory provider not found: {name}"}
     return {"ok": True, "active": name}
@@ -156,7 +156,8 @@ async def memory_search(body: dict) -> dict:
     if not hasattr(memory, 'search_memory'):
         return {"ok": False, "error": "当前记忆后端不支持搜索"}
     try:
-        results = memory.search_memory(
+        results = await asyncio.to_thread(
+            memory.search_memory,
             query=body.get("query", ""),
             wing=body.get("wing"),
             room=body.get("room"),
@@ -177,7 +178,8 @@ async def memory_add(body: dict) -> dict:
     if not hasattr(memory, 'add_drawer'):
         return {"ok": False, "error": "当前记忆后端不支持添加"}
     try:
-        drawer = memory.add_drawer(
+        drawer = await asyncio.to_thread(
+            memory.add_drawer,
             wing=body.get("wing", ""),
             room=body.get("room", ""),
             content=body.get("content", ""),
@@ -199,7 +201,7 @@ async def memory_status() -> dict:
     if not hasattr(memory, 'get_status'):
         return {"ok": False, "error": "当前记忆后端不支持状态查询"}
     try:
-        status = memory.get_status()
+        status = await asyncio.to_thread(memory.get_status)
         return {"ok": True, "status": status}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -215,7 +217,7 @@ async def memory_wings() -> dict:
     if not hasattr(memory, 'list_wings'):
         return {"ok": False, "error": "当前记忆后端不支持此操作"}
     try:
-        wings = memory.list_wings()
+        wings = await asyncio.to_thread(memory.list_wings)
         return {"ok": True, "wings": wings}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -231,7 +233,7 @@ async def memory_rooms(body: dict) -> dict:
     if not hasattr(memory, 'list_rooms'):
         return {"ok": False, "error": "当前记忆后端不支持此操作"}
     try:
-        rooms = memory.list_rooms(body.get("wing", ""))
+        rooms = await asyncio.to_thread(memory.list_rooms, body.get("wing", ""))
         return {"ok": True, "rooms": rooms}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -247,7 +249,8 @@ async def memory_kg_add(body: dict) -> dict:
     if not hasattr(memory, 'kg_add'):
         return {"ok": False, "error": "当前记忆后端不支持知识图谱"}
     try:
-        triple = memory.kg_add(
+        triple = await asyncio.to_thread(
+            memory.kg_add,
             subject=body.get("subject", ""),
             predicate=body.get("predicate", ""),
             object=body.get("object", ""),
@@ -269,7 +272,8 @@ async def memory_kg_query(body: dict) -> dict:
     if not hasattr(memory, 'kg_query'):
         return {"ok": False, "error": "当前记忆后端不支持知识图谱"}
     try:
-        triples = memory.kg_query(
+        triples = await asyncio.to_thread(
+            memory.kg_query,
             entity=body.get("entity", ""),
             as_of=body.get("as_of"),
         )
@@ -288,7 +292,7 @@ async def memory_kg_timeline(body: dict) -> dict:
     if not hasattr(memory, 'kg_timeline'):
         return {"ok": False, "error": "当前记忆后端不支持知识图谱"}
     try:
-        triples = memory.kg_timeline(body.get("entity", ""))
+        triples = await asyncio.to_thread(memory.kg_timeline, body.get("entity", ""))
         return {"ok": True, "triples": triples}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -304,7 +308,8 @@ async def memory_kg_invalidate(body: dict) -> dict:
     if not hasattr(memory, 'kg_invalidate'):
         return {"ok": False, "error": "当前记忆后端不支持知识图谱"}
     try:
-        count = memory.kg_invalidate(
+        count = await asyncio.to_thread(
+            memory.kg_invalidate,
             subject=body.get("subject", ""),
             predicate=body.get("predicate", ""),
             object=body.get("object", ""),
@@ -325,7 +330,7 @@ async def memory_kg_entities() -> dict:
     if not hasattr(memory, 'kg_entities'):
         return {"ok": False, "error": "当前记忆后端不支持知识图谱"}
     try:
-        entities = memory.kg_entities()
+        entities = await asyncio.to_thread(memory.kg_entities)
         return {"ok": True, "entities": entities}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -341,7 +346,8 @@ async def memory_kg_supersede(body: dict) -> dict:
     if not hasattr(memory, 'kg_supersede'):
         return {"ok": False, "error": "当前记忆后端不支持此操作"}
     try:
-        result = memory.kg_supersede(
+        result = await asyncio.to_thread(
+            memory.kg_supersede,
             subject=body.get("subject", ""),
             predicate=body.get("predicate", ""),
             old_object=body.get("old_object", ""),
@@ -365,12 +371,12 @@ async def memory_repair(body: dict) -> dict:
     try:
         action = body.get("action", "all")
         if action == "repair_fts":
-            result = memory.repair_index()
+            result = await asyncio.to_thread(memory.repair_index)
         elif action == "cleanup_closets":
-            result = memory.cleanup_orphans()
+            result = await asyncio.to_thread(memory.cleanup_orphans)
         elif action == "all":
-            repair = memory.repair_index()
-            cleanup = memory.cleanup_orphans()
+            repair = await asyncio.to_thread(memory.repair_index)
+            cleanup = await asyncio.to_thread(memory.cleanup_orphans)
             result = {"repair": repair, "cleanup": cleanup}
         else:
             return {"ok": False, "error": f"未知操作: {action}"}

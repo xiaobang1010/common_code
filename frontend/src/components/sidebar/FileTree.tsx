@@ -245,7 +245,9 @@ function FilteredTreeNode({ node, depth, q, onFileOpen, activePath, onPinFile }:
 
 function FileTree({ onFileOpen, activePath, onPinFile }: FileTreeProps) {
   const [rootItems, setRootItems] = useState<FileItem[]>([])
+  // 首开加载：无数据时的全量 loading；刷新期间用 refreshing 轻量指示，不清空旧树
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
   const [treeVersion, setTreeVersion] = useState(0)
   const [creating, setCreating] = useState<'file' | 'dir' | null>(null)
@@ -282,16 +284,19 @@ function FileTree({ onFileOpen, activePath, onPinFile }: FileTreeProps) {
   }, [filter])
 
   const loadRoot = useCallback(async () => {
+    setRefreshing(true)
     try {
       const res = await fetch('/api/files/list?path=.')
       const data = await res.json()
       setRootItems(data.items || [])
       setError('')
     } catch (e) {
+      // 刷新失败保留上次数据，仅记录错误供轻量提示；首开失败才显示全量错误块
       setError('加载失败')
       console.error(e)
     } finally {
       setLoading(false)
+      setRefreshing(false)
     }
   }, [])
 
@@ -341,7 +346,8 @@ function FileTree({ onFileOpen, activePath, onPinFile }: FileTreeProps) {
     }
   }
 
-  if (loading) {
+  // 首开（尚无数据）才显示全量加载；刷新期间保留旧树
+  if (loading && rootItems.length === 0) {
     return (
       <div style={{ padding: '16px', color: 'var(--text-tertiary)', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
         <LoadingIcon />
@@ -349,9 +355,18 @@ function FileTree({ onFileOpen, activePath, onPinFile }: FileTreeProps) {
       </div>
     )
   }
-  if (error) {
+  // 首开失败（无数据可兜底）显示全量错误 + 重试
+  if (error && rootItems.length === 0) {
     return (
-      <div style={{ padding: '16px', color: 'var(--error)', fontSize: '12px' }}>{error}</div>
+      <div style={{ padding: '16px', color: 'var(--error)', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+        {error}
+        <button
+          onClick={() => void loadRoot()}
+          style={{ cursor: 'pointer', background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-secondary)', borderRadius: 'var(--radius-sm)', fontSize: '12px', padding: '2px 8px' }}
+        >
+          重试
+        </button>
+      </div>
     )
   }
 
@@ -471,6 +486,37 @@ function FileTree({ onFileOpen, activePath, onPinFile }: FileTreeProps) {
             </button>
           </div>
           {createError && <div style={{ color: 'var(--error)', fontSize: '12px' }}>{createError}</div>}
+        </div>
+      )}
+
+      {/* 轻量状态条：刷新中转圈、刷新失败提示 + 重试，均不清空旧树 */}
+      {(refreshing || error) && rootItems.length > 0 && (
+        <div
+          style={{
+            padding: '3px 8px',
+            fontSize: '11px',
+            color: 'var(--text-tertiary)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+          }}
+        >
+          {refreshing ? (
+            <>
+              <LoadingIcon />
+              刷新中
+            </>
+          ) : (
+            <>
+              <span style={{ color: 'var(--error)' }}>{error}，已保留上次结果</span>
+              <button
+                onClick={() => void loadRoot()}
+                style={{ cursor: 'pointer', background: 'transparent', border: 'none', color: 'var(--text-secondary)', fontSize: '11px', padding: '0', textDecoration: 'underline' }}
+              >
+                重试
+              </button>
+            </>
+          )}
         </div>
       )}
 

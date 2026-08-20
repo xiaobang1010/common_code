@@ -20,7 +20,7 @@ from server.routers.files.routes import (
 async def test_read_returns_baseline(workspace):
     content = "print('hi')\n"
     (workspace / "a.py").write_text(content, encoding="utf-8")
-    result = await read_file("a.py")
+    result = read_file("a.py")
     assert result["content"] == content
     assert result["language"] == "python"
     assert result["editable"] is True
@@ -30,13 +30,13 @@ async def test_read_returns_baseline(workspace):
 
 @pytest.mark.asyncio
 async def test_read_path_traversal_403(workspace):
-    result = await read_file("../secret.txt")
+    result = read_file("../secret.txt")
     assert result.status_code == 403
 
 
 @pytest.mark.asyncio
 async def test_read_not_found_404(workspace):
-    result = await read_file("missing.txt")
+    result = read_file("missing.txt")
     assert result.status_code == 404
 
 
@@ -44,7 +44,7 @@ async def test_read_not_found_404(workspace):
 async def test_write_success(workspace):
     (workspace / "a.py").write_text("old", encoding="utf-8")
     st = os.stat(workspace / "a.py")
-    result = await write_file(
+    result = write_file(
         WriteRequest(path="a.py", content="new", base_mtime=int(st.st_mtime), base_size=st.st_size)
     )
     assert result["size"] == len("new".encode("utf-8"))
@@ -55,7 +55,7 @@ async def test_write_success(workspace):
 async def test_write_conflict_409(workspace):
     (workspace / "a.py").write_text("old", encoding="utf-8")
     # 传入错误基线制造冲突
-    result = await write_file(WriteRequest(path="a.py", content="new", base_mtime=0, base_size=0))
+    result = write_file(WriteRequest(path="a.py", content="new", base_mtime=0, base_size=0))
     assert result.status_code == 409
     # 未被覆盖
     assert (workspace / "a.py").read_text(encoding="utf-8") == "old"
@@ -64,13 +64,13 @@ async def test_write_conflict_409(workspace):
 @pytest.mark.asyncio
 async def test_write_force_no_baseline(workspace):
     (workspace / "a.py").write_text("old", encoding="utf-8")
-    result = await write_file(WriteRequest(path="a.py", content="new"))
+    result = write_file(WriteRequest(path="a.py", content="new"))
     assert result["size"] == len("new".encode("utf-8"))
 
 
 @pytest.mark.asyncio
 async def test_write_path_traversal_403(workspace):
-    result = await write_file(WriteRequest(path="../x.py", content="x"))
+    result = write_file(WriteRequest(path="../x.py", content="x"))
     assert result.status_code == 403
 
 
@@ -85,7 +85,7 @@ async def test_write_symlink_traversal_403(workspace, tmp_path):
     except OSError:
         pytest.skip("当前环境不支持创建软链接")
     try:
-        result = await write_file(WriteRequest(path="link.py", content="x"))
+        result = write_file(WriteRequest(path="link.py", content="x"))
         assert result.status_code == 403
     finally:
         link.unlink(missing_ok=True)
@@ -94,35 +94,35 @@ async def test_write_symlink_traversal_403(workspace, tmp_path):
 
 @pytest.mark.asyncio
 async def test_write_nonexistent_404(workspace):
-    result = await write_file(WriteRequest(path="missing.py", content="x"))
+    result = write_file(WriteRequest(path="missing.py", content="x"))
     assert result.status_code == 404
 
 
 @pytest.mark.asyncio
 async def test_write_directory_400(workspace):
     (workspace / "d").mkdir()
-    result = await write_file(WriteRequest(path="d", content="x"))
+    result = write_file(WriteRequest(path="d", content="x"))
     assert result.status_code == 400
 
 
 @pytest.mark.asyncio
 async def test_create_file_and_dir(workspace):
-    await create_file(CreateRequest(path="new.txt", type="file"))
+    create_file(CreateRequest(path="new.txt", type="file"))
     assert (workspace / "new.txt").is_file()
-    await create_file(CreateRequest(path="sub/dir", type="dir"))
+    create_file(CreateRequest(path="sub/dir", type="dir"))
     assert (workspace / "sub" / "dir").is_dir()
 
 
 @pytest.mark.asyncio
 async def test_create_already_exists_409(workspace):
     (workspace / "a.txt").write_text("x", encoding="utf-8")
-    result = await create_file(CreateRequest(path="a.txt", type="file"))
+    result = create_file(CreateRequest(path="a.txt", type="file"))
     assert result.status_code == 409
 
 
 @pytest.mark.asyncio
 async def test_create_invalid_type_400(workspace):
-    result = await create_file(CreateRequest(path="x", type="link"))
+    result = create_file(CreateRequest(path="x", type="link"))
     assert result.status_code == 400
 
 
@@ -133,7 +133,7 @@ async def test_list_recursive_returns_nested_tree(workspace):
     (workspace / "sub" / "a.py").write_text("x", encoding="utf-8")
     (workspace / "sub" / "deep" / "b.py").write_text("y", encoding="utf-8")
     (workspace / "top.py").write_text("z", encoding="utf-8")
-    result = await list_files(".", recursive=True)
+    result = list_files(".", recursive=True)
     items = {it["name"]: it for it in result["items"]}
     assert "top.py" in items
     sub = items["sub"]
@@ -146,6 +146,6 @@ async def test_list_recursive_returns_nested_tree(workspace):
 @pytest.mark.asyncio
 async def test_list_recursive_off_keeps_flat(workspace):
     (workspace / "sub").mkdir()
-    result = await list_files(".", recursive=False)
+    result = list_files(".", recursive=False)
     for it in result["items"]:
         assert "children" not in it

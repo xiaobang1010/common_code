@@ -324,7 +324,7 @@ async def test_switch_does_not_interrupt_running_task(workspace, env):
     await asyncio.sleep(0)
     server.state.engine_session_id = sid_a
 
-    result = await switch_session(sid_b)
+    result = switch_session(sid_b)
 
     assert result["ok"] is True
     # 视图引擎换成目标会话的消息

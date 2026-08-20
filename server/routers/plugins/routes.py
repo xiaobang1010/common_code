@@ -19,7 +19,7 @@ router = APIRouter()
 
 
 @router.get("/api/plugins")
-async def list_plugins() -> dict:
+def list_plugins() -> dict:
     """返回已安装插件列表。
 
     返回：{"plugins": [{"name", "version", "kind", "enabled", "description",
@@ -54,7 +54,7 @@ async def list_plugins() -> dict:
 
 
 @router.post("/api/plugins/enable")
-async def enable_plugin(body: dict) -> dict:
+def enable_plugin(body: dict) -> dict:
     """启用插件。请求体：{"name": "..."}"""
     from startup.plugins.manager import PluginManager
 
@@ -71,7 +71,7 @@ async def enable_plugin(body: dict) -> dict:
 
 
 @router.post("/api/plugins/disable")
-async def disable_plugin(body: dict) -> dict:
+def disable_plugin(body: dict) -> dict:
     """禁用插件。请求体：{"name": "..."}"""
     from startup.plugins.manager import PluginManager
 
@@ -88,7 +88,7 @@ async def disable_plugin(body: dict) -> dict:
 
 
 @router.post("/api/plugins/llm-provider/switch")
-async def switch_llm_provider(body: dict) -> dict:
+def switch_llm_provider(body: dict) -> dict:
     """切换 LLM 供应商。请求体：{"provider": "..."}"""
     from query.services.api.providers import get_registry
 
@@ -113,7 +113,7 @@ async def switch_llm_provider(body: dict) -> dict:
 
 
 @router.get("/api/plugins/llm-providers")
-async def list_llm_providers() -> dict:
+def list_llm_providers() -> dict:
     """返回可用 LLM 供应商列表和当前激活的供应商。"""
     from query.services.api.providers import get_registry
 

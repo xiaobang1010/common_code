@@ -45,6 +45,8 @@ _FALLBACK_MODEL = "Qwen/Qwen3-235B-A22B"
 
 _client_lock = threading.Lock()
 _client_instance: openai.OpenAI | None = None
+_async_client_lock = threading.Lock()
+_async_client_instance: openai.AsyncOpenAI | None = None
 _default_model_cache: str | None = None
 
 
@@ -113,6 +115,34 @@ def build_http_client() -> httpx.Client:
         kwargs["proxy"] = proxy
 
     return httpx.Client(**kwargs)
+
+
+def build_async_http_client() -> httpx.AsyncClient:
+    """构建自定义 httpx.AsyncClient。
+
+    行为与 build_http_client 一致（请求头注入、代理、超时），
+    供 AsyncOpenAI 使用。
+    """
+    headers: dict[str, str] = {
+        CLIENT_REQUEST_ID_HEADER: str(uuid.uuid4()),
+    }
+    headers.update(get_custom_headers())
+
+    proxy = (
+        os.environ.get("HTTPS_PROXY")
+        or os.environ.get("https_proxy")
+        or os.environ.get("HTTP_PROXY")
+        or os.environ.get("http_proxy")
+    )
+
+    kwargs: dict[str, Any] = {
+        "headers": headers,
+        "timeout": httpx.Timeout(600.0, connect=10.0),
+    }
+    if proxy:
+        kwargs["proxy"] = proxy
+
+    return httpx.AsyncClient(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +322,53 @@ def get_llm_client() -> openai.OpenAI:
 
 
 # ---------------------------------------------------------------------------
+# get_async_llm_client — 获取异步 LLM 客户端实例（单例，缓存）
+# ---------------------------------------------------------------------------
+
+
+def get_async_llm_client() -> openai.AsyncOpenAI:
+    """获取 OpenAI 兼容异步 LLM 客户端实例。
+
+    单例模式，线程安全。供事件循环上的流式调用使用，
+    避免同步 SDK 阻塞事件循环。配置解析逻辑与 get_llm_client 一致。
+    """
+    global _async_client_instance
+
+    if _async_client_instance is not None:
+        return _async_client_instance
+
+    with _async_client_lock:
+        if _async_client_instance is not None:
+            return _async_client_instance
+
+        base_url = _resolve_base_url()
+        api_key = _resolve_api_key() or "sk-placeholder"
+
+        http_client = build_async_http_client()
+
+        _async_client_instance = openai.AsyncOpenAI(
+            base_url=base_url,
+            api_key=api_key,
+            http_client=http_client,
+        )
+
+        return _async_client_instance
+
+
+async def close_async_llm_client() -> None:
+    """关闭异步客户端（应用退出时调用，释放连接池）。"""
+
+    global _async_client_instance
+
+    with _async_client_lock:
+        client = _async_client_instance
+        _async_client_instance = None
+
+    if client is not None:
+        await client.close()
+
+
+# ---------------------------------------------------------------------------
 # reset_client — 重置客户端（用于测试或配置变更后）
 # ---------------------------------------------------------------------------
 
@@ -301,8 +378,11 @@ def reset_client() -> None:
 
     主要用于测试场景或配置变更后需要重新创建客户端时。
     """
-    global _client_instance, _default_model_cache
+
+    global _client_instance, _async_client_instance, _default_model_cache
 
     with _client_lock:
         _client_instance = None
         _default_model_cache = None
+    with _async_client_lock:
+        _async_client_instance = None
