@@ -22,6 +22,7 @@ import uvicorn
 from query.engine import QueryEngine, build_engine_config
 from server import app as app_module
 from server import state as server_state
+from server.loop_monitor import start_loop_monitor
 from server.permission_bridge import PermissionBridge
 from server.question_bridge import QuestionBridge
 from startup.setup import setup
@@ -129,6 +130,9 @@ async def main() -> None:
     while not server.started:
         await asyncio.sleep(0.01)
 
+    # 事件循环阻塞监控（CC_LOOP_MONITOR=1 开启）：开发期阻塞基线与回归检测
+    monitor_task = start_loop_monitor()
+
     # 服务启动后触发 SessionStart hooks，收集额外上下文供后续使用
     from startup.bootstrap.state import get_cwd_state
     from startup.hooks import run_session_start_hooks
@@ -152,6 +156,18 @@ async def main() -> None:
 
     # 等待服务结束
     await task
+
+    # 停止监控协程
+    if monitor_task is not None:
+        monitor_task.cancel()
+
+    # 关闭异步 LLM 客户端，释放连接池
+    try:
+        from query.services.api.client import close_async_llm_client
+
+        await close_async_llm_client()
+    except Exception as e:
+        print(f"关闭异步 LLM 客户端失败: {e}", file=sys.stderr)
 
     # 服务退出时触发 SessionEnd hooks，做清理
     from startup.hooks import run_session_end_hooks

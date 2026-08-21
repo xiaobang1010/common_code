@@ -26,7 +26,7 @@ _NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
 @router.get("/api/agents")
-async def list_agents() -> dict:
+def list_agents() -> dict:
     """返回内置与自定义子智能体定义的只读字段，及自定义加载诊断。"""
     from tools.subagent.built_in_agents import get_built_in_agents
     from tools.subagent.loader import load_custom_agents
@@ -92,7 +92,7 @@ def _render_agent_md(req: AgentCreateRequest) -> str:
 
 
 @router.post("/api/agents")
-async def create_agent(req: AgentCreateRequest) -> JSONResponse:
+def create_agent(req: AgentCreateRequest) -> JSONResponse:
     """创建或更新用户级自定义子智能体（写 ~/.agent/agents/<name>.md）。"""
     from tools.subagent.built_in_agents import get_built_in_agents
     from tools.subagent.loader import get_user_agents_dir
@@ -120,7 +120,7 @@ async def create_agent(req: AgentCreateRequest) -> JSONResponse:
 
 
 @router.get("/api/team/teammates")
-async def list_team_teammates() -> dict:
+def list_team_teammates() -> dict:
     """返回团队列表、各团队成员与当前活跃 teammate 状态。
 
     数据来源：manager 的团队/成员配置 + lifecycle 的活跃注册表。
@@ -153,7 +153,7 @@ async def list_team_teammates() -> dict:
 
 
 @router.delete("/api/agents/{name}")
-async def delete_agent(name: str) -> JSONResponse:
+def delete_agent(name: str) -> JSONResponse:
     """删除用户级自定义子智能体（内置与项目级不可删）。"""
     from tools.subagent.built_in_agents import get_built_in_agents
     from tools.subagent.loader import get_user_agents_dir

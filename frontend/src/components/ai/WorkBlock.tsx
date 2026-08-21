@@ -299,10 +299,14 @@ const StatusLine = memo(function StatusLine({ block, expanded, onToggle }: {
     ? EXIT_HINT[block.exitReason] ?? block.exitReason
     : ''
 
-  // 活动行：连接异常 > 工具执行 > 生成回复 > 阶段事件 > 等待
+  // 活动行：长时间无响应 > 工具执行 > 生成回复 > 阶段事件 > 等待。
+  // idle 分级：思考间隙超 10s 属正常（模型慢，不误报连接异常）；
+  // 超 60s 才升级为疑似连接异常的强提示
+  const idleWarn = isRunning && idleMs > 60000
   const activity = (() => {
     if (!isRunning) return ''
-    if (idleMs > 10000) return '连接异常，可在输入区停止后重试'
+    if (idleMs > 60000) return '长时间无响应，可能连接异常，可在输入区停止后重试'
+    if (idleMs > 10000) return '模型响应较慢，可继续浏览其他区域'
     const runningStep = block.steps.find(s => s.isRunning)
     if (runningStep) return `正在执行工具 ${runningStep.toolName}`
     if (block.finalReplyStreaming && block.finalReply) return '正在生成回复'
@@ -359,8 +363,8 @@ const StatusLine = memo(function StatusLine({ block, expanded, onToggle }: {
       )}
       <div style={{ borderBottom: '1px solid var(--border-subtle)' }} />
       {activity && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '5px 0 8px', fontSize: '11px', color: 'var(--text-tertiary)', fontFamily: 'var(--font-ui)' }}>
-          <span className="work-pulse" style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: 'var(--text-tertiary)', animation: 'breathe 1.6s ease-in-out infinite', flexShrink: 0 }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '5px 0 8px', fontSize: '11px', color: idleWarn ? 'var(--error)' : 'var(--text-tertiary)', fontFamily: 'var(--font-ui)' }}>
+          <span className="work-pulse" style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: idleWarn ? 'var(--error)' : 'var(--text-tertiary)', animation: 'breathe 1.6s ease-in-out infinite', flexShrink: 0 }} />
           {/* role=status 提供隐式 aria-live=polite：阶段文案变化才播报，逐秒计时不播报 */}
           <span role="status">{activity}</span>
         </div>

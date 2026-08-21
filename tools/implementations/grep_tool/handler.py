@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import re
 from pathlib import Path
 
@@ -76,6 +78,12 @@ async def handle_grep(inp: GrepInput, context: ToolUseContext) -> dict:
     Raises:
         ToolExecutionError: 无效正则 / 搜索根不是目录 / 路径越界
     """
+    # 目录扫描与逐文件检索丢线程池执行，大仓库搜索时不阻塞事件循环
+    return await asyncio.to_thread(_grep_sync, inp)
+
+
+def _grep_sync(inp: GrepInput) -> dict:
+    """同步检索内核：由 handle_grep 放入线程池执行。"""
     # 路径沙箱：未指定 path 时用工作区根
     if inp.path:
         search_root = resolve_workspace_path(inp.path)

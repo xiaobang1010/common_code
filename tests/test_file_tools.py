@@ -100,3 +100,80 @@ async def test_edit_normal_success(workspace):
     )
     assert result["replacements"] == 1
     assert (workspace / "a.py").read_text(encoding="utf-8") == "hi world\n"
+
+
+@pytest.mark.asyncio
+async def test_read_kernel_runs_off_loop(workspace, monkeypatch):
+    """同步读内核被丢线程池：内核慢 IO 期间事件循环保持响应。
+
+    用 sleep 模拟慢磁盘，探针协程期望 20ms 一拍；
+    若内核跑在事件循环上，探针会整体冻结 0.3s。
+    """
+    import asyncio
+    import time
+
+    import tools.implementations.file_read_tool.handler as read_handler
+
+    def slow_kernel(inp):
+        time.sleep(0.3)  # 模拟慢磁盘读
+        return {"file_path": "fake", "content": "", "mtime": 0, "size": 0}
+
+    monkeypatch.setattr(read_handler, "_read_sync", slow_kernel)
+
+    probe_delays: list[float] = []
+    stop = {"flag": False}
+
+    async def probe() -> None:
+        while not stop["flag"]:
+            t0 = time.monotonic()
+            await asyncio.sleep(0.02)
+            probe_delays.append(time.monotonic() - t0 - 0.02)
+
+    probe_task = asyncio.create_task(probe())
+    await asyncio.sleep(0.05)
+
+    structured = await read_handler.handle_read(
+        read_handler.FileReadInput(file_path="a.py"), None
+    )
+
+    stop["flag"] = True
+    await probe_task
+
+    assert structured["file_path"] == "fake"
+    assert max(probe_delays) < 0.1, (
+        f"探针最大延迟 {max(probe_delays):.3f}s，"
+        "疑似同步读内核跑在了事件循环上"
+    )
+
+
+@pytest.mark.asyncio
+async def test_write_atomic_failure_keeps_original(workspace, monkeypatch):
+    """原子写失败路径：替换失败时清理临时文件、原文件内容不变。"""
+    import os as _os
+
+    (workspace / "a.txt").write_text("原内容", encoding="utf-8")
+    st = os.stat(workspace / "a.txt")
+
+    import tools.implementations.file_write_tool.handler as write_handler
+
+    def boom(src, dst):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(write_handler.os, "replace", boom)
+
+    with pytest.raises(OSError):
+        await write_handler.handle_write(
+            FileWriteInput(
+                file_path="a.txt",
+                content="新内容",
+                base_mtime=int(st.st_mtime),
+                base_size=st.st_size,
+            ),
+            None,
+        )
+
+    # 原文件未被破坏
+    assert (workspace / "a.txt").read_text(encoding="utf-8") == "原内容"
+    # 无残留临时文件
+    leftovers = [p.name for p in workspace.iterdir() if p.name.startswith(".cc-write-")]
+    assert leftovers == []

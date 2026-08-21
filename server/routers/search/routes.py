@@ -18,7 +18,7 @@ router = APIRouter()
 
 
 @router.get("/api/search")
-async def search(
+def search(
     q: str,
     case_sensitive: bool = False,
     regex: bool = False,
