@@ -1,7 +1,7 @@
 // 记忆管理区 - 列出后端 + 切换激活 + 清空会话记忆
 // 接 GET /api/memory/providers、POST /api/memory/switch、POST /api/memory/clear
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { memoryApi } from '../../api/client'
 import { useSettingsStore } from '../../stores/useSettingsStore'
 import { Select, SettingSection, SettingRow, StatusMessage, Toggle } from '../ui'
@@ -130,10 +130,21 @@ function MemorySettingsSection() {
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
   const [palaceStatus, setPalaceStatus] = useState<any>(null)
+  // 后端列表加载失败：保留旧数据（store 仅成功才更新），轻量提示 + 重试
+  const [loadError, setLoadError] = useState('')
+
+  const loadProviders = useCallback(async () => {
+    try {
+      await refreshMemoryProviders()
+      setLoadError('')
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : '加载记忆后端失败')
+    }
+  }, [refreshMemoryProviders])
 
   useEffect(() => {
-    refreshMemoryProviders()
-  }, [refreshMemoryProviders])
+    loadProviders()
+  }, [loadProviders])
 
   // 挂载时同步记忆功能开关状态（后端 memoryEnabled 的前端镜像）
   useEffect(() => {
@@ -220,24 +231,36 @@ function MemorySettingsSection() {
     return (
       <div>
         {featureSwitch}
-        <div style={{ padding: '24px 20px', textAlign: 'center', color: 'var(--text-tertiary)' }}>
-          <div style={{ fontSize: '32px', marginBottom: '12px' }}>🧠</div>
-          <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
-            {memoryEnabled ? '未安装任何记忆后端' : '记忆功能已关闭'}
+        {loadError ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '16px 20px', justifyContent: 'center' }}>
+            <span style={{ fontSize: '12px', color: 'var(--error)' }}>{loadError}</span>
+            <button
+              onClick={() => void loadProviders()}
+              style={{ cursor: 'pointer', background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-secondary)', borderRadius: 'var(--radius-sm)', fontSize: '12px', padding: '2px 10px' }}
+            >
+              重试
+            </button>
           </div>
-          <div style={{ fontSize: '12px', lineHeight: 1.6, maxWidth: '420px', margin: '0 auto' }}>
-            {memoryEnabled ? (
-              <>
-                记忆插件是 <code style={{ color: 'var(--code-text)', fontFamily: 'var(--font-mono)' }}>memory</code> kind 的插件，
-                在插件目录放 <code style={{ color: 'var(--code-text)', fontFamily: 'var(--font-mono)' }}>memory.py</code>
-                并实现 store/retrieve/search/clear 四个方法即可。
-                没有记忆后端时，对话照常运行，只是不会跨会话保留摘要。
-              </>
-            ) : (
-              '开启后自动加载记忆后端，向量模型将在后台异步加载，不影响其他功能。'
-            )}
+        ) : (
+          <div style={{ padding: '24px 20px', textAlign: 'center', color: 'var(--text-tertiary)' }}>
+            <div style={{ fontSize: '32px', marginBottom: '12px' }}>🧠</div>
+            <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+              {memoryEnabled ? '未安装任何记忆后端' : '记忆功能已关闭'}
+            </div>
+            <div style={{ fontSize: '12px', lineHeight: 1.6, maxWidth: '420px', margin: '0 auto' }}>
+              {memoryEnabled ? (
+                <>
+                  记忆插件是 <code style={{ color: 'var(--code-text)', fontFamily: 'var(--font-mono)' }}>memory</code> kind 的插件，
+                  在插件目录放 <code style={{ color: 'var(--code-text)', fontFamily: 'var(--font-mono)' }}>memory.py</code>
+                  并实现 store/retrieve/search/clear 四个方法即可。
+                  没有记忆后端时，对话照常运行，只是不会跨会话保留摘要。
+                </>
+              ) : (
+                '开启后自动加载记忆后端，向量模型将在后台异步加载，不影响其他功能。'
+              )}
+            </div>
           </div>
-        </div>
+        )}
         <StatusMessage type="success" message={message} />
         <StatusMessage type="error" message={error} />
       </div>
@@ -247,6 +270,18 @@ function MemorySettingsSection() {
   return (
     <div>
       {featureSwitch}
+      {/* 列表刷新失败：保留旧列表，轻量提示 + 重试 */}
+      {loadError && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+          <span style={{ fontSize: '12px', color: 'var(--error)' }}>{loadError}，已保留上次结果</span>
+          <button
+            onClick={() => void loadProviders()}
+            style={{ cursor: 'pointer', background: 'transparent', border: 'none', color: 'var(--text-secondary)', fontSize: '11px', padding: '0', textDecoration: 'underline' }}
+          >
+            重试
+          </button>
+        </div>
+      )}
       <SettingSection
         title="记忆后端"
         description="管理记忆存储后端。同一时间只有一个后端激活，切换后立即生效并持久化。"

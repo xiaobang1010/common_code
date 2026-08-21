@@ -137,7 +137,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       const data = await memoryApi.listProviders()
       set({ memoryProviders: data.providers, activeMemory: data.active })
     } catch (e) {
-      set({ error: `加载记忆后端失败：${e instanceof Error ? e.message : String(e)}` })
+      // 失败时保留旧列表（仅成功才 set），同时向上抛给调用方展示轻量错误
+      const msg = `加载记忆后端失败：${e instanceof Error ? e.message : String(e)}`
+      set({ error: msg })
+      throw new Error(msg)
     }
   },
 
