@@ -1,5 +1,10 @@
+import { useState } from 'react'
 import SessionList from './sidebar/SessionList'
-import type { SessionGroup } from '../api/client'
+import TaskGroupList, { GROUP_PALETTE } from './sidebar/TaskGroupList'
+import type { SessionGroup, TaskGroupInfo } from '../api/client'
+
+// 侧栏视图：项目（按工作区分组，现状）| 分组（自定义任务分组聚合）
+export type SidebarView = 'projects' | 'groups'
 
 // 入口区按钮统一样式（竖排：图标 + 文字居左，快捷键居右，无边框）
 const entryButtonStyle: React.CSSProperties = {
@@ -28,7 +33,26 @@ const entryShortcutStyle: React.CSSProperties = {
   letterSpacing: '0.3px',
 }
 
-// 会话栏：左侧唯一的侧边区域，只承载会话列表
+// 视图切换 tab 统一样式（图标 + 文字；图标一律 SVG 绘制）
+function tabStyle(active: boolean): React.CSSProperties {
+  return {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '5px',
+    padding: '4px 10px',
+    border: 'none',
+    borderRadius: 'var(--radius-sm)',
+    background: active ? 'var(--selected-bg)' : 'transparent',
+    color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+    fontSize: '12px',
+    fontFamily: 'var(--font-ui)',
+    fontWeight: active ? 600 : 500,
+    cursor: 'pointer',
+    transition: 'all var(--transition-fast)',
+  }
+}
+
+// 会话栏：左侧唯一的侧边区域，承载视图切换（分组/项目）与会话列表
 // 文件视图在编辑区右缘树窄列、搜索/审查为编辑区工具标签，此处不再有视图切换
 interface SidebarProps {
   collapsed: boolean
@@ -39,6 +63,16 @@ interface SidebarProps {
   currentSessionId: string | null
   // 当前运行任务所属会话（列表显示运行指示）
   runningSessionId: string | null
+  // 视图切换（分组/项目），选中态由 App 持久化到 localStorage
+  view: SidebarView
+  onViewChange: (view: SidebarView) => void
+  // 自定义任务分组（分组视图）
+  taskGroups: TaskGroupInfo[]
+  onCreateTaskGroup: (name: string, color?: string) => Promise<TaskGroupInfo | null>
+  onRenameTaskGroup: (groupId: string, name: string) => void
+  onDeleteTaskGroup: (groupId: string) => void
+  onSetSessionGroup: (sessionId: string, groupId: string) => void
+  onCreateSessionInGroup: (groupId: string) => void
   onCreateSession: () => void
   onSwitchSession: (sessionId: string) => void
   onSwitchInWorkspace: (sessionId: string, workspacePath: string) => void
@@ -52,7 +86,21 @@ interface SidebarProps {
   onUpdateWorkspace: (path: string, data: { alias?: string; pinned?: boolean }) => void
 }
 
-function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, currentSessionId, runningSessionId, onCreateSession, onSwitchSession, onSwitchInWorkspace, onDeleteSession, onRemoveWorkspace, onOpenWorkspace, onOpenSearch, onRenameSession, onToggleSessionPin, onUpdateWorkspace }: SidebarProps) {
+function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, currentSessionId, runningSessionId, view, onViewChange, taskGroups, onCreateTaskGroup, onRenameTaskGroup, onDeleteTaskGroup, onSetSessionGroup, onCreateSessionInGroup, onCreateSession, onSwitchSession, onSwitchInWorkspace, onDeleteSession, onRemoveWorkspace, onOpenWorkspace, onOpenSearch, onRenameSession, onToggleSessionPin, onUpdateWorkspace }: SidebarProps) {
+  // 新建分组的内联输入态
+  const [creatingGroup, setCreatingGroup] = useState(false)
+  const [groupNameDraft, setGroupNameDraft] = useState('')
+
+  const commitCreateGroup = async () => {
+    const name = groupNameDraft.trim()
+    if (name) {
+      // 颜色按已有分组数自动从色板分配
+      await onCreateTaskGroup(name, GROUP_PALETTE[taskGroups.length % GROUP_PALETTE.length])
+    }
+    setGroupNameDraft('')
+    setCreatingGroup(false)
+  }
+
   // 折叠状态下渲染一个窄条展开按钮
   if (collapsed) {
     return (
@@ -246,7 +294,115 @@ function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, cu
           打开工作区
         </button>
       </div>
-      {/* 会话列表 */}
+      {/* 视图切换 tab：「# 分组」/「项目」（文件夹图标），右侧 + 新建分组（仅分组视图） */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '4px',
+          padding: '6px 8px',
+          borderBottom: '1px solid var(--border)',
+          flexShrink: 0,
+        }}
+      >
+        <button
+          onClick={() => onViewChange('groups')}
+          title="按自定义分组查看任务"
+          style={tabStyle(view === 'groups')}
+          onMouseEnter={(e) => {
+            if (view !== 'groups') e.currentTarget.style.color = 'var(--text-primary)'
+          }}
+          onMouseLeave={(e) => {
+            if (view !== 'groups') e.currentTarget.style.color = 'var(--text-secondary)'
+          }}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+            <path d="M4 9h16M4 15h16M10 3L8 21M16 3l-2 18" />
+          </svg>
+          分组
+        </button>
+        <button
+          onClick={() => onViewChange('projects')}
+          title="按工作区查看任务"
+          style={tabStyle(view === 'projects')}
+          onMouseEnter={(e) => {
+            if (view !== 'projects') e.currentTarget.style.color = 'var(--text-primary)'
+          }}
+          onMouseLeave={(e) => {
+            if (view !== 'projects') e.currentTarget.style.color = 'var(--text-secondary)'
+          }}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+          </svg>
+          项目
+        </button>
+        {view === 'groups' && (
+          <button
+            onClick={() => setCreatingGroup(true)}
+            title="新建分组"
+            style={{
+              marginLeft: 'auto',
+              flexShrink: 0,
+              padding: '4px 6px',
+              border: 'none',
+              background: 'transparent',
+              color: creatingGroup ? 'var(--text-primary)' : 'var(--text-tertiary)',
+              cursor: 'pointer',
+              borderRadius: 'var(--radius-sm)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              transition: 'all var(--transition-fast)',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = 'var(--hover-bg)'
+              e.currentTarget.style.color = 'var(--text-primary)'
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'transparent'
+              if (!creatingGroup) e.currentTarget.style.color = 'var(--text-tertiary)'
+            }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </button>
+        )}
+      </div>
+      {/* 新建分组内联输入行 */}
+      {creatingGroup && (
+        <div style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+          <input
+            autoFocus
+            value={groupNameDraft}
+            onChange={(e) => setGroupNameDraft(e.target.value)}
+            onBlur={commitCreateGroup}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') commitCreateGroup()
+              if (e.key === 'Escape') {
+                setGroupNameDraft('')
+                setCreatingGroup(false)
+              }
+            }}
+            placeholder="分组名称，Enter 创建，Esc 取消"
+            style={{
+              width: '100%',
+              padding: '4px 8px',
+              border: '1px solid var(--border-strong)',
+              borderRadius: 'var(--radius-sm)',
+              background: 'var(--bg-base)',
+              color: 'var(--text-primary)',
+              fontSize: '12px',
+              fontFamily: 'var(--font-ui)',
+              outline: 'none',
+              boxShadow: '0 0 0 3px var(--focus-ring)',
+              boxSizing: 'border-box',
+            }}
+          />
+        </div>
+      )}
+      {/* 列表区：项目视图（工作区分组）或分组视图（自定义分组聚合） */}
       <div
         style={{
           flex: 1,
@@ -255,21 +411,41 @@ function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, cu
           flexDirection: 'column',
         }}
       >
-        <SessionList
-          groups={groups}
-          currentWorkspacePath={currentWorkspacePath}
-          currentSessionId={currentSessionId}
-          runningSessionId={runningSessionId}
-          onCreate={onCreateSession}
-          onSwitch={onSwitchSession}
-          onSwitchInWorkspace={onSwitchInWorkspace}
-          onDelete={onDeleteSession}
-          onRemoveWorkspace={onRemoveWorkspace}
-          onOpenWorkspace={onOpenWorkspace}
-          onRename={onRenameSession}
-          onTogglePin={onToggleSessionPin}
-          onUpdateWorkspace={onUpdateWorkspace}
-        />
+        {view === 'projects' ? (
+          <SessionList
+            groups={groups}
+            currentWorkspacePath={currentWorkspacePath}
+            currentSessionId={currentSessionId}
+            runningSessionId={runningSessionId}
+            onCreate={onCreateSession}
+            onSwitch={onSwitchSession}
+            onSwitchInWorkspace={onSwitchInWorkspace}
+            onDelete={onDeleteSession}
+            onRemoveWorkspace={onRemoveWorkspace}
+            onOpenWorkspace={onOpenWorkspace}
+            onRename={onRenameSession}
+            onTogglePin={onToggleSessionPin}
+            onUpdateWorkspace={onUpdateWorkspace}
+          />
+        ) : (
+          <TaskGroupList
+            taskGroups={taskGroups}
+            allGroups={groups}
+            currentWorkspacePath={currentWorkspacePath}
+            currentSessionId={currentSessionId}
+            runningSessionId={runningSessionId}
+            hasWorkspace={!!currentWorkspacePath}
+            onCreateInGroup={onCreateSessionInGroup}
+            onRenameGroup={onRenameTaskGroup}
+            onDeleteGroup={onDeleteTaskGroup}
+            onSetSessionGroup={onSetSessionGroup}
+            onSwitchSession={onSwitchSession}
+            onSwitchInWorkspace={onSwitchInWorkspace}
+            onDeleteSession={onDeleteSession}
+            onRenameSession={onRenameSession}
+            onTogglePin={onToggleSessionPin}
+          />
+        )}
       </div>
     </div>
   )

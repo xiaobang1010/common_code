@@ -1,9 +1,11 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import {
   sessionsApi,
+  sessionGroupsApi,
   workspacesApi,
   type SessionInfo,
   type SessionGroup,
+  type TaskGroupInfo,
   type WorkspaceInfo,
 } from '../api/client'
 
@@ -17,6 +19,8 @@ export function useSessions() {
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([])
   const [allGroups, setAllGroups] = useState<SessionGroup[]>([])
+  // 自定义任务分组（grouped API 透出）
+  const [taskGroups, setTaskGroups] = useState<TaskGroupInfo[]>([])
   // 当前运行任务列表（grouped API 透出，实时计算不落库；多任务并发时全量透出）
   const [currentTasks, setCurrentTasks] = useState<Array<{ session_id: string; state: string }>>([])
 
@@ -59,11 +63,12 @@ export function useSessions() {
     }
   }, [])
 
-  // 加载所有工作区的会话（按工作区分组）
+  // 加载所有工作区的会话（按工作区分组），并同步自定义任务分组
   const loadAllSessions = useCallback(async () => {
     try {
       const data = await sessionsApi.grouped()
       setAllGroups(data.groups)
+      setTaskGroups(data.task_groups ?? [])
       setCurrentTasks(data.current_tasks ?? [])
       return data.groups
     } catch {
@@ -72,11 +77,16 @@ export function useSessions() {
   }, [])
 
   // 创建新会话，设为当前会话，刷新列表，返回新会话 id
-  const createSession = useCallback(async () => {
+  // 可选传入初始分组 id（分组视图 ⊕ 使用）：创建成功后立即归组
+  const createSession = useCallback(async (groupId?: string) => {
     const path = currentWorkspacePathRef.current
     if (!path) return null
     try {
       const result = await sessionsApi.create(path)
+      if (groupId) {
+        // 归组失败不阻塞建会话：会话仍创建成功，只是留在未分区
+        await sessionsApi.setGroup(result.session_id, groupId).catch(() => {})
+      }
       updateCurrentSessionId(result.session_id)
       await loadSessions()
       await loadAllSessions()
@@ -180,6 +190,58 @@ export function useSessions() {
       // 失败静默忽略
     }
   }, [loadWorkspaces, loadAllSessions])
+
+  // 创建任务分组，成功后刷新分组列表（返回新分组供调用方使用）
+  const createTaskGroup = useCallback(async (name: string, color?: string) => {
+    try {
+      const result = await sessionGroupsApi.create(name, color)
+      if (result.ok) {
+        setTaskGroups(prev => [...prev, result.group])
+        return result.group
+      }
+      return null
+    } catch {
+      return null
+    }
+  }, [])
+
+  // 重命名任务分组（同步 taskGroups 本地状态）
+  const renameTaskGroup = useCallback(async (groupId: string, name: string) => {
+    setTaskGroups(prev => prev.map(g => (g.id === groupId ? { ...g, name } : g)))
+    try {
+      await sessionGroupsApi.update(groupId, { name })
+    } catch {
+      // 失败静默忽略
+    }
+  }, [])
+
+  // 删除任务分组：后端会把成员任务退回未分组，前端全量刷新对齐
+  const deleteTaskGroup = useCallback(async (groupId: string) => {
+    try {
+      await sessionGroupsApi.remove(groupId)
+      setTaskGroups(prev => prev.filter(g => g.id !== groupId))
+      // 成员任务 group_id 已被后端置空，重新拉取保证未分区/分组计数正确
+      await loadAllSessions()
+    } catch {
+      // 失败静默忽略
+    }
+  }, [loadAllSessions])
+
+  // 任务归组/移出分组（group_id 空串表示移出），同步 allGroups 与 sessions
+  const setSessionGroup = useCallback(async (sessionId: string, groupId: string) => {
+    // 本地乐观更新：allGroups（侧栏渲染源）与当前工作区任务列表
+    const apply = (list: SessionInfo[]) =>
+      list.map(s => (s.id === sessionId ? { ...s, group_id: groupId } : s))
+    setAllGroups(prev => prev.map(g => ({ ...g, sessions: apply(g.sessions) })))
+    setSessions(prev => apply(prev))
+    try {
+      const result = await sessionsApi.setGroup(sessionId, groupId)
+      if (!result.ok) throw new Error('set group failed')
+    } catch {
+      // 失败回滚：重新拉取对齐服务端状态
+      await loadAllSessions()
+    }
+  }, [loadAllSessions])
 
   // 切换工作区：先确保工作区在表里，再切换，加载会话列表
   // 返回当前分支和新会话 id，供调用方使用
@@ -287,12 +349,17 @@ export function useSessions() {
     sessions,
     workspaces,
     allGroups,
+    taskGroups,
     currentTasks,
     createSession,
     switchSession,
     deleteSession,
     renameSession,
     toggleSessionPin,
+    createTaskGroup,
+    renameTaskGroup,
+    deleteTaskGroup,
+    setSessionGroup,
     updateWorkspaceMeta,
     switchWorkspace,
     deleteWorkspace,
