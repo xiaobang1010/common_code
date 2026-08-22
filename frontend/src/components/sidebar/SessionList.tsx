@@ -46,8 +46,8 @@ function displayName(ws: { alias: string; name: string; path: string }): string 
   return ws.alias || ws.name || basename(ws.path)
 }
 
-// 任务排序：置顶优先，再按 updated_at 降序
-function sortSessions(sessions: SessionInfo[]): SessionInfo[] {
+// 任务排序：置顶优先，再按 updated_at 降序（分组视图复用）
+export function sortSessions(sessions: SessionInfo[]): SessionInfo[] {
   return [...sessions].sort((a, b) => {
     if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
     return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
@@ -72,10 +72,13 @@ const menuItemStyle: React.CSSProperties = {
 }
 
 // 单个任务条目（单行：状态图标 + 标题 + 右对齐相对时间）
-function SessionItem({
+// enableDrag 为 true 时可拖拽（分组视图拖入分组/拖回未分组用），
+// 拖拽数据经 dataTransfer 的 'text/session-id' 传递
+export function SessionItem({
   session,
   isActive,
   isRunning,
+  enableDrag = false,
   onSwitch,
   onDelete,
   onRename,
@@ -84,6 +87,7 @@ function SessionItem({
   session: SessionInfo
   isActive: boolean
   isRunning: boolean
+  enableDrag?: boolean
   onSwitch: (id: string) => void
   onDelete: (id: string) => void
   onRename: (id: string, title: string) => void
@@ -133,6 +137,11 @@ function SessionItem({
   return (
     <div
       onClick={() => onSwitch(session.id)}
+      draggable={enableDrag}
+      onDragStart={(e) => {
+        e.dataTransfer.setData('text/session-id', session.id)
+        e.dataTransfer.effectAllowed = 'move'
+      }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => { setHovered(false); setMenuOpen(false) }}
       style={{
@@ -367,12 +376,25 @@ function WorkspaceGroup({
         >
           {'\u25B8'}
         </span>
-        {/* 置顶图钉 + 工作区显示名 */}
+        {/* 置顶图钉 + 文件夹图标（对齐目标 UI：项目条目带文件夹标识） */}
         {ws.pinned && (
           <svg width="10" height="10" viewBox="0 0 24 24" fill="var(--text-secondary)" style={{ flexShrink: 0, marginRight: '2px' }}>
             <path d="M16 3l5 5-8 2-4 4-2-2 4-4 2-8z" transform="rotate(45 12 12)" />
           </svg>
         )}
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke={isCurrent ? 'var(--text-primary)' : 'var(--text-secondary)'}
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          style={{ flexShrink: 0, marginRight: '2px' }}
+        >
+          <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+        </svg>
         <span
           style={{
             flex: 1,

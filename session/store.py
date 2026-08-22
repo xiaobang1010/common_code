@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from session.models import Session, Workspace
+from session.models import Session, TaskGroup, Workspace
 
 
 class SessionStore:
@@ -81,6 +81,17 @@ class SessionStore:
             )
 
             conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS task_groups (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    color TEXT DEFAULT '',
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+
+            conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_path)"
             )
             conn.execute(
@@ -106,6 +117,10 @@ class SessionStore:
             conn.execute("ALTER TABLE workspaces ADD COLUMN pinned INTEGER DEFAULT 0")
         if "alias" not in ws_cols:
             conn.execute("ALTER TABLE workspaces ADD COLUMN alias TEXT DEFAULT ''")
+
+        session_cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+        if "group_id" not in session_cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN group_id TEXT DEFAULT ''")
 
     # ------------------------------------------------------------------
     # 行转换辅助
@@ -143,6 +158,8 @@ class SessionStore:
             messages=messages,
             message_count=message_count,
             pinned=bool(row["pinned"]) if "pinned" in row.keys() else False,
+            # 旧库迁移前可能缺列，按列存在性兼容读取，避免读出恒为空串
+            group_id=row["group_id"] if "group_id" in row.keys() else "",
         )
 
     @staticmethod
@@ -155,6 +172,16 @@ class SessionStore:
             session_count=session_count,
             pinned=bool(row["pinned"]) if "pinned" in row.keys() else False,
             alias=row["alias"] if "alias" in row.keys() else "",
+        )
+
+    @staticmethod
+    def _row_to_task_group(row: sqlite3.Row) -> TaskGroup:
+        """把数据库行转成 TaskGroup 对象。"""
+        return TaskGroup(
+            id=row["id"],
+            name=row["name"],
+            color=row["color"] if "color" in row.keys() else "",
+            created_at=row["created_at"],
         )
 
     # ------------------------------------------------------------------
@@ -488,6 +515,128 @@ class SessionStore:
                 cur = conn.execute(
                     "DELETE FROM workspaces WHERE path = ?",
                     (path,),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    # ------------------------------------------------------------------
+    # 任务分组 CRUD
+    # ------------------------------------------------------------------
+
+    def list_task_groups(self) -> list[TaskGroup]:
+        """列出所有自定义任务分组，按创建时间升序。"""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM task_groups ORDER BY created_at ASC"
+            ).fetchall()
+            return [self._row_to_task_group(row) for row in rows]
+        finally:
+            conn.close()
+
+    def create_task_group(self, name: str, color: str = "") -> TaskGroup:
+        """创建任务分组。
+
+        Args:
+            name: 分组名称（调用方保证非空）
+            color: 颜色标识，可留空
+
+        Returns:
+            新建的 TaskGroup 对象
+        """
+        now = datetime.now().isoformat()
+        group_id = str(uuid.uuid4())
+
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO task_groups (id, name, color, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (group_id, name, color, now),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+        return TaskGroup(id=group_id, name=name, color=color, created_at=now)
+
+    def update_task_group(self, group_id: str, name: str | None = None, color: str | None = None) -> bool:
+        """更新任务分组（重命名 / 改颜色），None 表示不修改该字段。
+
+        Returns:
+            True 更新成功，False 表示分组不存在
+        """
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                if name is not None:
+                    cur = conn.execute(
+                        "UPDATE task_groups SET name = ? WHERE id = ?",
+                        (name, group_id),
+                    )
+                    if cur.rowcount == 0:
+                        return False
+                if color is not None:
+                    cur = conn.execute(
+                        "UPDATE task_groups SET color = ? WHERE id = ?",
+                        (color, group_id),
+                    )
+                    if cur.rowcount == 0:
+                        return False
+                conn.commit()
+                return True
+            finally:
+                conn.close()
+
+    def delete_task_group(self, group_id: str) -> bool:
+        """删除任务分组。
+
+        事务内先把成员任务的 group_id 置空（回"未分组"）再删分组，
+        避免留下指向已删分组的孤儿 group_id；不删除任何任务记录。
+        """
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE sessions SET group_id = '' WHERE group_id = ?",
+                    (group_id,),
+                )
+                cur = conn.execute(
+                    "DELETE FROM task_groups WHERE id = ?", (group_id,)
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    def update_session_group(self, session_id: str, group_id: str) -> bool:
+        """更新任务所属分组。
+
+        Args:
+            session_id: 目标任务 id
+            group_id: 目标分组 id，空串表示移出分组（回未分组）；
+                非空时必须是已存在的分组，否则返回 False 且不改数据
+
+        Returns:
+            True 更新成功
+        """
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                if group_id:
+                    exists = conn.execute(
+                        "SELECT 1 FROM task_groups WHERE id = ?", (group_id,)
+                    ).fetchone()
+                    if exists is None:
+                        return False
+                cur = conn.execute(
+                    "UPDATE sessions SET group_id = ? WHERE id = ?",
+                    (group_id, session_id),
                 )
                 conn.commit()
                 return cur.rowcount > 0

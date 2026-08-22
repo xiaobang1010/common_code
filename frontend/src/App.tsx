@@ -30,6 +30,7 @@ const LAYOUT_KEYS = {
   toolTabsOpen: 'layout.toolTabsOpen',
   activeToolId: 'layout.activeToolId',
   toolTabsMigrated: 'layout.toolTabsMigrated',
+  sidebarView: 'layout.sidebarView',
 } as const
 
 // 默认工具标签集：转为「产物区」定位后，面板展开默认呈现 概要/终端/文件，激活概要
@@ -65,6 +66,10 @@ function loadInitialToolTabs(): ToolId[] {
 
 function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  // 侧栏视图（分组/项目）：持久化恢复，默认「项目」（保持现状心智）
+  const [sidebarView, setSidebarView] = useState<'projects' | 'groups'>(() =>
+    localStorage.getItem(LAYOUT_KEYS.sidebarView) === 'groups' ? 'groups' : 'projects',
+  )
   // 右侧面板（产物区）：默认收起；展开后默认呈现概要产物视图，打开文件不再是唯一展开时机
   const [editorCollapsed, setEditorCollapsed] = useState(true)
 
@@ -342,15 +347,24 @@ function App() {
     }
   }, [chatSessionId, sessions]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 新建会话：创建后设为当前，清空消息（任务后台继续，无需确认）
-  const handleCreateSession = useCallback(async () => {
+  // 新建会话：创建后设为当前，清空消息（任务后台继续，无需确认）。
+  // 可选 groupId：分组视图 ⊕ 在指定分组下建任务；防御性类型守卫，
+  // 避免被 onClick 直接引用时把事件对象误当分组 id
+  const handleCreateSession = useCallback(async (groupId?: string) => {
     disconnectStream()
-    const id = await sessions.createSession()
+    const gid = typeof groupId === 'string' ? groupId : undefined
+    const id = await sessions.createSession(gid)
     if (id) {
       setSessionId(id)
       clearMessages()
     }
   }, [sessions, setSessionId, clearMessages])
+
+  // 切换侧栏视图：状态 + localStorage 持久化一并更新
+  const handleChangeSidebarView = useCallback((view: 'projects' | 'groups') => {
+    setSidebarView(view)
+    localStorage.setItem(LAYOUT_KEYS.sidebarView, view)
+  }, [])
 
   // 统一以 /api/state 为准加载当前会话消息：响应含 started_at 表示目标会话有运行中任务，
   // 据此标记「工作中」；snapshot 为 switchSession 等返回的 DB 快照，作为 /api/state 失败时的回退。
@@ -572,6 +586,14 @@ function App() {
                 groups={sessions.allGroups}
                 currentWorkspacePath={sessions.currentWorkspace?.path ?? null}
                 currentSessionId={sessions.currentSessionId}
+                view={sidebarView}
+                onViewChange={handleChangeSidebarView}
+                taskGroups={sessions.taskGroups}
+                onCreateTaskGroup={sessions.createTaskGroup}
+                onRenameTaskGroup={sessions.renameTaskGroup}
+                onDeleteTaskGroup={sessions.deleteTaskGroup}
+                onSetSessionGroup={sessions.setSessionGroup}
+                onCreateSessionInGroup={handleCreateSession}
                 onCreateSession={handleCreateSession}
                 onSwitchSession={handleSwitchSession}
                 onSwitchInWorkspace={handleSwitchInWorkspace}
@@ -595,6 +617,14 @@ function App() {
             groups={sessions.allGroups}
             currentWorkspacePath={sessions.currentWorkspace?.path ?? null}
             currentSessionId={sessions.currentSessionId}
+            view={sidebarView}
+            onViewChange={handleChangeSidebarView}
+            taskGroups={sessions.taskGroups}
+            onCreateTaskGroup={sessions.createTaskGroup}
+            onRenameTaskGroup={sessions.renameTaskGroup}
+            onDeleteTaskGroup={sessions.deleteTaskGroup}
+            onSetSessionGroup={sessions.setSessionGroup}
+            onCreateSessionInGroup={handleCreateSession}
             onCreateSession={handleCreateSession}
             onSwitchSession={handleSwitchSession}
             onSwitchInWorkspace={handleSwitchInWorkspace}
