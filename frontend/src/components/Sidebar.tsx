@@ -175,7 +175,7 @@ function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, cu
             fontWeight: 700,
             fontSize: '12px',
             fontFamily: 'var(--font-display)',
-            boxShadow: '0 1px 2px rgba(0, 0, 0, 0.3)',
+            boxShadow: 'var(--shadow-sm)',
             letterSpacing: '-0.5px',
             flexShrink: 0,
           }}

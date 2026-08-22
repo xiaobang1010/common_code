@@ -102,7 +102,7 @@ function ChatStream({ hasWorkspace, onOpenWorkspace }: Props) {
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                boxShadow: '0 8px 24px rgba(0, 0, 0, 0.35)',
+                boxShadow: 'var(--shadow-lg)',
                 marginBottom: '4px',
               }}
             >
@@ -155,7 +155,7 @@ function ChatStream({ hasWorkspace, onOpenWorkspace }: Props) {
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                boxShadow: '0 8px 24px rgba(0, 0, 0, 0.35)',
+                boxShadow: 'var(--shadow-lg)',
                 marginBottom: '4px',
               }}
             >
@@ -283,7 +283,7 @@ function ChatStream({ hasWorkspace, onOpenWorkspace }: Props) {
               }}
               onMouseEnter={(e) => {
                 e.currentTarget.style.background = 'var(--error)'
-                e.currentTarget.style.color = '#fff'
+                e.currentTarget.style.color = 'var(--button-primary-text)'
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.background = 'var(--bg-elevated)'

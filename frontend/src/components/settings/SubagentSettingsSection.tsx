@@ -182,10 +182,10 @@ function AgentForm({
           style={{
             padding: '5px 14px',
             fontSize: '12px',
-            background: 'var(--accent, #4da3ff)',
+            background: 'var(--accent)',
             border: 'none',
             borderRadius: 'var(--radius-sm)',
-            color: '#fff',
+            color: 'var(--button-primary-text)',
             cursor: saving ? 'default' : 'pointer',
           }}
         >
@@ -275,13 +275,13 @@ function SubagentSettingsSection() {
           style={{
             marginBottom: '12px',
             padding: '10px 12px',
-            border: '1px solid var(--warning, #d29922)',
+            border: '1px solid var(--warning)',
             borderRadius: 'var(--radius-md)',
             fontSize: '12px',
             color: 'var(--text-secondary)',
           }}
         >
-          <div style={{ marginBottom: '6px', color: 'var(--warning, #d29922)' }}>部分自定义代理加载失败：</div>
+          <div style={{ marginBottom: '6px', color: 'var(--warning)' }}>部分自定义代理加载失败：</div>
           {diagnostics.map((d, i) => (
             <div key={i} style={{ fontFamily: 'var(--font-mono)', fontSize: '11px' }}>
               {d.file}：{d.message}
@@ -333,7 +333,7 @@ function SubagentSettingsSection() {
                   style={{
                     fontSize: '10px',
                     padding: '1px 6px',
-                    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                    backgroundColor: 'var(--code-bg)',
                     color: 'var(--text-secondary)',
                     borderRadius: 'var(--radius-sm)',
                   }}

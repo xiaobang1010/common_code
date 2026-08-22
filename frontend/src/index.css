@@ -1,61 +1,73 @@
 /* ============================================================
  * Common Code 设计系统
- * 美学方向：中性深色工作站，灰阶层级表达
- * 灵感来源：ZCode、Linear、Raycast 的深色精致感
+ * 美学方向：现代深色 VSCode 风（Dark Modern），全应用统一深色
+ * 会话侧栏以 .sidebar-lifted 作用域类独立提亮一档，其余区域保持全局深色
  *
- * 配色原则：灰是常态、色是例外
- * 1. 层级靠背景明度层、文字灰阶、细灰边框表达，不靠色相；
- *    选中 = 背景层抬升 + 白字，hover = 轻微提亮
- * 2. 彩色只允许出现在语义状态，且必须同时有文字/图标等非颜色提示：
+ * 配色原则：
+ * 1. 层级靠背景明度层、文字灰阶、细边框表达，不靠色相；
+ *    hover = 轻微提亮，选中/焦点 = 强调蓝（#0078d4）
+ * 2. 强调蓝只出现在关键交互位：主按钮、选中态、焦点环、
+ *    激活标签指示，不做装饰性使用
+ * 3. 彩色只允许出现在语义状态，且必须同时有文字/图标等非颜色提示：
  *    --error 错误/危险、--warning 警告/权限风险、
  *    --success 成功、--info 信息/运行中
- * 3. 禁止用彩色做装饰：hover、选中、焦点、logo、行内代码、
- *    链接、默认按钮、装饰阴影、文本选区、氛围渐变
  * ============================================================ */
 
 :root {
-  /* 背景层级 - 中性深色，几乎不带色相 */
-  --bg-base: #0f1115;           /* 最底层 - 几乎黑，带蓝灰调 */
-  --bg-primary: #14171c;        /* 主背景 - 编辑器区 */
-  --bg-secondary: #181b22;      /* 次背景 - 侧边栏、AI 面板 */
-  --bg-tertiary: #1f232c;       /* 三级背景 - 输入框、悬停态 */
-  --bg-elevated: #252a35;       /* 浮起表面 - 弹窗、下拉 */
+  /* 背景层级 - 现代深色（暗部压深校准，贴近更深的工作站底色） */
+  --bg-base: #141414;           /* 最底层 - 窗口底、标题栏、终端 */
+  --bg-primary: #1a1a1a;        /* 主背景 - 对话区、编辑器面 */
+  --bg-secondary: #1a1a1a;      /* 次背景 - 弹窗面板等（与主面同值，靠边框分区） */
+  --bg-tertiary: #242425;       /* 三级背景 - 输入框、悬停态 */
+  --bg-elevated: #282829;       /* 浮起表面 - 下拉、菜单 */
 
-  /* 边框 - 微妙但有层次 */
-  --border: #262a33;
-  --border-strong: #353b47;
-  --border-subtle: #1d2128;
+  /* 边框 - 细而有层次 */
+  --border: #262626;
+  --border-strong: #363636;
+  --border-subtle: #1f1f1f;
 
-  /* 文字 - 中性灰，不刺眼 */
-  --text-primary: #e6e9ef;      /* 主文字 - 高对比 */
-  --text-secondary: #8b919e;    /* 次文字 - 标签、说明 */
-  --text-tertiary: #5a6172;     /* 三级文字 - 占位、禁用 */
+  /* 文字 - VSCode 灰阶 */
+  --text-primary: #cccccc;      /* 主文字 */
+  --text-secondary: #9d9d9d;    /* 次文字 - 标签、说明 */
+  --text-tertiary: #6f6f6f;     /* 三级文字 - 占位、禁用 */
 
-  /* 交互状态 - 中性白色透明层，无彩色 */
-  --hover-bg: rgba(255, 255, 255, 0.05);     /* hover 轻微提亮 */
-  --selected-bg: rgba(255, 255, 255, 0.10);  /* 选中背景抬升 */
-  --focus-ring: rgba(255, 255, 255, 0.12);   /* 键盘焦点 ring，微弱光晕 */
+  /* 选中文本 - 强调蓝浸染，明暗两区均可用（xterm 选区共用） */
+  --selection-bg: rgba(0, 120, 212, 0.45);
+
+  /* 交互状态 */
+  --hover-bg: rgba(255, 255, 255, 0.05);      /* hover 轻微提亮 */
+  --selected-bg: rgba(0, 120, 212, 0.26);     /* 选中 - 强调蓝浸染 */
+  --focus-ring: rgba(0, 120, 212, 0.65);      /* 键盘焦点环 - 强调蓝 */
 
   /* 内容元素 - 行内代码灰底 chip */
-  --code-bg: rgba(255, 255, 255, 0.07);
-  --code-border: rgba(255, 255, 255, 0.08);
-  --code-text: #c9cdd6;
+  --code-bg: rgba(255, 255, 255, 0.08);
+  --code-border: rgba(255, 255, 255, 0.10);
+  --code-text: #d4d4d4;
 
   /* 对话区限宽可读列：消息列与底部输入区共用的宽度基准与横向留白 */
   --content-max-width: 880px;
   --content-pad-x: 24px;
 
-  /* 主按钮 - 中性高对比，唯一主操作 */
-  --button-primary-bg: rgba(255, 255, 255, 0.14);
-  --button-primary-bg-hover: rgba(255, 255, 255, 0.20);
+  /* 主按钮 - 强调蓝，唯一主操作 */
+  --button-primary-bg: #0078d4;
+  --button-primary-bg-hover: #1187ce;
   --button-primary-text: #ffffff;
+
+  /* 强调色 - VSCode 蓝，仅关键交互位使用 */
+  --accent: #0078d4;
+  --accent-hover: #1187ce;
+  --accent-soft: rgba(0, 120, 212, 0.16);
 
   /* 语义色 - 柔和但清晰，仅用于语义场景 */
   --success: #4ec9b0;
+  --success-soft: rgba(78, 201, 176, 0.08);  /* 成功语义的弱背景，仅配合 --success 使用 */
   --warning: #ffb347;
   --warning-soft: rgba(255, 179, 71, 0.12);  /* 警示语义的弱背景，仅配合 --warning 使用 */
   --error: #ff6b6b;
+  --error-soft: rgba(255, 107, 107, 0.10);  /* 危险语义的弱背景，仅配合 --error 使用 */
   --info: #6cb6ff;
+  --info-glow: 0 0 10px rgba(108, 182, 255, 0.4);   /* 运行中状态点光晕 */
+  --success-glow: 0 0 6px rgba(78, 201, 176, 0.4);  /* 就绪状态点光晕 */
 
   /* 代码语法色 */
   --syntax-keyword: #c678dd;
@@ -68,6 +80,12 @@
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.5);
+
+  /* 遮罩与氛围 - 弹窗背景遮罩、面板顶缘微光、底部渐隐 */
+  --scrim: rgba(0, 0, 0, 0.5);
+  --edge-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+  --edge-highlight-active: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --fade-bottom: linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.15));
 
   /* 字体 - 专业且有特色 */
   --font-ui: 'Geist', 'IBM Plex Sans', -apple-system, "Microsoft YaHei", sans-serif;
@@ -82,6 +100,22 @@
   /* 过渡 */
   --transition-fast: 120ms cubic-bezier(0.4, 0, 0.2, 1);
   --transition: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ============================================================
+ * 会话侧栏专属提亮：挂在包裹 Sidebar 的容器上，
+ * 只在侧栏子树内把背景阶梯整体提亮一档（其余区域保持全局现代深色）。
+ * 覆盖清单以侧栏子树实际使用的背景/边框变量为准。
+ * ============================================================ */
+.sidebar-lifted {
+  --bg-base: #262626;           /* 侧栏内部深层、折叠窄条 */
+  --bg-primary: #2a2a2a;
+  --bg-secondary: #2a2a2a;      /* 侧栏主底 */
+  --bg-tertiary: #333333;       /* hover、输入 */
+  --bg-elevated: #3a3a3a;       /* 菜单、弹层 */
+  --border: #383838;
+  --border-strong: #464646;
+  --border-subtle: #2e2e2e;
 }
 
 * {
@@ -109,10 +143,8 @@ body {
 #root {
   height: 100vh;
   width: 100vw;
-  /* 微妙的径向渐变背景，中性无偏色 */
-  background:
-    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(255, 255, 255, 0.02), transparent),
-    var(--bg-base);
+  /* VSCode 式纯平底色，无氛围渐变 */
+  background: var(--bg-base);
 }
 
 /* 滚动条 - 精致细窄 */
@@ -131,9 +163,9 @@ body {
   background: var(--text-tertiary);
 }
 
-/* 选中文本 - 中性灰 */
+/* 选中文本 - 强调蓝浸染，明暗两区均可用 */
 ::selection {
-  background: rgba(255, 255, 255, 0.22);
+  background: var(--selection-bg);
 }
 
 /* 内容区链接 - 中性浅色 + 下划线，hover 提亮；长 URL 允许在任意字符处换行，不撑破限宽列 */

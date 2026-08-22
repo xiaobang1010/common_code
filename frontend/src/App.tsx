@@ -579,7 +579,7 @@ function App() {
         {/* 会话栏：折叠时不占位，展开时固定宽度 + 可拖拽 */}
         {!sidebarCollapsed && (
           <>
-            <div style={{ width: sidebarWidth, flexShrink: 0 }}>
+            <div className="sidebar-lifted" style={{ width: sidebarWidth, flexShrink: 0 }}>
               <Sidebar
                 collapsed={false}
                 onToggleCollapse={toggleSidebar}
@@ -611,6 +611,7 @@ function App() {
           </>
         )}
         {sidebarCollapsed && (
+          <div className="sidebar-lifted" style={{ flexShrink: 0 }}>
           <Sidebar
             collapsed={true}
             onToggleCollapse={toggleSidebar}
@@ -637,6 +638,7 @@ function App() {
             onToggleSessionPin={sessions.toggleSessionPin}
             onUpdateWorkspace={sessions.updateWorkspaceMeta}
           />
+          </div>
         )}
 
         {/* AI 面板：占据剩余空间（主角），最小宽度受保护不被挤没 */}

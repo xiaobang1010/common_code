@@ -91,7 +91,7 @@ function Resizer({ onResize, direction, invert = false }: ResizerProps) {
               ? 'translateX(-50%)'
               : 'translateY(-50%)',
             opacity: isDragging ? 1 : 0.6,
-            boxShadow: isDragging ? '0 0 8px rgba(255, 255, 255, 0.2)' : 'none',
+            boxShadow: isDragging ? '0 0 8px var(--focus-ring)' : 'none',
           }}
         />
       )}

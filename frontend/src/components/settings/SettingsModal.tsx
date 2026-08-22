@@ -108,7 +108,7 @@ function SettingsModal({ open, onClose, onResetLayout }: SettingsModalProps) {
         inset: 0,
         zIndex: 1000,
         display: 'flex',
-        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+        backgroundColor: 'var(--scrim)',
         animation: 'fade-in-up 200ms ease',
       }}
       onClick={onClose}

@@ -358,7 +358,7 @@ function SkillModal({ type, onClose, onDone }: SkillModalProps) {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+        backgroundColor: 'var(--scrim)',
       }}
       onClick={onClose}
     >
