@@ -69,7 +69,7 @@ function TabContextMenu({
         backgroundColor: 'var(--bg-elevated)',
         border: '1px solid var(--border)',
         borderRadius: 'var(--radius-md)',
-        boxShadow: '0 4px 16px rgba(0,0,0,0.25)',
+        boxShadow: 'var(--shadow-md)',
         padding: '4px',
         display: 'flex',
         flexDirection: 'column',

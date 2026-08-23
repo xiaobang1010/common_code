@@ -577,7 +577,7 @@ function WorkBlockView({ blockId }: Props) {
           fontSize: '14px',
           lineHeight: 1.6,
           wordBreak: 'break-word',
-          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.2)',
+          boxShadow: 'var(--shadow-md)',
           fontWeight: 500,
           whiteSpace: 'pre-wrap',
         }}

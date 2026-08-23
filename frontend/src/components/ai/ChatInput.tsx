@@ -330,7 +330,7 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
                 transition: 'all var(--transition-fast)',
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = 'rgba(255, 107, 107, 0.1)'
+                e.currentTarget.style.backgroundColor = 'var(--error-soft)'
                 e.currentTarget.style.borderColor = 'var(--error)'
                 e.currentTarget.style.color = 'var(--error)'
               }}
@@ -373,7 +373,7 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
               onClick={() => onResolve('allow')}
               style={{
                 padding: '6px 16px',
-                border: '1px solid rgba(255, 255, 255, 0.25)',
+                border: 'none',
                 borderRadius: 'var(--radius-md)',
                 cursor: 'pointer',
                 fontSize: '12px',
@@ -381,16 +381,16 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
                 fontWeight: 600,
                 background: 'var(--button-primary-bg-hover)',
                 color: 'var(--button-primary-text)',
-                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.35)',
+                boxShadow: 'var(--shadow-sm)',
                 transition: 'all var(--transition-fast)',
               }}
               onMouseEnter={(e) => {
                 e.currentTarget.style.transform = 'translateY(-1px)'
-                e.currentTarget.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.4)'
+                e.currentTarget.style.boxShadow = 'var(--shadow-md)'
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.transform = 'translateY(0)'
-                e.currentTarget.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.35)'
+                e.currentTarget.style.boxShadow = 'var(--shadow-sm)'
               }}
             >
               允许
@@ -779,7 +779,7 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
                 padding: '4px 10px',
                 border: '1px solid var(--error)',
                 borderRadius: 'var(--radius-sm)',
-                background: 'rgba(255, 107, 107, 0.1)',
+                background: 'var(--error-soft)',
                 color: 'var(--error)',
                 fontSize: '11px',
                 fontFamily: 'var(--font-ui)',
@@ -792,10 +792,10 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
               }}
               onMouseEnter={(e) => {
                 e.currentTarget.style.background = 'var(--error)'
-                e.currentTarget.style.color = '#fff'
+                e.currentTarget.style.color = 'var(--button-primary-text)'
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.background = 'rgba(255, 107, 107, 0.1)'
+                e.currentTarget.style.background = 'var(--error-soft)'
                 e.currentTarget.style.color = 'var(--error)'
               }}
             >

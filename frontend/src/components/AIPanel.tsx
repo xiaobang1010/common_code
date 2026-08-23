@@ -28,7 +28,7 @@ function AIPanel({ hasWorkspace, onOpenWorkspace, currentTaskSessionId }: AIPane
   return (
     <div
       style={{
-        backgroundColor: 'var(--bg-secondary)',
+        backgroundColor: 'var(--bg-primary)',
         display: 'flex',
         flexDirection: 'column',
         height: '100%',
@@ -36,8 +36,8 @@ function AIPanel({ hasWorkspace, onOpenWorkspace, currentTaskSessionId }: AIPane
         position: 'relative',
         // 微妙的顶部光晕，让 AI 面板有"主角感"
         boxShadow: isStreaming
-          ? 'inset 0 1px 0 rgba(255, 255, 255, 0.06)'
-          : 'inset 0 1px 0 rgba(255, 255, 255, 0.02)',
+          ? 'var(--edge-highlight-active)'
+          : 'var(--edge-highlight)',
         transition: 'box-shadow 400ms ease',
       }}
     >
@@ -50,7 +50,7 @@ function AIPanel({ hasWorkspace, onOpenWorkspace, currentTaskSessionId }: AIPane
           padding: '12px 0 14px',
           borderTop: '1px solid var(--border)',
           flexShrink: 0,
-          background: 'linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.15))',
+          background: 'var(--fade-bottom)',
         }}
       >
         {/* 限宽列：与 ChatStream 消息列共用 --content-max-width 与 --content-pad-x，

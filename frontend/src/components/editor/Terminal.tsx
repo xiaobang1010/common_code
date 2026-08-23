@@ -39,15 +39,19 @@ function Terminal({ instanceId, onReady }: TerminalProps) {
     const api = getTerminalAPI()
     const container = containerRef.current
 
-    // 创建终端实例，深色主题适配整体风格
+    // 创建终端实例：主题色从设计令牌读取，保持与整体配色单一来源
+    // （xterm 是 canvas 渲染不吃 CSS 变量，只能在初始化时取计算值）
+    const rootStyle = getComputedStyle(document.documentElement)
+    const token = (name: string, fallback: string) =>
+      rootStyle.getPropertyValue(name).trim() || fallback
     const term = new XTerm({
       fontSize: 13,
       fontFamily: 'JetBrains Mono, Consolas, "Courier New", monospace',
       theme: {
-        background: '#0f1115',
-        foreground: '#e6e9ef',
-        cursor: '#e6e9ef',
-        selectionBackground: 'rgba(255, 255, 255, 0.22)',
+        background: token('--bg-base', '#181818'),
+        foreground: token('--text-primary', '#cccccc'),
+        cursor: token('--text-primary', '#cccccc'),
+        selectionBackground: token('--selection-bg', 'rgba(0, 120, 212, 0.45)'),
       },
       cursorBlink: true,
     })
@@ -123,7 +127,7 @@ function Terminal({ instanceId, onReady }: TerminalProps) {
       style={{
         width: '100%',
         height: '100%',
-        backgroundColor: '#0f1115',
+        backgroundColor: 'var(--bg-base)',
         padding: '4px 8px',
         overflow: 'hidden',
       }}

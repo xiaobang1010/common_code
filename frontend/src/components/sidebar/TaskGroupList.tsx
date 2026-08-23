@@ -355,7 +355,7 @@ function CustomGroupSection({
                 }}
                 style={menuItemStyle}
                 onMouseEnter={(e) => {
-                  e.currentTarget.style.backgroundColor = 'rgba(255, 107, 107, 0.1)'
+                  e.currentTarget.style.backgroundColor = 'var(--error-soft)'
                   e.currentTarget.style.color = 'var(--error)'
                 }}
                 onMouseLeave={(e) => {

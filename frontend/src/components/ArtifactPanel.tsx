@@ -122,7 +122,7 @@ function TerminalToolContent() {
           height: '32px',
           display: 'flex',
           alignItems: 'stretch',
-          backgroundColor: 'var(--bg-primary)',
+          backgroundColor: 'var(--bg-base)',
           borderBottom: '1px solid var(--border-subtle)',
           flexShrink: 0,
         }}
@@ -142,9 +142,9 @@ function TerminalToolContent() {
                 fontSize: '11px',
                 fontFamily: 'var(--font-mono)',
                 color: active ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                backgroundColor: active ? 'var(--bg-base)' : 'transparent',
+                backgroundColor: active ? 'var(--bg-primary)' : 'transparent',
                 borderRight: '1px solid var(--border-subtle)',
-                borderBottom: active ? '2px solid var(--border-strong)' : '2px solid transparent',
+                borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
                 whiteSpace: 'nowrap',
                 transition: 'all var(--transition-fast)',
                 letterSpacing: '0.5px',
@@ -1365,7 +1365,7 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
             style={{
               position: 'fixed',
               inset: 0,
-              backgroundColor: 'rgba(0,0,0,0.5)',
+              backgroundColor: 'var(--scrim)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -1429,7 +1429,7 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
             style={{
               position: 'fixed',
               inset: 0,
-              backgroundColor: 'rgba(0,0,0,0.5)',
+              backgroundColor: 'var(--scrim)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -1485,7 +1485,7 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
             style={{
               position: 'fixed',
               inset: 0,
-              backgroundColor: 'rgba(0,0,0,0.5)',
+              backgroundColor: 'var(--scrim)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',

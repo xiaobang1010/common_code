@@ -452,7 +452,7 @@ function ProviderCard({
                   gap: '8px',
                   padding: '4px 8px',
                   backgroundColor: isThisActive
-                    ? 'rgba(78, 201, 176, 0.06)'
+                    ? 'var(--success-soft)'
                     : 'var(--bg-tertiary)',
                   borderRadius: 'var(--radius-sm)',
                 }}
@@ -526,8 +526,8 @@ function ProviderCard({
             borderRadius: 'var(--radius-sm)',
             color: testResult.ok ? 'var(--success)' : 'var(--error)',
             backgroundColor: testResult.ok
-              ? 'rgba(78, 201, 176, 0.08)'
-              : 'rgba(255, 107, 107, 0.08)',
+              ? 'var(--success-soft)'
+              : 'var(--error-soft)',
           }}
         >
           {testResult.ok ? '✓ ' : '✗ '}
@@ -639,7 +639,7 @@ function ProviderEditModal({
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+        backgroundColor: 'var(--scrim)',
       }}
       onClick={onCancel}
     >
@@ -923,7 +923,7 @@ function btnStyle(
       ...base,
       backgroundColor: 'transparent',
       color: 'var(--error)',
-      borderColor: 'rgba(255, 107, 107, 0.3)',
+      borderColor: 'var(--error)',
     }
   }
   return {

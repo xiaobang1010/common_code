@@ -271,7 +271,7 @@ export function SessionItem({
               onClick={() => { setMenuOpen(false); onDelete(session.id) }}
               style={menuItemStyle}
               onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = 'rgba(255, 107, 107, 0.1)'
+                e.currentTarget.style.backgroundColor = 'var(--error-soft)'
                 e.currentTarget.style.color = 'var(--error)'
               }}
               onMouseLeave={(e) => {
@@ -555,7 +555,7 @@ function WorkspaceGroup({
                   onClick={() => { setMenuOpen(false); onRemoveWorkspace(ws.path) }}
                   style={menuItemStyle}
                   onMouseEnter={(e) => {
-                    e.currentTarget.style.backgroundColor = 'rgba(255, 107, 107, 0.1)'
+                    e.currentTarget.style.backgroundColor = 'var(--error-soft)'
                     e.currentTarget.style.color = 'var(--error)'
                   }}
                   onMouseLeave={(e) => {

@@ -132,7 +132,7 @@ export function Toggle({ checked, onChange, disabled, loading }: ToggleProps) {
         height: '18px',
         borderRadius: '10px',
         border: 'none',
-        backgroundColor: checked ? 'var(--text-primary)' : 'var(--bg-tertiary)',
+        backgroundColor: checked ? 'var(--accent)' : 'var(--bg-tertiary)',
         position: 'relative',
         cursor: isDisabled ? 'not-allowed' : 'pointer',
         opacity: isDisabled ? 0.5 : 1,
@@ -148,7 +148,7 @@ export function Toggle({ checked, onChange, disabled, loading }: ToggleProps) {
           width: '14px',
           height: '14px',
           borderRadius: '50%',
-          backgroundColor: '#fff',
+          backgroundColor: 'var(--button-primary-text)',
           transition: 'left var(--transition-fast)',
           boxShadow: 'var(--shadow-sm)',
         }}
@@ -261,8 +261,8 @@ export function StatusMessage({ type, message }: StatusMessageProps) {
         padding: '6px 10px',
         backgroundColor:
           type === 'success'
-            ? 'rgba(78, 201, 176, 0.08)'
-            : 'rgba(255, 107, 107, 0.08)',
+            ? 'var(--success-soft)'
+            : 'var(--error-soft)',
         borderRadius: 'var(--radius-sm)',
         marginTop: '8px',
       }}

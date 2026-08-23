@@ -86,7 +86,7 @@ function TitleBar({
         paddingLeft: IS_MAC ? `${TRAFFIC_LIGHTS_RESERVED}px` : '12px',
         paddingRight: IS_WINDOWS ? `${OVERLAY_RESERVED}px` : '12px',
         borderBottom: '1px solid var(--border)',
-        background: 'linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent)',
+        backgroundColor: 'var(--bg-base)',
         flexShrink: 0,
         // 整行可拖拽窗口
         ...appRegion('drag'),
@@ -102,8 +102,8 @@ function TitleBar({
           borderRadius: '50%',
           backgroundColor: isStreaming ? 'var(--info)' : 'var(--success)',
           boxShadow: isStreaming
-            ? '0 0 10px rgba(108, 182, 255, 0.4)'
-            : '0 0 6px rgba(78, 201, 176, 0.4)',
+            ? 'var(--info-glow)'
+            : 'var(--success-glow)',
           animation: isStreaming ? 'breathe 1.4s ease-in-out infinite' : 'none',
           flexShrink: 0,
         }}

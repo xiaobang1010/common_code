@@ -37,10 +37,10 @@ const STATUS_LABEL: Record<string, string> = {
 
 const STATUS_COLOR: Record<string, string> = {
   pending: 'var(--text-tertiary)',
-  running: 'var(--accent, #4da3ff)',
-  completed: 'var(--success, #3fb950)',
+  running: 'var(--accent)',
+  completed: 'var(--success)',
   failed: 'var(--error)',
-  aborted: 'var(--warning, #d29922)',
+  aborted: 'var(--warning)',
   stopped: 'var(--text-tertiary)',
 }
 
