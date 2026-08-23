@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { SessionGroup, SessionInfo } from '../../api/client'
 
 interface SessionListProps {
@@ -7,7 +7,7 @@ interface SessionListProps {
   currentSessionId: string | null
   // 当前运行任务所属会话（列表显示运行指示）
   runningSessionId: string | null
-  onCreate: () => void
+  onCreate: (workspacePath: string) => void
   onSwitch: (sessionId: string) => void
   onSwitchInWorkspace: (sessionId: string, workspacePath: string) => void
   onDelete: (sessionId: string) => void
@@ -311,7 +311,7 @@ function WorkspaceGroup({
   isCurrent: boolean
   currentSessionId: string | null
   runningSessionId: string | null
-  onCreate: () => void
+  onCreate: (workspacePath: string) => void
   onSwitch: (sessionId: string) => void
   onSwitchInWorkspace: (sessionId: string, workspacePath: string) => void
   onDelete: (sessionId: string) => void
@@ -322,6 +322,10 @@ function WorkspaceGroup({
 }) {
   // 当前工作区默认展开，其他默认折叠
   const [expanded, setExpanded] = useState(isCurrent)
+  // 成为当前工作区时自动展开：跨工作区「+」新建会切到目标工作区，展开才能看到新任务
+  useEffect(() => {
+    if (isCurrent) setExpanded(true)
+  }, [isCurrent])
   const [headerHovered, setHeaderHovered] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [aliasEditing, setAliasEditing] = useState(false)
@@ -416,8 +420,8 @@ function WorkspaceGroup({
         >
           {displayName(ws)}
         </span>
-        {/* 最后活跃相对时间（当前工作区悬停时隐藏，为「⋯」「+」按钮腾位） */}
-        {!(headerHovered && isCurrent) && (
+        {/* 最后活跃相对时间（悬停时隐藏，为「⋯」「+」按钮腾位） */}
+        {!headerHovered && (
           <span
             style={{
               fontSize: '10px',
@@ -430,8 +434,8 @@ function WorkspaceGroup({
             {relativeTime(ws.last_used_at)}
           </span>
         )}
-        {/* 任务数量（同上，悬停当前工作区时隐藏） */}
-        {!(headerHovered && isCurrent) && (
+        {/* 任务数量（同上，悬停时隐藏） */}
+        {!headerHovered && (
           <span
             style={{
               fontSize: '10px',
@@ -480,12 +484,12 @@ function WorkspaceGroup({
             </svg>
           </button>
         )}
-        {/* 新建任务：悬停当前工作区行时浮现的气泡按钮，替代原展开区整行按钮 */}
-        {headerHovered && isCurrent && (
+        {/* 新建任务：悬停任意工作区行时浮现的气泡按钮；非当前工作区点击 = 先切过去再建 */}
+        {headerHovered && (
           <button
             onClick={(e) => {
               e.stopPropagation()
-              onCreate()
+              onCreate(ws.path)
             }}
             style={{
               flexShrink: 0,
@@ -527,7 +531,7 @@ function WorkspaceGroup({
         )}
         {/* 「新建任务」提示气泡：仅悬停「+」按钮时出现，fixed 定位恒在按钮上方；
             不响应鼠标，防悬停闪烁 */}
-        {plusHovered && headerHovered && isCurrent && plusAnchor && (
+        {plusHovered && headerHovered && plusAnchor && (
           <div
             style={{
               position: 'fixed',
