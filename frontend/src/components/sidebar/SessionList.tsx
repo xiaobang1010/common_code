@@ -326,6 +326,10 @@ function WorkspaceGroup({
   const [menuOpen, setMenuOpen] = useState(false)
   const [aliasEditing, setAliasEditing] = useState(false)
   const [aliasDraft, setAliasDraft] = useState(group.workspace.alias || '')
+  // 「+」按钮悬停态：控制「新建任务」提示气泡显隐
+  const [plusHovered, setPlusHovered] = useState(false)
+  // 提示气泡弹出方向：上方净空不足时改为向下弹（防滚动容器裁剪）
+  const [tooltipBelow, setTooltipBelow] = useState(false)
 
   const ws = group.workspace
   const commitAlias = () => {
@@ -339,13 +343,29 @@ function WorkspaceGroup({
     setMenuOpen(false)
   }
 
+  // 「+」按钮悬停时测量提示气泡方向：向上找最近的可滚动祖先，
+  // 上方净空不足 32px（气泡高 + 间距）则向下弹，避免被 overflow 裁剪
+  const measureTooltipDirection = (btn: HTMLElement) => {
+    const btnTop = btn.getBoundingClientRect().top
+    let el: HTMLElement | null = btn.parentElement
+    while (el) {
+      const oy = getComputedStyle(el).overflowY
+      if (oy === 'auto' || oy === 'scroll') {
+        setTooltipBelow(btnTop - el.getBoundingClientRect().top < 32)
+        return
+      }
+      el = el.parentElement
+    }
+    setTooltipBelow(false)
+  }
+
   return (
     <div style={{ marginBottom: '2px' }}>
       {/* 分组标题行 */}
       <div
         onClick={() => setExpanded(prev => !prev)}
         onMouseEnter={() => setHeaderHovered(true)}
-        onMouseLeave={() => { setHeaderHovered(false); setMenuOpen(false) }}
+        onMouseLeave={() => { setHeaderHovered(false); setMenuOpen(false); setPlusHovered(false) }}
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -411,30 +431,34 @@ function WorkspaceGroup({
         >
           {displayName(ws)}
         </span>
-        {/* 最后活跃相对时间 */}
-        <span
-          style={{
-            fontSize: '10px',
-            color: 'var(--text-tertiary)',
-            fontFamily: 'var(--font-mono)',
-            flexShrink: 0,
-            marginLeft: '6px',
-          }}
-        >
-          {relativeTime(ws.last_used_at)}
-        </span>
-        {/* 任务数量 */}
-        <span
-          style={{
-            fontSize: '10px',
-            color: 'var(--text-tertiary)',
-            fontFamily: 'var(--font-ui)',
-            flexShrink: 0,
-            marginLeft: '6px',
-          }}
-        >
-          {group.sessions.length} 个任务
-        </span>
+        {/* 最后活跃相对时间（当前工作区悬停时隐藏，为「⋯」「+」按钮腾位） */}
+        {!(headerHovered && isCurrent) && (
+          <span
+            style={{
+              fontSize: '10px',
+              color: 'var(--text-tertiary)',
+              fontFamily: 'var(--font-mono)',
+              flexShrink: 0,
+              marginLeft: '6px',
+            }}
+          >
+            {relativeTime(ws.last_used_at)}
+          </span>
+        )}
+        {/* 任务数量（同上，悬停当前工作区时隐藏） */}
+        {!(headerHovered && isCurrent) && (
+          <span
+            style={{
+              fontSize: '10px',
+              color: 'var(--text-tertiary)',
+              fontFamily: 'var(--font-ui)',
+              flexShrink: 0,
+              marginLeft: '6px',
+            }}
+          >
+            {group.sessions.length} 个任务
+          </span>
+        )}
         {/* 省略号按钮 - hover 时显示 */}
         {headerHovered && (
           <button
@@ -470,6 +494,69 @@ function WorkspaceGroup({
               <circle cx="19" cy="12" r="1.5" />
             </svg>
           </button>
+        )}
+        {/* 新建任务：悬停当前工作区行时浮现的气泡按钮，替代原展开区整行按钮 */}
+        {headerHovered && isCurrent && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              onCreate()
+            }}
+            style={{
+              flexShrink: 0,
+              width: '18px',
+              height: '18px',
+              marginLeft: '4px',
+              padding: 0,
+              border: '1px solid var(--border-strong)',
+              borderRadius: 'var(--radius-sm)',
+              background: 'transparent',
+              color: 'var(--text-secondary)',
+              cursor: 'pointer',
+              transition: 'all var(--transition-fast)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)'
+              e.currentTarget.style.color = 'var(--text-primary)'
+              setPlusHovered(true)
+              measureTooltipDirection(e.currentTarget)
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = 'transparent'
+              e.currentTarget.style.color = 'var(--text-secondary)'
+              setPlusHovered(false)
+            }}
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </button>
+        )}
+        {/* 「新建任务」提示气泡：仅悬停「+」按钮时出现；不响应鼠标，防悬停闪烁 */}
+        {plusHovered && headerHovered && isCurrent && (
+          <div
+            style={{
+              position: 'absolute',
+              right: 0,
+              ...(tooltipBelow ? { top: 'calc(100% + 4px)' } : { bottom: 'calc(100% + 4px)' }),
+              padding: '3px 8px',
+              backgroundColor: 'var(--bg-elevated)',
+              border: '1px solid var(--border-strong)',
+              borderRadius: 'var(--radius-sm)',
+              boxShadow: 'var(--shadow-lg)',
+              color: 'var(--text-primary)',
+              fontSize: '11px',
+              fontFamily: 'var(--font-ui)',
+              whiteSpace: 'nowrap',
+              zIndex: 100,
+              pointerEvents: 'none',
+            }}
+          >
+            新建任务
+          </div>
         )}
         {/* 下拉菜单：置顶 / 别名重命名 / 复制路径 / 移除 */}
         {menuOpen && (
@@ -578,47 +665,6 @@ function WorkspaceGroup({
       {/* 展开内容 */}
       {expanded && (
         <div style={{ paddingLeft: '4px' }}>
-          {/* 当前工作区显示新建任务按钮 */}
-          {isCurrent && (
-            <div style={{ padding: '6px 6px 6px 10px' }}>
-              <button
-                onClick={onCreate}
-                style={{
-                  width: '100%',
-                  padding: '6px 10px',
-                  border: '1px solid var(--border)',
-                  borderRadius: 'var(--radius-md)',
-                  backgroundColor: 'transparent',
-                  color: 'var(--text-secondary)',
-                  fontSize: '12px',
-                  fontFamily: 'var(--font-ui)',
-                  fontWeight: 500,
-                  cursor: 'pointer',
-                  transition: 'all var(--transition-fast)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  justifyContent: 'center',
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.borderColor = 'var(--border-strong)'
-                  e.currentTarget.style.color = 'var(--text-primary)'
-                  e.currentTarget.style.backgroundColor = 'var(--hover-bg)'
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.borderColor = 'var(--border)'
-                  e.currentTarget.style.color = 'var(--text-secondary)'
-                  e.currentTarget.style.backgroundColor = 'transparent'
-                }}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 5v14M5 12h14" />
-                </svg>
-                新建任务
-              </button>
-            </div>
-          )}
-
           {/* 任务列表（置顶优先排序） */}
           {group.sessions.length === 0 ? (
             <div
