@@ -328,8 +328,9 @@ function WorkspaceGroup({
   const [aliasDraft, setAliasDraft] = useState(group.workspace.alias || '')
   // 「+」按钮悬停态：控制「新建任务」提示气泡显隐
   const [plusHovered, setPlusHovered] = useState(false)
-  // 提示气泡弹出方向：上方净空不足时改为向下弹（防滚动容器裁剪）
-  const [tooltipBelow, setTooltipBelow] = useState(false)
+  // 提示气泡锚点：悬停时记录的按钮视口坐标。气泡用 fixed 定位挂在锚点上，
+  // 恒显示于按钮上方，且不受列表滚动容器 overflow 裁剪
+  const [plusAnchor, setPlusAnchor] = useState<{ right: number; bottom: number } | null>(null)
 
   const ws = group.workspace
   const commitAlias = () => {
@@ -341,22 +342,6 @@ function WorkspaceGroup({
   const copyPath = () => {
     navigator.clipboard?.writeText(ws.path).catch(() => {})
     setMenuOpen(false)
-  }
-
-  // 「+」按钮悬停时测量提示气泡方向：向上找最近的可滚动祖先，
-  // 上方净空不足 32px（气泡高 + 间距）则向下弹，避免被 overflow 裁剪
-  const measureTooltipDirection = (btn: HTMLElement) => {
-    const btnTop = btn.getBoundingClientRect().top
-    let el: HTMLElement | null = btn.parentElement
-    while (el) {
-      const oy = getComputedStyle(el).overflowY
-      if (oy === 'auto' || oy === 'scroll') {
-        setTooltipBelow(btnTop - el.getBoundingClientRect().top < 32)
-        return
-      }
-      el = el.parentElement
-    }
-    setTooltipBelow(false)
   }
 
   return (
@@ -521,8 +506,13 @@ function WorkspaceGroup({
             onMouseEnter={(e) => {
               e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)'
               e.currentTarget.style.color = 'var(--text-primary)'
+              // 视口坐标锚定气泡：右缘对齐按钮，bottom 抬到按钮上方 4px
+              const r = e.currentTarget.getBoundingClientRect()
+              setPlusAnchor({
+                right: window.innerWidth - r.right,
+                bottom: window.innerHeight - r.top + 4,
+              })
               setPlusHovered(true)
-              measureTooltipDirection(e.currentTarget)
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.backgroundColor = 'transparent'
@@ -535,13 +525,14 @@ function WorkspaceGroup({
             </svg>
           </button>
         )}
-        {/* 「新建任务」提示气泡：仅悬停「+」按钮时出现；不响应鼠标，防悬停闪烁 */}
-        {plusHovered && headerHovered && isCurrent && (
+        {/* 「新建任务」提示气泡：仅悬停「+」按钮时出现，fixed 定位恒在按钮上方；
+            不响应鼠标，防悬停闪烁 */}
+        {plusHovered && headerHovered && isCurrent && plusAnchor && (
           <div
             style={{
-              position: 'absolute',
-              right: 0,
-              ...(tooltipBelow ? { top: 'calc(100% + 4px)' } : { bottom: 'calc(100% + 4px)' }),
+              position: 'fixed',
+              right: plusAnchor.right,
+              bottom: plusAnchor.bottom,
               padding: '3px 8px',
               backgroundColor: 'var(--bg-elevated)',
               border: '1px solid var(--border-strong)',
