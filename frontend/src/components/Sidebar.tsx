@@ -74,6 +74,8 @@ interface SidebarProps {
   onSetSessionGroup: (sessionId: string, groupId: string) => void
   onCreateSessionInGroup: (groupId: string) => void
   onCreateSession: () => void
+  // 项目行「+」新建：在指定工作区建任务（非当前工作区先切换）
+  onCreateSessionInWorkspace: (workspacePath: string) => void
   onSwitchSession: (sessionId: string) => void
   onSwitchInWorkspace: (sessionId: string, workspacePath: string) => void
   onDeleteSession: (sessionId: string) => void
@@ -86,7 +88,7 @@ interface SidebarProps {
   onUpdateWorkspace: (path: string, data: { alias?: string; pinned?: boolean }) => void
 }
 
-function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, currentSessionId, runningSessionId, view, onViewChange, taskGroups, onCreateTaskGroup, onRenameTaskGroup, onDeleteTaskGroup, onSetSessionGroup, onCreateSessionInGroup, onCreateSession, onSwitchSession, onSwitchInWorkspace, onDeleteSession, onRemoveWorkspace, onOpenWorkspace, onOpenSearch, onRenameSession, onToggleSessionPin, onUpdateWorkspace }: SidebarProps) {
+function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, currentSessionId, runningSessionId, view, onViewChange, taskGroups, onCreateTaskGroup, onRenameTaskGroup, onDeleteTaskGroup, onSetSessionGroup, onCreateSessionInGroup, onCreateSession, onCreateSessionInWorkspace, onSwitchSession, onSwitchInWorkspace, onDeleteSession, onRemoveWorkspace, onOpenWorkspace, onOpenSearch, onRenameSession, onToggleSessionPin, onUpdateWorkspace }: SidebarProps) {
   // 新建分组的内联输入态
   const [creatingGroup, setCreatingGroup] = useState(false)
   const [groupNameDraft, setGroupNameDraft] = useState('')
@@ -417,7 +419,7 @@ function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, cu
             currentWorkspacePath={currentWorkspacePath}
             currentSessionId={currentSessionId}
             runningSessionId={runningSessionId}
-            onCreate={onCreateSession}
+            onCreate={onCreateSessionInWorkspace}
             onSwitch={onSwitchSession}
             onSwitchInWorkspace={onSwitchInWorkspace}
             onDelete={onDeleteSession}

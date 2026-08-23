@@ -360,6 +360,30 @@ function App() {
     }
   }, [sessions, setSessionId, clearMessages])
 
+  // 项目行「+」跨工作区新建：非当前工作区先切过去再建。
+  // switchWorkspace 内部同步 currentWorkspacePathRef，随后 createSession 落在新工作区
+  const handleCreateSessionInWorkspace = useCallback(async (workspacePath: string) => {
+    if (workspacePath === sessions.currentWorkspace?.path) {
+      await handleCreateSession()
+      return
+    }
+    disconnectStream()
+    const switched = await sessions.switchWorkspace(workspacePath)
+    if (!switched) {
+      alert('切换工作区失败，未能新建任务')
+      return
+    }
+    setCurrentBranch(switched.branch)
+    // 刷新分支列表（工作区变了）
+    gitApi.branches(workspacePath)
+      .then(data => {
+        setBranches(data.branches)
+        setCurrentBranch(data.current)
+      })
+      .catch(() => {})
+    await handleCreateSession()
+  }, [sessions, handleCreateSession])
+
   // 切换侧栏视图：状态 + localStorage 持久化一并更新
   const handleChangeSidebarView = useCallback((view: 'projects' | 'groups') => {
     setSidebarView(view)
@@ -595,6 +619,7 @@ function App() {
                 onSetSessionGroup={sessions.setSessionGroup}
                 onCreateSessionInGroup={handleCreateSession}
                 onCreateSession={handleCreateSession}
+                onCreateSessionInWorkspace={handleCreateSessionInWorkspace}
                 onSwitchSession={handleSwitchSession}
                 onSwitchInWorkspace={handleSwitchInWorkspace}
                 onDeleteSession={handleDeleteSession}
@@ -627,6 +652,7 @@ function App() {
             onSetSessionGroup={sessions.setSessionGroup}
             onCreateSessionInGroup={handleCreateSession}
             onCreateSession={handleCreateSession}
+            onCreateSessionInWorkspace={handleCreateSessionInWorkspace}
             onSwitchSession={handleSwitchSession}
             onSwitchInWorkspace={handleSwitchInWorkspace}
             onDeleteSession={handleDeleteSession}
