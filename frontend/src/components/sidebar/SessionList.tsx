@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { SessionGroup, SessionInfo } from '../../api/client'
 
 interface SessionListProps {
@@ -97,6 +97,19 @@ export function SessionItem({
   const [menuOpen, setMenuOpen] = useState(false)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(session.title)
+  const rowRef = useRef<HTMLDivElement>(null)
+
+  // 菜单打开期间点击行外任意区域关闭（防止菜单悬空残留）
+  useEffect(() => {
+    if (!menuOpen) return
+    const onDocMouseDown = (e: MouseEvent) => {
+      if (rowRef.current && !rowRef.current.contains(e.target as Node)) {
+        setMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onDocMouseDown)
+    return () => document.removeEventListener('mousedown', onDocMouseDown)
+  }, [menuOpen])
 
   const commitRename = () => {
     const trimmed = draft.trim()
@@ -136,6 +149,7 @@ export function SessionItem({
 
   return (
     <div
+      ref={rowRef}
       onClick={() => onSwitch(session.id)}
       draggable={enableDrag}
       onDragStart={(e) => {
@@ -218,7 +232,7 @@ export function SessionItem({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            opacity: hovered ? 1 : 0,
+            opacity: hovered || menuOpen ? 1 : 0,
           }}
         >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
@@ -227,24 +241,30 @@ export function SessionItem({
             <circle cx="19" cy="12" r="1.5" />
           </svg>
         </button>
-        {/* 下拉菜单：重命名 / 置顶 / 删除 */}
+        {/* 下拉菜单：重命名 / 置顶 / 删除。
+            外层 wrapper 用 paddingTop 留间隙：缝隙属于行内命中区域，
+            鼠标从行移到菜单不会触发行的 mouseleave 导致菜单闪关 */}
         {menuOpen && (
           <div
-            onClick={(e) => e.stopPropagation()}
             style={{
               position: 'absolute',
               top: '100%',
               right: '0',
-              marginTop: '2px',
-              backgroundColor: 'var(--bg-elevated)',
-              border: '1px solid var(--border-strong)',
-              borderRadius: 'var(--radius-sm)',
-              boxShadow: 'var(--shadow-lg)',
+              paddingTop: '2px',
               zIndex: 100,
-              minWidth: '120px',
-              overflow: 'hidden',
             }}
+            onClick={(e) => e.stopPropagation()}
           >
+            <div
+              style={{
+                backgroundColor: 'var(--bg-elevated)',
+                border: '1px solid var(--border-strong)',
+                borderRadius: 'var(--radius-sm)',
+                boxShadow: 'var(--shadow-lg)',
+                minWidth: '120px',
+                overflow: 'hidden',
+              }}
+            >
             <button
               onClick={() => { setMenuOpen(false); setDraft(session.title); setEditing(true) }}
               style={menuItemStyle}
@@ -285,6 +305,7 @@ export function SessionItem({
               </svg>
               删除任务
             </button>
+            </div>
           </div>
         )}
       </div>
@@ -335,6 +356,19 @@ function WorkspaceGroup({
   // 提示气泡锚点：悬停时记录的按钮视口坐标。气泡用 fixed 定位挂在锚点上，
   // 恒显示于按钮上方，且不受列表滚动容器 overflow 裁剪
   const [plusAnchor, setPlusAnchor] = useState<{ right: number; bottom: number } | null>(null)
+  const headerRef = useRef<HTMLDivElement>(null)
+
+  // 菜单打开期间点击分组行外任意区域关闭（防止菜单悬空残留）
+  useEffect(() => {
+    if (!menuOpen) return
+    const onDocMouseDown = (e: MouseEvent) => {
+      if (headerRef.current && !headerRef.current.contains(e.target as Node)) {
+        setMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onDocMouseDown)
+    return () => document.removeEventListener('mousedown', onDocMouseDown)
+  }, [menuOpen])
 
   const ws = group.workspace
   const commitAlias = () => {
@@ -352,6 +386,7 @@ function WorkspaceGroup({
     <div style={{ marginBottom: '2px' }}>
       {/* 分组标题行 */}
       <div
+        ref={headerRef}
         onClick={() => setExpanded(prev => !prev)}
         onMouseEnter={() => setHeaderHovered(true)}
         onMouseLeave={() => { setHeaderHovered(false); setMenuOpen(false); setPlusHovered(false) }}
@@ -448,8 +483,8 @@ function WorkspaceGroup({
             {group.sessions.length} 个任务
           </span>
         )}
-        {/* 省略号按钮 - hover 时显示 */}
-        {headerHovered && (
+        {/* 省略号按钮 - hover 或菜单打开时显示 */}
+        {(headerHovered || menuOpen) && (
           <button
             onClick={(e) => {
               e.stopPropagation()
@@ -553,7 +588,8 @@ function WorkspaceGroup({
             新建任务
           </div>
         )}
-        {/* 下拉菜单：置顶 / 别名重命名 / 复制路径 / 移除 */}
+        {/* 下拉菜单：置顶 / 别名重命名 / 复制路径 / 移除。
+            外层 wrapper 用 paddingTop 留间隙（同会话行菜单，防缝隙闪关） */}
         {menuOpen && (
           <div
             onClick={(e) => e.stopPropagation()}
@@ -561,16 +597,20 @@ function WorkspaceGroup({
               position: 'absolute',
               top: '100%',
               right: '0',
-              marginTop: '2px',
-              backgroundColor: 'var(--bg-elevated)',
-              border: '1px solid var(--border-strong)',
-              borderRadius: 'var(--radius-sm)',
-              boxShadow: 'var(--shadow-lg)',
+              paddingTop: '2px',
               zIndex: 100,
-              minWidth: '130px',
-              overflow: 'hidden',
             }}
           >
+            <div
+              style={{
+                backgroundColor: 'var(--bg-elevated)',
+                border: '1px solid var(--border-strong)',
+                borderRadius: 'var(--radius-sm)',
+                boxShadow: 'var(--shadow-lg)',
+                minWidth: '130px',
+                overflow: 'hidden',
+              }}
+            >
             {aliasEditing ? (
               <div style={{ padding: '6px 8px' }}>
                 <input
@@ -653,6 +693,7 @@ function WorkspaceGroup({
                 </button>
               </>
             )}
+            </div>
           </div>
         )}
       </div>
