@@ -336,6 +336,10 @@ function App() {
     ? chatSessionId
     : null
 
+  // 全部运行中会话 id（含其他工作区的后台任务），侧边栏行级运行标记用：
+  // 跨工作区并行时，未在查看的后台任务也要能看到「正在运行」
+  const runningSessionIds = sessions.currentTasks.map(t => t.session_id)
+
   // 后端自动建会话（session_meta）回传后：同步会话 hook 的选中态并刷新列表。
   // 幂等条件：chatSessionId 与 hook 源一致时不动作（初始加载/手动切换走各自逻辑）
   useEffect(() => {
@@ -626,7 +630,7 @@ function App() {
                 onRemoveWorkspace={handleRemoveWorkspace}
                 onOpenWorkspace={handleOpenWorkspace}
                 onOpenSearch={() => openTool('search')}
-                runningSessionId={runningSessionId}
+                runningSessionIds={runningSessionIds}
                 onRenameSession={sessions.renameSession}
                 onToggleSessionPin={sessions.toggleSessionPin}
                 onUpdateWorkspace={sessions.updateWorkspaceMeta}
@@ -659,7 +663,7 @@ function App() {
             onRemoveWorkspace={handleRemoveWorkspace}
             onOpenWorkspace={handleOpenWorkspace}
             onOpenSearch={() => openTool('search')}
-            runningSessionId={runningSessionId}
+            runningSessionIds={runningSessionIds}
             onRenameSession={sessions.renameSession}
             onToggleSessionPin={sessions.toggleSessionPin}
             onUpdateWorkspace={sessions.updateWorkspaceMeta}

@@ -54,10 +54,14 @@ def get_user_agents_dir() -> Path:
 
 
 def get_project_agents_dir() -> Path:
-    """项目级自定义代理目录：<项目根>/.agent/agents/。"""
-    from server.paths import project_root
+    """项目级自定义代理目录：<项目根>/.agent/agents/。
 
-    return Path(project_root()) / ".agent" / "agents"
+    用 effective_root：后台任务上下文里取任务自己的工作区
+    （视图切走后不串工作区），非任务上下文回退全局 project_root()。
+    """
+    from server.paths import effective_root
+
+    return Path(effective_root()) / ".agent" / "agents"
 
 
 # ---------------------------------------------------------------------------

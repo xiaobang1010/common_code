@@ -62,7 +62,7 @@ interface SidebarProps {
   currentWorkspacePath: string | null
   currentSessionId: string | null
   // 当前运行任务所属会话（列表显示运行指示）
-  runningSessionId: string | null
+  runningSessionIds: string[]
   // 视图切换（分组/项目），选中态由 App 持久化到 localStorage
   view: SidebarView
   onViewChange: (view: SidebarView) => void
@@ -88,7 +88,7 @@ interface SidebarProps {
   onUpdateWorkspace: (path: string, data: { alias?: string; pinned?: boolean }) => void
 }
 
-function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, currentSessionId, runningSessionId, view, onViewChange, taskGroups, onCreateTaskGroup, onRenameTaskGroup, onDeleteTaskGroup, onSetSessionGroup, onCreateSessionInGroup, onCreateSession, onCreateSessionInWorkspace, onSwitchSession, onSwitchInWorkspace, onDeleteSession, onRemoveWorkspace, onOpenWorkspace, onOpenSearch, onRenameSession, onToggleSessionPin, onUpdateWorkspace }: SidebarProps) {
+function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, currentSessionId, runningSessionIds, view, onViewChange, taskGroups, onCreateTaskGroup, onRenameTaskGroup, onDeleteTaskGroup, onSetSessionGroup, onCreateSessionInGroup, onCreateSession, onCreateSessionInWorkspace, onSwitchSession, onSwitchInWorkspace, onDeleteSession, onRemoveWorkspace, onOpenWorkspace, onOpenSearch, onRenameSession, onToggleSessionPin, onUpdateWorkspace }: SidebarProps) {
   // 新建分组的内联输入态
   const [creatingGroup, setCreatingGroup] = useState(false)
   const [groupNameDraft, setGroupNameDraft] = useState('')
@@ -418,7 +418,7 @@ function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, cu
             groups={groups}
             currentWorkspacePath={currentWorkspacePath}
             currentSessionId={currentSessionId}
-            runningSessionId={runningSessionId}
+            runningSessionIds={runningSessionIds}
             onCreate={onCreateSessionInWorkspace}
             onSwitch={onSwitchSession}
             onSwitchInWorkspace={onSwitchInWorkspace}
@@ -435,7 +435,7 @@ function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, cu
             allGroups={groups}
             currentWorkspacePath={currentWorkspacePath}
             currentSessionId={currentSessionId}
-            runningSessionId={runningSessionId}
+            runningSessionIds={runningSessionIds}
             hasWorkspace={!!currentWorkspacePath}
             onCreateInGroup={onCreateSessionInGroup}
             onRenameGroup={onRenameTaskGroup}

@@ -6,7 +6,7 @@ interface SessionListProps {
   currentWorkspacePath: string | null
   currentSessionId: string | null
   // 当前运行任务所属会话（列表显示运行指示）
-  runningSessionId: string | null
+  runningSessionIds: string[]
   onCreate: (workspacePath: string) => void
   onSwitch: (sessionId: string) => void
   onSwitchInWorkspace: (sessionId: string, workspacePath: string) => void
@@ -297,7 +297,7 @@ function WorkspaceGroup({
   group,
   isCurrent,
   currentSessionId,
-  runningSessionId,
+  runningSessionIds,
   onCreate,
   onSwitch,
   onSwitchInWorkspace,
@@ -310,7 +310,7 @@ function WorkspaceGroup({
   group: SessionGroup
   isCurrent: boolean
   currentSessionId: string | null
-  runningSessionId: string | null
+  runningSessionIds: string[]
   onCreate: (workspacePath: string) => void
   onSwitch: (sessionId: string) => void
   onSwitchInWorkspace: (sessionId: string, workspacePath: string) => void
@@ -678,7 +678,7 @@ function WorkspaceGroup({
                 key={session.id}
                 session={session}
                 isActive={session.id === currentSessionId}
-                isRunning={session.id === runningSessionId}
+                isRunning={runningSessionIds.includes(session.id)}
                 onSwitch={(id) => {
                   if (isCurrent) {
                     onSwitch(id)
@@ -702,7 +702,7 @@ function SessionList({
   groups,
   currentWorkspacePath,
   currentSessionId,
-  runningSessionId,
+  runningSessionIds,
   onCreate,
   onSwitch,
   onSwitchInWorkspace,
@@ -788,7 +788,7 @@ function SessionList({
               group={group}
               isCurrent={group.workspace.path === currentWorkspacePath}
               currentSessionId={currentSessionId}
-              runningSessionId={runningSessionId}
+              runningSessionIds={runningSessionIds}
               onCreate={onCreate}
               onSwitch={onSwitch}
               onSwitchInWorkspace={onSwitchInWorkspace}
