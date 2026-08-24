@@ -600,6 +600,7 @@ function App() {
         onOpenSettings={() => setSettingsOpen(true)}
         onNewSession={handleCreateSession}
         currentTaskTitle={currentTaskTitle}
+        taskRunning={runningSessionId !== null}
       />
 
       {/* 主体行：会话栏 + AI面板 + 编辑区 + 右缘图标轨 */}

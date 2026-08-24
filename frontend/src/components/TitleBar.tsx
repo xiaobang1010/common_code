@@ -12,6 +12,9 @@ interface TitleBarProps {
   onNewSession: () => void
   // 当前任务标题（侧栏折叠时仍可见）
   currentTaskTitle: string
+  // 当前查看会话是否有后台任务在跑：切回运行中会话时无前台流式连接，
+  // 呼吸灯仍要按「运行中」闪烁
+  taskRunning?: boolean
 }
 
 // WebKit 私有属性（CSSProperties 未收录），用类型断言封装
@@ -73,8 +76,11 @@ function TitleBar({
   onOpenSettings,
   onNewSession,
   currentTaskTitle,
+  taskRunning = false,
 }: TitleBarProps) {
   const isStreaming = useChatStore(s => s.isStreaming)
+  // 运行中判定：前台流式连接，或当前查看会话有后台任务（轮询展示进展）
+  const active = isStreaming || taskRunning
 
   return (
     <div
@@ -95,16 +101,16 @@ function TitleBar({
     >
       {/* 左侧：状态点 + 记忆图标 + 工作区/分支选择 */}
       <span
-        title={isStreaming ? '思考中' : '就绪'}
+        title={active ? '思考中' : '就绪'}
         style={{
           width: '8px',
           height: '8px',
           borderRadius: '50%',
-          backgroundColor: isStreaming ? 'var(--info)' : 'var(--success)',
-          boxShadow: isStreaming
+          backgroundColor: active ? 'var(--info)' : 'var(--success)',
+          boxShadow: active
             ? 'var(--info-glow)'
             : 'var(--success-glow)',
-          animation: isStreaming ? 'breathe 1.4s ease-in-out infinite' : 'none',
+          animation: active ? 'breathe 1.4s ease-in-out infinite' : 'none',
           flexShrink: 0,
         }}
       />
