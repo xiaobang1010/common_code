@@ -305,7 +305,17 @@ function LLMSettingsSection() {
       )}
 
       <StatusMessage type="success" message={success} />
-      <StatusMessage type="error" message={error} />
+      {error ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px' }}>
+          <span style={{ fontSize: '12px', color: 'var(--error)' }}>{error}</span>
+          <button
+            onClick={() => void load()}
+            style={{ cursor: 'pointer', background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-secondary)', borderRadius: 'var(--radius-sm)', fontSize: '12px', padding: '2px 10px' }}
+          >
+            重试
+          </button>
+        </div>
+      ) : null}
 
       {/* 编辑/新建弹窗 */}
       {form && (
@@ -442,7 +452,7 @@ function ProviderCard({
                   gap: '8px',
                   padding: '4px 8px',
                   backgroundColor: isThisActive
-                    ? 'rgba(78, 201, 176, 0.06)'
+                    ? 'var(--success-soft)'
                     : 'var(--bg-tertiary)',
                   borderRadius: 'var(--radius-sm)',
                 }}
@@ -516,8 +526,8 @@ function ProviderCard({
             borderRadius: 'var(--radius-sm)',
             color: testResult.ok ? 'var(--success)' : 'var(--error)',
             backgroundColor: testResult.ok
-              ? 'rgba(78, 201, 176, 0.08)'
-              : 'rgba(255, 107, 107, 0.08)',
+              ? 'var(--success-soft)'
+              : 'var(--error-soft)',
           }}
         >
           {testResult.ok ? '✓ ' : '✗ '}
@@ -629,7 +639,7 @@ function ProviderEditModal({
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+        backgroundColor: 'var(--scrim)',
       }}
       onClick={onCancel}
     >
@@ -913,7 +923,7 @@ function btnStyle(
       ...base,
       backgroundColor: 'transparent',
       color: 'var(--error)',
-      borderColor: 'rgba(255, 107, 107, 0.3)',
+      borderColor: 'var(--error)',
     }
   }
   return {

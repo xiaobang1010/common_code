@@ -186,14 +186,23 @@ async def chat_event_stream(prompt: str, session_id: str = ""):
     async def task_question_prompt(question: str, options: list[dict]) -> str:
         return await question_bridge.ask_question(question, options, session_id=run_session_id)
 
+    # 任务级中断事件：/api/abort 置位后传导到引擎上下文与前台子代理
+    run_abort_event = asyncio.Event()
     config = build_engine_config(
         permission_prompt=task_permission_prompt,
         question_prompt=task_question_prompt if question_bridge else None,
+        abort_event=run_abort_event,
     )
     config = replace(config, cwd=task_workspace)
-    task_engine = QueryEngine(config, initial_messages=prefix_messages)
+    # 引擎绑定聊天会话 id：子代理注册表按父会话关联、通知按会话投递
+    task_engine = QueryEngine(config, initial_messages=prefix_messages, session_id=run_session_id)
 
-    run = server.state.RunContext(session_id=run_session_id, engine=task_engine, started_at=time.time())
+    run = server.state.RunContext(
+        session_id=run_session_id,
+        engine=task_engine,
+        started_at=time.time(),
+        abort_event=run_abort_event,
+    )
     server.state.running_runs[run_session_id] = run
     # 注册时把查看会话指向本会话并记录启动值（收尾回写判定用；
     # 自动建会话场景由 None 指向新会话；run 期间 switch 会改变它）
@@ -353,6 +362,9 @@ async def abort_query(request: Request) -> JSONResponse:
     run = server.state.running_runs.get(session_id) if session_id else None
     if run is None:
         return JSONResponse(content={"ok": False, "error": "no running task"})
+    # 先置位中断事件：前台子代理在轮次边界检测到后优雅退出并写 aborted 状态，
+    # cancel 兜底强杀（模型调用阻塞中也能终止）
+    run.abort_event.set()
     if not run.task.done():
         run.task.cancel()
         try:
@@ -365,3 +377,46 @@ async def abort_query(request: Request) -> JSONResponse:
     except asyncio.TimeoutError:
         return JSONResponse(content={"ok": False, "error": "stream finalize timeout"})
     return JSONResponse(content={"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# GET /api/debug/tasks - 协程栈诊断（排查任务挂起）
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/debug/tasks")
+async def debug_tasks() -> dict:
+    """dump 所有 asyncio 任务栈帧与运行任务注册表状态。
+
+    排查「任务长时间运行中但无产出」时，用它看任务协程挂在哪一行。
+    """
+    tasks_out: list[dict] = []
+    for task in asyncio.all_tasks():
+        if task is asyncio.current_task():
+            continue
+        frames = [
+            f"{frame.f_code.co_filename}:{frame.f_lineno} {frame.f_code.co_name}"
+            for frame in task.get_stack()
+        ]
+        tasks_out.append({
+            "name": task.get_name(),
+            "done": task.done(),
+            "coro": repr(task.get_coro())[:150],
+            "frames": frames,
+        })
+    runs_out: list[dict] = []
+    for sid, run in server.state.running_runs.items():
+        coro_frames: list[str] = []
+        if run.task is not None and not run.task.done():
+            coro_frames = [
+                f"{frame.f_code.co_filename}:{frame.f_lineno} {frame.f_code.co_name}"
+                for frame in run.task.get_stack()
+            ]
+        runs_out.append({
+            "session_id": sid,
+            "finished": run.finished.is_set(),
+            "task_done": run.task.done() if run.task is not None else None,
+            "frames": coro_frames,
+            "subscribers": len(run.subscribers),
+        })
+    return {"tasks": tasks_out, "running_runs": runs_out}

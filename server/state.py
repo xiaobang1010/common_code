@@ -53,6 +53,8 @@ class RunContext:
     started_at: float = 0.0
     # 每任务独立的收尾事件：任务 finally 置位；abort/删除等待它
     finished: asyncio.Event = field(default_factory=asyncio.Event)
+    # 任务级中断事件：/api/abort 置位后传导给引擎与前台子代理，触发优雅退出
+    abort_event: asyncio.Event = field(default_factory=asyncio.Event)
     # SSE 订阅者队列集合：生成器注册/注销；无订阅者时任务事件丢弃
     subscribers: set = field(default_factory=set)
 
@@ -60,29 +62,6 @@ class RunContext:
 # 任务注册表：session_id -> RunContext。同一会话同时只允许一个运行任务。
 # 供 abort/删除等待收尾、列表 API 透出运行态、/api/state 返回实时消息。
 running_runs: dict[str, RunContext] = {}
-# 流式任务收尾完成事件：chat_event_stream 的 finally 末尾置位；
-# abort/switch/delete 取消任务后 await 它，确认生成器收尾（保存）执行完毕，
-# 再清理标记或覆盖引擎状态，避免时序竞态导致数据串写。
-# 每次流启动时 clear()，防止上一个流的完成状态残留。
-# 事件按事件循环惰性创建：模块级直接建 Event 会绑定首个 loop，
-# 测试/多 loop 场景会报 "bound to a different event loop"。
-_stream_finished: tuple[Any, asyncio.Event] | None = None
-_stream_finished_lock: Any = None
 
-
-def get_stream_finished() -> asyncio.Event:
-    """获取当前事件循环的收尾事件（首次访问时惰性创建）。"""
-    import threading
-
-    global _stream_finished, _stream_finished_lock
-    if _stream_finished_lock is None:
-        _stream_finished_lock = threading.Lock()
-    loop = asyncio.get_running_loop()
-    with _stream_finished_lock:
-        if _stream_finished is None or _stream_finished[0] is not loop:
-            _stream_finished = (loop, asyncio.Event())
-        return _stream_finished[1]
-
-
-# 等待流收尾的超时秒数（abort/switch/delete 共用），超时后放弃操作不硬切
+# 等待任务收尾的超时秒数（abort/删除共用），超时后放弃操作不硬切
 stream_finalize_timeout: float = 10.0

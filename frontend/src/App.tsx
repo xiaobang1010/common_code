@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import Sidebar from './components/Sidebar'
-import EditorArea, { type EditorAreaHandle } from './components/EditorArea'
+import ArtifactPanel, { type ArtifactPanelHandle } from './components/ArtifactPanel'
 import AIPanel from './components/AIPanel'
 import TitleBar from './components/TitleBar'
 import IconRail from './components/IconRail'
@@ -29,25 +29,55 @@ const LAYOUT_KEYS = {
   treeCollapsed: 'layout.treeCollapsed',
   toolTabsOpen: 'layout.toolTabsOpen',
   activeToolId: 'layout.activeToolId',
+  toolTabsMigrated: 'layout.toolTabsMigrated',
+  sidebarView: 'layout.sidebarView',
 } as const
+
+// 默认工具标签集：转为「产物区」定位后，面板展开默认呈现 概要/终端/文件，激活概要
+const DEFAULT_TOOL_TABS: ToolId[] = ['summary', 'terminal', 'files']
+
+// 初始化工具标签开关集（含一次性旧持久化迁移）：
+// 旧版本默认标签集为空，且用户「关闭全部」也会产生空集——两者无法从值上区分。
+// 用迁移标记区分：仅当存在旧记录（不含 files，旧版本无此工具）时补齐默认三标签并写标记一次，
+// 之后用户关空得到的空集保持为空（「关闭全部 = 面板全隐藏」不变量不被重置）
+function loadInitialToolTabs(): ToolId[] {
+  const raw = localStorage.getItem(LAYOUT_KEYS.toolTabsOpen)
+  let ids: ToolId[] = []
+  if (raw !== null) {
+    try {
+      const v = JSON.parse(raw)
+      ids = Array.isArray(v) ? v.filter((x): x is ToolId => TOOL_META.some((t) => t.id === x)) : []
+    } catch {
+      ids = []
+    }
+  } else {
+    // 全新安装：直接采用新默认集
+    ids = DEFAULT_TOOL_TABS
+  }
+  if (localStorage.getItem(LAYOUT_KEYS.toolTabsMigrated) !== '1') {
+    if (raw !== null && !ids.includes('files')) {
+      // 旧版本数据：补齐默认三标签，仅迁移这一次
+      ids = Array.from(new Set([...ids, ...DEFAULT_TOOL_TABS]))
+    }
+    localStorage.setItem(LAYOUT_KEYS.toolTabsMigrated, '1')
+  }
+  return ids
+}
 
 function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  // 编辑器按需显示：默认隐藏，打开文件时才出现
+  // 侧栏视图（分组/项目）：持久化恢复，默认「项目」（保持现状心智）
+  const [sidebarView, setSidebarView] = useState<'projects' | 'groups'>(() =>
+    localStorage.getItem(LAYOUT_KEYS.sidebarView) === 'groups' ? 'groups' : 'projects',
+  )
+  // 右侧面板（产物区）：默认收起；展开后默认呈现概要产物视图，打开文件不再是唯一展开时机
   const [editorCollapsed, setEditorCollapsed] = useState(true)
 
-  // 工具标签（概要/终端/搜索/审查）开关状态：由 App 持有，标题栏开关/图标轨/快捷键共用
-  const [toolTabsOpen, setToolTabsOpen] = useState<ToolId[]>(() => {
-    try {
-      const v = JSON.parse(localStorage.getItem(LAYOUT_KEYS.toolTabsOpen) || '[]')
-      return Array.isArray(v) ? v.filter((x): x is ToolId => TOOL_META.some((t) => t.id === x)) : []
-    } catch {
-      return []
-    }
-  })
+  // 工具标签（概要/终端/文件/搜索/审查）开关状态：由 App 持有，标题栏开关/入口卡片/快捷键共用
+  const [toolTabsOpen, setToolTabsOpen] = useState<ToolId[]>(() => loadInitialToolTabs())
   const [activeToolId, setActiveToolId] = useState<ToolId | null>(() => {
     const v = localStorage.getItem(LAYOUT_KEYS.activeToolId)
-    return v && TOOL_META.some((t) => t.id === v) ? (v as ToolId) : null
+    return v && TOOL_META.some((t) => t.id === v) ? (v as ToolId) : 'summary'
   })
   // 最近使用的工具标签：标题栏开关展开编辑区时聚焦它
   const lastToolIdRef = useRef<ToolId | null>(activeToolId)
@@ -75,7 +105,7 @@ function App() {
   const fetchState = useChatStore(s => s.fetchState)
   const isStreaming = useChatStore(s => s.isStreaming)
   const sessions = useSessions()
-  const editorRef = useRef<EditorAreaHandle>(null)
+  const editorRef = useRef<ArtifactPanelHandle>(null)
 
   // 当前任务标题（标题栏展示）：从分组数据找当前会话，侧栏折叠时仍可见
   const currentTaskTitle = useMemo(() => {
@@ -152,19 +182,19 @@ function App() {
     localStorage.setItem(LAYOUT_KEYS.activeToolId, activeToolId ?? '')
   }, [activeToolId])
 
-  // 恢复默认布局：清持久化并重置各宽度与面板开关（树状态由 EditorArea 监听事件重置）
+  // 恢复默认布局：清持久化并重置各宽度与面板开关（树状态由 ArtifactPanel 监听事件重置）
   const resetLayout = useCallback(() => {
     Object.values(LAYOUT_KEYS).forEach((k) => localStorage.removeItem(k))
     setSidebarWidth(240)
     setEditorWidth(0)
-    setToolTabsOpen([])
-    setActiveToolId(null)
+    setToolTabsOpen(DEFAULT_TOOL_TABS)
+    setActiveToolId('summary')
     setSidebarCollapsed(false)
     setEditorCollapsed(true)
     window.dispatchEvent(new Event('layout-reset'))
   }, [])
 
-  // 窄屏退让：树列折叠由 EditorArea 按编辑区/窗口宽度处理；
+  // 窄屏退让：树列折叠由 ArtifactPanel 按编辑区/窗口宽度处理；
   // 这里兜底：窗口仍不足以容纳「会话栏 + 对话区 360 + 编辑区 360」时会话栏自动折叠为窄条
   useEffect(() => {
     const onResize = () => {
@@ -238,18 +268,6 @@ function App() {
     setActiveToolId(null)
   }, [])
 
-  // 图标轨点击：已激活则收回，否则直达对应面板
-  const handleRailToolClick = useCallback(
-    (id: ToolId) => {
-      if (activeToolId === id && !editorCollapsed) {
-        closeTool(id)
-      } else {
-        openTool(id)
-      }
-    },
-    [activeToolId, editorCollapsed, closeTool, openTool]
-  )
-
   // 标题栏面板开关：展开编辑区并聚焦最近工具标签；已展开则收起
   const togglePanel = useCallback(() => {
     if (!editorCollapsed) {
@@ -318,6 +336,10 @@ function App() {
     ? chatSessionId
     : null
 
+  // 全部运行中会话 id（含其他工作区的后台任务），侧边栏行级运行标记用：
+  // 跨工作区并行时，未在查看的后台任务也要能看到「正在运行」
+  const runningSessionIds = sessions.currentTasks.map(t => t.session_id)
+
   // 后端自动建会话（session_meta）回传后：同步会话 hook 的选中态并刷新列表。
   // 幂等条件：chatSessionId 与 hook 源一致时不动作（初始加载/手动切换走各自逻辑）
   useEffect(() => {
@@ -329,15 +351,48 @@ function App() {
     }
   }, [chatSessionId, sessions]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 新建会话：创建后设为当前，清空消息（任务后台继续，无需确认）
-  const handleCreateSession = useCallback(async () => {
+  // 新建会话：创建后设为当前，清空消息（任务后台继续，无需确认）。
+  // 可选 groupId：分组视图 ⊕ 在指定分组下建任务；防御性类型守卫，
+  // 避免被 onClick 直接引用时把事件对象误当分组 id
+  const handleCreateSession = useCallback(async (groupId?: string) => {
     disconnectStream()
-    const id = await sessions.createSession()
+    const gid = typeof groupId === 'string' ? groupId : undefined
+    const id = await sessions.createSession(gid)
     if (id) {
       setSessionId(id)
       clearMessages()
     }
   }, [sessions, setSessionId, clearMessages])
+
+  // 项目行「+」跨工作区新建：非当前工作区先切过去再建。
+  // switchWorkspace 内部同步 currentWorkspacePathRef，随后 createSession 落在新工作区
+  const handleCreateSessionInWorkspace = useCallback(async (workspacePath: string) => {
+    if (workspacePath === sessions.currentWorkspace?.path) {
+      await handleCreateSession()
+      return
+    }
+    disconnectStream()
+    const switched = await sessions.switchWorkspace(workspacePath)
+    if (!switched) {
+      alert('切换工作区失败，未能新建任务')
+      return
+    }
+    setCurrentBranch(switched.branch)
+    // 刷新分支列表（工作区变了）
+    gitApi.branches(workspacePath)
+      .then(data => {
+        setBranches(data.branches)
+        setCurrentBranch(data.current)
+      })
+      .catch(() => {})
+    await handleCreateSession()
+  }, [sessions, handleCreateSession])
+
+  // 切换侧栏视图：状态 + localStorage 持久化一并更新
+  const handleChangeSidebarView = useCallback((view: 'projects' | 'groups') => {
+    setSidebarView(view)
+    localStorage.setItem(LAYOUT_KEYS.sidebarView, view)
+  }, [])
 
   // 统一以 /api/state 为准加载当前会话消息：响应含 started_at 表示目标会话有运行中任务，
   // 据此标记「工作中」；snapshot 为 switchSession 等返回的 DB 快照，作为 /api/state 失败时的回退。
@@ -545,6 +600,7 @@ function App() {
         onOpenSettings={() => setSettingsOpen(true)}
         onNewSession={handleCreateSession}
         currentTaskTitle={currentTaskTitle}
+        taskRunning={runningSessionId !== null}
       />
 
       {/* 主体行：会话栏 + AI面板 + 编辑区 + 右缘图标轨 */}
@@ -552,21 +608,30 @@ function App() {
         {/* 会话栏：折叠时不占位，展开时固定宽度 + 可拖拽 */}
         {!sidebarCollapsed && (
           <>
-            <div style={{ width: sidebarWidth, flexShrink: 0 }}>
+            <div className="sidebar-lifted" style={{ width: sidebarWidth, flexShrink: 0 }}>
               <Sidebar
                 collapsed={false}
                 onToggleCollapse={toggleSidebar}
                 groups={sessions.allGroups}
                 currentWorkspacePath={sessions.currentWorkspace?.path ?? null}
                 currentSessionId={sessions.currentSessionId}
+                view={sidebarView}
+                onViewChange={handleChangeSidebarView}
+                taskGroups={sessions.taskGroups}
+                onCreateTaskGroup={sessions.createTaskGroup}
+                onRenameTaskGroup={sessions.renameTaskGroup}
+                onDeleteTaskGroup={sessions.deleteTaskGroup}
+                onSetSessionGroup={sessions.setSessionGroup}
+                onCreateSessionInGroup={handleCreateSession}
                 onCreateSession={handleCreateSession}
+                onCreateSessionInWorkspace={handleCreateSessionInWorkspace}
                 onSwitchSession={handleSwitchSession}
                 onSwitchInWorkspace={handleSwitchInWorkspace}
                 onDeleteSession={handleDeleteSession}
                 onRemoveWorkspace={handleRemoveWorkspace}
                 onOpenWorkspace={handleOpenWorkspace}
                 onOpenSearch={() => openTool('search')}
-                runningSessionId={runningSessionId}
+                runningSessionIds={runningSessionIds}
                 onRenameSession={sessions.renameSession}
                 onToggleSessionPin={sessions.toggleSessionPin}
                 onUpdateWorkspace={sessions.updateWorkspaceMeta}
@@ -576,24 +641,35 @@ function App() {
           </>
         )}
         {sidebarCollapsed && (
+          <div className="sidebar-lifted" style={{ flexShrink: 0 }}>
           <Sidebar
             collapsed={true}
             onToggleCollapse={toggleSidebar}
             groups={sessions.allGroups}
             currentWorkspacePath={sessions.currentWorkspace?.path ?? null}
             currentSessionId={sessions.currentSessionId}
+            view={sidebarView}
+            onViewChange={handleChangeSidebarView}
+            taskGroups={sessions.taskGroups}
+            onCreateTaskGroup={sessions.createTaskGroup}
+            onRenameTaskGroup={sessions.renameTaskGroup}
+            onDeleteTaskGroup={sessions.deleteTaskGroup}
+            onSetSessionGroup={sessions.setSessionGroup}
+            onCreateSessionInGroup={handleCreateSession}
             onCreateSession={handleCreateSession}
+            onCreateSessionInWorkspace={handleCreateSessionInWorkspace}
             onSwitchSession={handleSwitchSession}
             onSwitchInWorkspace={handleSwitchInWorkspace}
             onDeleteSession={handleDeleteSession}
             onRemoveWorkspace={handleRemoveWorkspace}
             onOpenWorkspace={handleOpenWorkspace}
             onOpenSearch={() => openTool('search')}
-            runningSessionId={runningSessionId}
+            runningSessionIds={runningSessionIds}
             onRenameSession={sessions.renameSession}
             onToggleSessionPin={sessions.toggleSessionPin}
             onUpdateWorkspace={sessions.updateWorkspaceMeta}
           />
+          </div>
         )}
 
         {/* AI 面板：占据剩余空间（主角），最小宽度受保护不被挤没 */}
@@ -605,9 +681,9 @@ function App() {
           />
         </div>
 
-        {/* 编辑器：按需显示（有打开文件才出现）。
+        {/* 右侧面板（产物区）：默认收起，展开后默认呈现概要产物视图；打开文件不再是唯一展开时机。
             树位置保持恒定（折叠时仅隐藏分隔条、宽度交给内容），
-            避免折叠/展开切换导致 EditorArea 重建丢失已打开标签 */}
+            避免折叠/展开切换导致 ArtifactPanel 重建丢失已打开标签 */}
         <div style={{ display: editorCollapsed ? 'none' : 'flex', height: '100%', flexShrink: 0 }}>
           <Resizer direction="horizontal" onResize={handleEditorResize} />
         </div>
@@ -619,7 +695,7 @@ function App() {
             display: editorCollapsed ? 'none' : 'block',
           }}
         >
-          <EditorArea
+          <ArtifactPanel
             ref={editorRef}
             collapsed={editorCollapsed}
             onToggleCollapse={toggleEditor}
@@ -631,15 +707,10 @@ function App() {
             onActivateFile={activateFile}
           />
         </div>
-
-        {/* 右缘图标轨：面板与编辑区的折叠态入口，始终可见 */}
-        <IconRail
-          activeToolId={activeToolId}
-          editorCollapsed={editorCollapsed}
-          onToolClick={handleRailToolClick}
-          onToggleEditor={toggleEditor}
-        />
       </div>
+
+      {/* 收起态右上角悬浮卡片：面板展开时不渲染；图标点击直达对应工具标签 */}
+      {editorCollapsed && <IconRail onToolClick={openTool} />}
 
       {/* 状态信息已并入输入区底部行（ChatInput），无独立状态栏 */}
 

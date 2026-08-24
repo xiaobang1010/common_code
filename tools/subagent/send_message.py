@@ -61,19 +61,15 @@ SEND_MESSAGE_PROMPT = """\
 
 async def _execute(inp: SendMessageInput, context: ToolUseContext) -> ToolResult:
     """执行消息发送，按三路径分发。"""
-    from tools.subagent.resume import (
-        get_subagent_status,
-        queue_pending_message,
-        resume_agent_background,
-        get_subagent_ctx,
-    )
+    from tools.subagent.registry import get_subagent_registry
+    from tools.subagent.resume import resume_agent_background
 
     agent_id = inp.to
+    registry = get_subagent_registry()
 
-    # 路径 1：子代理正在运行 → 入队
-    status = get_subagent_status(agent_id)
-    if status == "running":
-        ok = queue_pending_message(agent_id, inp.message)
+    # 路径 1：子代理正在运行 -> 入队
+    if registry.get_status(agent_id) == "running":
+        ok = registry.queue_pending_message(agent_id, inp.message)
         if ok:
             return ToolResult(
                 content=f"Message queued for delivery to {agent_id} at its next tool round.",

@@ -112,6 +112,16 @@ def classify_error(error: Exception) -> APIError:
             status_code=None,
         )
 
+    # ---- 看护超时（with_retry_stream 首事件 wait_for 抛出）----
+    # 归为可重试的网络类错误：首包挂起多为代理抖动/供应商限流挂流，
+    # 自动重试优于快速失败
+    if isinstance(error, TimeoutError):
+        return APIError(
+            type="server_error",
+            message=f"等待模型响应超时: {error}",
+            status_code=None,
+        )
+
     # ---- 其他 ----
     return APIError(
         type="unknown",

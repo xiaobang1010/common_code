@@ -239,16 +239,23 @@ export const useChatStore = create<ChatState>((set, get) => {
           updateBlock(blockId, b => ({ ...b, finalReply: '', finalReplyStreaming: false }))
         }
         hasToolStartedRef.current = true
+        // 工具参数是流式分片（首个 delta 常只有 "{"），逐片拼接得到完整 JSON。
+        // 之前只取首片且后续被忽略，导致运行中的步骤 args 恒为空——子代理卡片
+        // 拿不到 description 就无法匹配正在运行的子代理，实时反馈随之失效
+        const argsFragment = evt.tool_call_arguments || ''
         updateBlock(blockId, b => {
           const last = b.steps[b.steps.length - 1]
           if (last && last.type === 'tool' && last.isRunning && last.toolName === toolName) {
-            return b
+            return {
+              ...b,
+              steps: [...b.steps.slice(0, -1), { ...last, args: (last.args || '') + argsFragment }],
+            }
           }
           return {
             ...b,
             steps: [
               ...b.steps,
-              { id: genId(), type: 'tool', toolName, args: evt.tool_call_arguments || '', isRunning: true, reasoning: reasoning || undefined },
+              { id: genId(), type: 'tool', toolName, args: argsFragment, isRunning: true, reasoning: reasoning || undefined },
             ],
           }
         })
@@ -267,14 +274,17 @@ export const useChatStore = create<ChatState>((set, get) => {
     } else if (evt.type === 'message' && evt.message) {
       const msg = evt.message
       if (msg.role === 'tool') {
-        // 工具结果：填到最近的运行中步骤
-        const toolResult = (msg.content || '').slice(0, 500)
+        // 工具结果：填到最近的运行中步骤。
+        // Agent 步骤是子代理报告（含 agent_id 头行与 usage 尾部），放宽到 3 万字符，
+        // 其余工具保留 500 字符防界面卡顿
         updateBlock(blockId, b => {
           const idx = [...b.steps].reverse().findIndex(s => s.type === 'tool' && s.isRunning)
           if (idx === -1) return b
           const realIdx = b.steps.length - 1 - idx
+          const toolName = b.steps[realIdx]?.toolName || ''
+          const cap = toolName === 'Agent' || toolName === 'Task' ? 30000 : 500
           const updated = [...b.steps]
-          updated[realIdx] = { ...updated[realIdx], result: toolResult, isRunning: false }
+          updated[realIdx] = { ...updated[realIdx], result: (msg.content || '').slice(0, cap), isRunning: false }
           return { ...b, steps: updated }
         })
       } else if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
@@ -677,11 +687,12 @@ export const useChatStore = create<ChatState>((set, get) => {
         }
         if (currentBlock) currentBlock.endTime = tsOf(raw)
       } else if (role === 'tool') {
-        // 工具结果：填到最近的未完成工具步骤
+        // 工具结果：填到最近的未完成工具步骤（Agent/Task 步骤放宽到 3 万字符）
         if (currentBlock) {
           const lastTool = [...currentBlock.steps].reverse().find(s => s.type === 'tool' && !s.result)
           if (lastTool) {
-            lastTool.result = content.slice(0, 500)
+            const cap = lastTool.toolName === 'Agent' || lastTool.toolName === 'Task' ? 30000 : 500
+            lastTool.result = content.slice(0, cap)
           }
           currentBlock.endTime = tsOf(raw)
         }

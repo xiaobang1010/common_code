@@ -156,7 +156,13 @@ class ToolResult:
 
 @dataclass
 class ToolUseContext:
-    """工具执行上下文。"""
+    """工具执行上下文。
+
+    Attributes:
+        tool_use_id: 工具执行标识；子代理场景携带 agent_id（agent_ 前缀），
+            供 is_subagent_context 判定
+        session_id: 所属引擎会话标识（聊天会话 id），供子代理注册表做父会话关联
+    """
 
     permission_decision: str | None = None
     messages: list = field(default_factory=list)
@@ -166,6 +172,7 @@ class ToolUseContext:
     # 提问回调：AskUserQuestion 工具用它挂起等待用户回答，
     # 签名 async (question: str, options: list[dict]) -> str，None 表示无前端可问
     question_callback: Any = None
+    session_id: str = ""
 
 
 # ---------------------------------------------------------------------------

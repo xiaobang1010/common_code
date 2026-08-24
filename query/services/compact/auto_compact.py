@@ -293,7 +293,7 @@ async def _generate_compact_summary(
 
     # PreCompact hooks：收集压缩指导信息，拼入提示词
     try:
-        from startup.bootstrap.state import get_cwd_state
+        from server.paths import effective_root
         from startup.hooks import run_pre_compact_hooks
         from startup.setup import get_hooks_snapshot
 
@@ -303,7 +303,8 @@ async def _generate_compact_summary(
                 hook_snapshot,
                 trigger="auto",
                 session_id="",
-                cwd=get_cwd_state(),
+                # cwd 用 effective_root：后台任务上下文里取任务自己的工作区
+                cwd=effective_root(),
             )
             if guidance.strip():
                 compact_prompt += f"\n\n## Additional compact guidance\n{guidance}"

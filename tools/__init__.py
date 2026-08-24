@@ -130,6 +130,17 @@ def get_tools(context_filter: ToolContextFilter | None = None) -> list[Tool]:
         except ImportError:
             pass
 
+    # 5.5 子代理任务管理工具（主循环/子代理均可管理后台任务）
+    try:
+        from tools.subagent.task_tools import (
+            get_get_subagent_output_tool,
+            get_stop_subagent_tool,
+        )
+        tools.append(get_get_subagent_output_tool())
+        tools.append(get_stop_subagent_tool())
+    except ImportError:
+        pass
+
     # 6. TeamCreate 工具（teammate 上下文跳过，不能建子团队）
     if context_filter is None or not context_filter.is_teammate:
         try:

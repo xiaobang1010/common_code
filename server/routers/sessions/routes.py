@@ -74,7 +74,7 @@ def get_git_branch(workspace_path: str) -> str:
 
 
 @router.post("/api/sessions")
-async def create_session(body: dict) -> dict:
+def create_session(body: dict) -> dict:
     """创建会话。
 
     请求体：{"workspace_path": "...", "title": "可选"}
@@ -98,7 +98,7 @@ async def create_session(body: dict) -> dict:
 
 
 @router.get("/api/sessions")
-async def list_sessions(workspace_path: str = "") -> dict:
+def list_sessions(workspace_path: str = "") -> dict:
     """列出指定工作区的会话。
 
     参数 workspace_path：工作区路径。
@@ -125,12 +125,15 @@ async def list_sessions(workspace_path: str = "") -> dict:
 
 
 @router.get("/api/sessions/grouped")
-async def list_sessions_grouped() -> dict:
-    """按工作区分组返回所有会话。
+def list_sessions_grouped() -> dict:
+    """按工作区分组返回所有会话，附带自定义任务分组与每条会话的归属。
 
     返回 {"groups": [{"workspace": {path, name, last_used_at},
                        "sessions": [{id, title, workspace_path, branch,
-                                     created_at, updated_at, message_count}]}]}
+                                     created_at, updated_at, message_count,
+                                     pinned, group_id}]}],
+           "task_groups": [{id, name, color, created_at}],
+           "current_tasks": [...]}
     """
     try:
         grouped = server.state.session_store.list_all_sessions_grouped()
@@ -154,23 +157,32 @@ async def list_sessions_grouped() -> dict:
                         "updated_at": s.updated_at,
                         "message_count": s.message_count,
                         "pinned": s.pinned,
+                        "group_id": s.group_id,
                     }
                     for s in sessions
                 ],
             })
+        task_groups = server.state.session_store.list_task_groups()
         # 透出所有运行任务（实时读取注册表不落库，供列表标记"正在运行"）
         current_tasks = [
             {"session_id": session_id, "state": "running"}
             for session_id, run in server.state.running_runs.items()
             if not run.finished.is_set()
         ]
-        return {"groups": groups, "current_tasks": current_tasks}
+        return {
+            "groups": groups,
+            "task_groups": [
+                {"id": g.id, "name": g.name, "color": g.color, "created_at": g.created_at}
+                for g in task_groups
+            ],
+            "current_tasks": current_tasks,
+        }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @router.get("/api/sessions/{session_id}")
-async def get_session(session_id: str) -> dict:
+def get_session(session_id: str) -> dict:
     """获取单个会话详情（含完整 messages）。
 
     返回 {"session": {...}, "messages": [...]}。
@@ -219,17 +231,27 @@ async def delete_session(session_id: str) -> dict:
 
 
 @router.patch("/api/sessions/{session_id}")
-async def update_session(session_id: str, body: dict) -> dict:
-    """更新会话：支持 title（重命名）与 pinned（置顶）。"""
+def update_session(session_id: str, body: dict) -> dict:
+    """更新会话：支持 title（重命名）、pinned（置顶）与 group_id（归组/移出分组）。"""
     if "title" in body:
         server.state.session_store.update_session_title(session_id, str(body["title"]))
     if "pinned" in body:
         server.state.session_store.update_session_pinned(session_id, bool(body["pinned"]))
+    if "group_id" in body:
+        # 空串表示移出分组；不存在的分组 id 拒绝并保持数据不变
+        updated = server.state.session_store.update_session_group(
+            session_id, str(body["group_id"] or "")
+        )
+        if not updated:
+            return JSONResponse(
+                status_code=404,
+                content={"ok": False, "error": "session or group not found"},
+            )
     return {"ok": True}
 
 
 @router.post("/api/sessions/{session_id}/switch")
-async def switch_session(session_id: str) -> dict:
+def switch_session(session_id: str) -> dict:
     """切换会话：中止运行中任务，加载消息到引擎，必要时切换工作区。
 
     如果会话的 workspace_path 与当前工作区不同，先切换工作区（更新 project_root + 重建引擎）。

@@ -68,7 +68,7 @@ def _list_dir(target: str, root: str) -> list[dict]:
 
 
 @router.get("/api/files/list")
-async def list_files(path: str = ".", recursive: bool = False) -> dict:
+def list_files(path: str = ".", recursive: bool = False) -> dict:
     """列目录接口。
 
     参数 path：相对路径，默认 "."（项目根目录）。
@@ -107,7 +107,7 @@ async def list_files(path: str = ".", recursive: bool = False) -> dict:
 
 
 @router.get("/api/files/read")
-async def read_file(path: str) -> Any:
+def read_file(path: str) -> Any:
     """读文件内容接口。
 
     参数 path：相对路径。
@@ -145,7 +145,7 @@ async def read_file(path: str) -> Any:
 
 
 @router.post("/api/files/write")
-async def write_file(req: WriteRequest) -> Any:
+def write_file(req: WriteRequest) -> Any:
     """写文件接口（乐观锁 + 原子写）。
 
     参数：path 相对路径、content 完整内容、base_mtime/base_size 可选基线。
@@ -210,7 +210,7 @@ async def write_file(req: WriteRequest) -> Any:
 
 
 @router.post("/api/files/create")
-async def create_file(req: CreateRequest) -> Any:
+def create_file(req: CreateRequest) -> Any:
     """新建文件/目录接口。
 
     参数：path 相对路径、type "file"|"dir"。

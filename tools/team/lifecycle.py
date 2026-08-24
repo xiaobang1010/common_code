@@ -74,7 +74,13 @@ async def spawn_teammate(
     from query.services.api.client import get_default_model
     main_loop_model = get_default_model()
 
-    # 4. 创建隔离上下文
+    # 4. 创建隔离上下文（共享父会话中断事件，/api/abort 时优雅退出）
+    parent_abort_event = (
+        parent_context.abort_controller
+        if parent_context is not None
+        and isinstance(parent_context.abort_controller, asyncio.Event)
+        else None
+    )
     ctx = create_subagent_context(
         parent_context=parent_context,
         agent_def=agent_def,
@@ -82,6 +88,7 @@ async def spawn_teammate(
         agent_id=f"{agent_name}@{team_name}",
         depth=1,
         prompt=prompt,
+        parent_abort_event=parent_abort_event,
     )
 
     # 5. 注册团队成员

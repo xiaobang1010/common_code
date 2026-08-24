@@ -105,7 +105,7 @@ def _count_file_lines(root: str, rel_path: str) -> int:
 
 
 @router.get("/api/git/status")
-async def git_status() -> dict:
+def git_status() -> dict:
     """Git 状态接口。
 
     返回 {"branch": "...", "changes": [{"path", "status", "staged", "additions", "deletions"}],
@@ -176,7 +176,7 @@ async def git_status() -> dict:
 
 
 @router.post("/api/git/stage")
-async def git_stage(body: dict) -> dict:
+def git_stage(body: dict) -> dict:
     """暂存文件接口，执行 git add。
 
     请求体：{"path": "..."}
@@ -202,7 +202,7 @@ async def git_stage(body: dict) -> dict:
 
 
 @router.post("/api/git/unstage")
-async def git_unstage(body: dict) -> dict:
+def git_unstage(body: dict) -> dict:
     """取消暂存接口，执行 git reset HEAD。
 
     请求体：{"path": "..."}
@@ -228,7 +228,7 @@ async def git_unstage(body: dict) -> dict:
 
 
 @router.post("/api/git/commit")
-async def git_commit(body: dict) -> dict:
+def git_commit(body: dict) -> dict:
     """提交接口，执行 git commit -m。
 
     请求体：{"message": "..."}
@@ -254,7 +254,7 @@ async def git_commit(body: dict) -> dict:
 
 
 @router.get("/api/git/diff")
-async def git_diff(path: str = "") -> dict:
+def git_diff(path: str = "") -> dict:
     """获取文件 diff 接口，执行 git diff。
 
     参数 path：文件路径，可选。
@@ -278,7 +278,7 @@ async def git_diff(path: str = "") -> dict:
 
 
 @router.get("/api/git/branches")
-async def git_branches(path: str = "") -> dict:
+def git_branches(path: str = "") -> dict:
     """列出所有 Git 分支。
 
     参数 path：可选，默认用当前工作区。
@@ -329,7 +329,7 @@ async def git_branches(path: str = "") -> dict:
 
 
 @router.post("/api/git/checkout")
-async def git_checkout(body: dict) -> dict:
+def git_checkout(body: dict) -> dict:
     """切换 Git 分支。
 
     请求体：{"branch": "..."}

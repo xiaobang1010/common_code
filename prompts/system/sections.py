@@ -65,7 +65,43 @@ _SUBAGENT_GUIDANCE = """\
   - Read-only exploration where you don't want to clutter main context
 - The subagent's result is NOT visible to the user. You must relay key findings.
 - For parallel independent tasks, issue multiple Agent tool calls in a single message.
+- For long-running tasks, pass run_in_background=true. The subagent runs in the background and you will be notified when it completes.
 - Subagents do NOT inherit your conversation history - give them complete instructions."""
+
+
+def build_subagent_guidance() -> str:
+    """构建子代理使用指导（动态：代理清单来自 get_agent_listing，含自定义代理）。
+
+    静态通用规则保留在 _SUBAGENT_GUIDANCE；代理类型清单按实际可用代理渲染，
+    自定义 .md 代理加载后自动出现在提示词中。
+    """
+    try:
+        from tools.subagent.built_in_agents import get_agent_listing
+        listing = get_agent_listing()
+    except Exception:  # noqa: BLE001 提示词构建必须容错
+        listing = []
+
+    if not listing:
+        return _SUBAGENT_GUIDANCE
+
+    lines = [
+        "# Subagent Usage",
+        "- Use the Agent tool to delegate tasks to subagents with isolated context.",
+        "- Available agent types:",
+    ]
+    for item in listing:
+        lines.append(f"  - {item['type']}: {item['when_to_use']}")
+    lines += [
+        "- When to use subagents:",
+        "  - Complex research tasks that need many tool calls (saves main context)",
+        "  - Independent tasks that can run in parallel",
+        "  - Read-only exploration where you don't want to clutter main context",
+        "- The subagent's result is NOT visible to the user. You must relay key findings.",
+        "- For parallel independent tasks, issue multiple Agent tool calls in a single message.",
+        "- For long-running tasks, pass run_in_background=true. The subagent runs in the background and you will be notified when it completes.",
+        "- Subagents do NOT inherit your conversation history - give them complete instructions.",
+    ]
+    return "\n".join(lines)
 
 
 _TEAM_GUIDANCE = """\

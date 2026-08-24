@@ -75,7 +75,7 @@ def env(workspace, monkeypatch):
     engine = FakeEngine()
     monkeypatch.setattr(server.state, "engine", engine)
     monkeypatch.setattr(server.state, "running_runs", {})
-    def fake_query_engine(config, initial_messages=None):
+    def fake_query_engine(config, initial_messages=None, session_id=""):
         # 模拟 QueryEngine(config, initial_messages)：快照装入任务引擎
         engine.mutable_messages = list(initial_messages or [])
         return engine
@@ -324,7 +324,7 @@ async def test_switch_does_not_interrupt_running_task(workspace, env):
     await asyncio.sleep(0)
     server.state.engine_session_id = sid_a
 
-    result = await switch_session(sid_b)
+    result = switch_session(sid_b)
 
     assert result["ok"] is True
     # 视图引擎换成目标会话的消息

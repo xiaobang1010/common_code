@@ -28,7 +28,7 @@ router = APIRouter()
 
 
 @router.get("/api/config")
-async def get_config() -> dict:
+def get_config() -> dict:
     """读取 LLM 配置接口。
 
     返回 {"llm_base_url", "llm_api_key", "llm_model",
@@ -66,7 +66,7 @@ async def get_config() -> dict:
 
 
 @router.post("/api/config")
-async def set_config(body: dict) -> dict:
+def set_config(body: dict) -> dict:
     """写入 LLM 配置接口。
 
     请求体：{"llm_base_url", "llm_api_key", "llm_model"}，只更新传入的字段。
@@ -107,7 +107,7 @@ async def set_config(body: dict) -> dict:
 
 
 @router.get("/api/llm-providers")
-async def list_custom_llm_providers() -> dict:
+def list_custom_llm_providers() -> dict:
     """列出自定义 LLM 供应商。"""
     config = get_global_config()
     providers = [CustomLLMProvider.from_dict(p).to_dict() for p in config.llm_providers]
@@ -124,7 +124,7 @@ async def list_custom_llm_providers() -> dict:
 
 
 @router.post("/api/llm-providers")
-async def add_custom_llm_provider(body: dict) -> dict:
+def add_custom_llm_provider(body: dict) -> dict:
     """添加自定义 LLM 供应商。
 
     请求体：{"name", "base_url", "api_key", "api_format", "models": [...]}
@@ -187,7 +187,7 @@ async def add_custom_llm_provider(body: dict) -> dict:
 
 
 @router.put("/api/llm-providers/{provider_id}")
-async def update_custom_llm_provider(provider_id: str, body: dict) -> dict:
+def update_custom_llm_provider(provider_id: str, body: dict) -> dict:
     """更新自定义 LLM 供应商。
 
     请求体同添加，但不需要生成新 ID。
@@ -246,7 +246,7 @@ async def update_custom_llm_provider(provider_id: str, body: dict) -> dict:
 
 
 @router.delete("/api/llm-providers/{provider_id}")
-async def delete_custom_llm_provider(provider_id: str) -> dict:
+def delete_custom_llm_provider(provider_id: str) -> dict:
     """删除自定义 LLM 供应商。"""
     config = get_global_config()
 
@@ -305,7 +305,7 @@ async def delete_custom_llm_provider(provider_id: str) -> dict:
 
 
 @router.post("/api/llm-providers/{provider_id}/test")
-async def test_custom_llm_provider(provider_id: str) -> dict:
+def test_custom_llm_provider(provider_id: str) -> dict:
     """测试自定义 LLM 供应商连通性。"""
     config = get_global_config()
 
@@ -373,7 +373,7 @@ async def test_custom_llm_provider(provider_id: str) -> dict:
 
 
 @router.post("/api/llm-providers/activate")
-async def activate_llm_provider(body: dict) -> dict:
+def activate_llm_provider(body: dict) -> dict:
     """激活 LLM 供应商和模型。
 
     请求体：{"provider_id": "...", "model_id": "..."}

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from tools.implementations.glob_tool.schema import GlobInput
 from tools.implementations.runtime.errors import not_a_directory_error
 from tools.implementations.runtime.paths import (
@@ -28,6 +30,12 @@ async def handle_glob(inp: GlobInput, context: ToolUseContext) -> dict:
     Raises:
         ToolExecutionError: 搜索根不是目录 / 路径越界
     """
+    # 目录扫描与 stat 丢线程池执行，大目录匹配时不阻塞事件循环
+    return await asyncio.to_thread(_glob_sync, inp)
+
+
+def _glob_sync(inp: GlobInput) -> dict:
+    """同步匹配内核：由 handle_glob 放入线程池执行。"""
     # 路径沙箱：未指定 path 时用工作区根
     if inp.path:
         search_root = resolve_workspace_path(inp.path)

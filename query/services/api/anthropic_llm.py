@@ -433,7 +433,8 @@ def _build_headers(api_key: str) -> dict[str, str]:
 def _build_client_kwargs() -> dict[str, Any]:
     """构建 httpx.AsyncClient 参数（超时、代理）。"""
     kwargs: dict[str, Any] = {
-        "timeout": httpx.Timeout(600.0, connect=10.0),
+        # 读超时=相邻 chunk 间隔上限，挂流时 120 秒快速失败（与 openai 路径一致）
+        "timeout": httpx.Timeout(120.0, connect=10.0),
     }
     proxy = (
         os.environ.get("HTTPS_PROXY")

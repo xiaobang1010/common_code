@@ -395,6 +395,7 @@ async def query_loop(
     config: QueryConfig,
     user_context: dict[str, str] | None = None,
     system_context: dict[str, str] | None = None,
+    tool_use_context: "ToolUseContext | None" = None,
 ) -> AsyncGenerator[StreamEvent | dict, None]:
     """Agentic 循环核心。
 
@@ -419,6 +420,8 @@ async def query_loop(
         config: 循环级配置快照（auto_compact_enabled 等）
         user_context: 用户上下文字典，由调用方构建
         system_context: 系统上下文字典，由调用方构建
+        tool_use_context: 调用方的工具执行上下文（子代理场景传入，
+            使每轮工具执行的 tool_use_id 继承子代理标识，供上下文判定与工具裁剪）
 
     Yields:
         StreamEvent | dict: 流式事件或结果消息
@@ -434,6 +437,9 @@ async def query_loop(
 
     # skill 列表增量注入追踪（跨轮保持，避免重复注入）
     sent_skills: set[str] = set()
+
+    # 循环内轮次计数（max_turns 检查用；不依赖 submitMessage 收尾才递增的引擎计数）
+    loop_turns = 0
 
     # 首轮记忆注入：若有启用的记忆插件，注入 L0+L1 上下文或历史记忆。
     # 首轮判定用「历史仅含当前这条用户消息」：submitMessage 在进循环前已把用户消息
@@ -472,14 +478,22 @@ async def query_loop(
         messages = engine.mutable_messages
         transition = state.transition
 
-        # ---- 0. maxTurns 检查 ----
+        # ---- 0. maxTurns 检查（循环内计数，子代理直接调 query_loop 也能生效） ----
         if engine_config.max_turns is not None:
-            if engine.turn_count >= engine_config.max_turns:
-                yield {"type": "max_turns_reached", "max_turns": engine_config.max_turns}
+            if loop_turns >= engine_config.max_turns:
+                # 以 assistant 消息说明停止原因，让子代理结果可读
+                yield {
+                    "role": "assistant",
+                    "content": (
+                        f"[已达到轮次上限（max_turns={engine_config.max_turns}），"
+                        f"本轮任务提前停止。]"
+                    ),
+                }
                 yield StreamEvent(type="done", finish_reason="stop")
                 await _mine_conversation_to_palace(engine)
                 yield LoopResult(reason="completed")
                 return
+        loop_turns += 1
 
         # ---- 1. 压缩管线（内联四级）----
         if config.auto_compact_enabled and messages:
@@ -552,9 +566,14 @@ async def query_loop(
         # ---- 3. 构建 API 请求 ----
         from prompts import build_system_messages, get_system_prompt_sections
 
-        sections = engine_config.system_prompt_sections or get_system_prompt_sections(
-            project_info=_build_project_info()
-        )
+        if engine_config.system_prompt_sections:
+            sections = engine_config.system_prompt_sections
+        else:
+            # 工作区信息构建含 subprocess（git 分支探测）与配置读取，
+            # 丢线程池避免阻塞事件循环（心跳、权限桥都在上面）
+            sections = get_system_prompt_sections(
+                project_info=await asyncio.to_thread(_build_project_info)
+            )
         system_messages = build_system_messages(sections)
 
         if system_context:
@@ -596,7 +615,19 @@ async def query_loop(
         from startup.setup import get_hooks_snapshot
         tool_executor = StreamingToolExecutor(
             tools=engine_config.tools,
-            context=ToolUseContext(question_callback=engine_config.question_prompt),
+            context=ToolUseContext(
+                question_callback=engine_config.question_prompt,
+                # 子代理场景继承其 tool_use_id（agent_ 前缀），供 is_subagent_context 判定
+                tool_use_id=(
+                    tool_use_context.tool_use_id
+                    if tool_use_context is not None and tool_use_context.tool_use_id
+                    else ""
+                ),
+                # 会话级中断事件（/api/abort 置位），Agent 工具传给前台子代理优雅退出
+                abort_controller=engine_config.abort_event,
+                # 引擎会话标识：子代理注册表按父会话关联与通知投递
+                session_id=getattr(engine, "session_id", ""),
+            ),
             permission_check=engine_config.permission_check,
             permission_prompt=engine_config.permission_prompt,
             always_allowed=engine.always_allowed,
@@ -833,6 +864,18 @@ async def query_loop(
 
         # ---- 11. 状态转换 ----
         next_messages = [*messages, *tool_result_messages]
+
+        # 后台子代理完成通知（活跃通道）：父会话运行中时在本轮 drain 注入对话，
+        # 非活跃期间的通知留队列，下次运行时在此取走，不丢失
+        try:
+            from tools.subagent.notify import drain_notifications
+
+            for notice in drain_notifications(getattr(engine, "session_id", "")):
+                yield notice
+                next_messages.append(notice)
+        except ImportError:
+            pass
+
         engine.mutable_messages = next_messages
 
         # 刷新工具列表（为未来 MCP 接入预留，当前刷新结果和初始一样）

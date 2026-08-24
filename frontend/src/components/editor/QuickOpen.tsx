@@ -100,7 +100,7 @@ function QuickOpen({ open, onClose, onOpenFile }: QuickOpenProps) {
         position: 'fixed',
         inset: 0,
         zIndex: 200,
-        backgroundColor: 'rgba(0,0,0,0.4)',
+        backgroundColor: 'var(--scrim)',
         display: 'flex',
         justifyContent: 'center',
         alignItems: 'flex-start',

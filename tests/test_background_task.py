@@ -76,7 +76,7 @@ def env(workspace, monkeypatch):
     monkeypatch.setattr(server.state, "app_state", FakeAppState())
     monkeypatch.setattr(server.state, "engine_session_id", None)
 
-    def fake_query_engine(config, initial_messages=None):
+    def fake_query_engine(config, initial_messages=None, session_id=""):
         inst = FakeEngine(initial_messages or [])
         engine.instances.append(inst)
         return inst

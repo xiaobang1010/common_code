@@ -35,7 +35,6 @@ class AgentDefinition:
         max_turns: 最大循环轮数，None 表示不限
         background: 是否总是后台运行
         source: 来源标记（"built-in" / "user" / "project"）
-        omit_user_context: 是否从上下文中省略用户上下文（省 token）
     """
 
     agent_type: str
@@ -49,7 +48,6 @@ class AgentDefinition:
     max_turns: int | None = None
     background: bool = False
     source: str = "built-in"
-    omit_user_context: bool = False
 
     # ------------------------------------------------------------------
     # 便捷方法

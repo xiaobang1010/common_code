@@ -73,6 +73,26 @@ export interface AgentInfo {
   source: string
 }
 
+/** 自定义子智能体加载诊断（GET /api/agents 附带） */
+export interface AgentDiagnostic {
+  file: string
+  source: string
+  code: string
+  message: string
+}
+
+/** 自定义子智能体创建/更新请求 */
+export interface AgentCreateInput {
+  name: string
+  description: string
+  system_prompt?: string
+  tools?: string[] | null
+  disallowed_tools?: string[]
+  model?: string | null
+  max_turns?: number | null
+  background?: boolean
+}
+
 /** 技能信息（GET /api/skills 返回的完整字段） */
 export interface SkillInfo {
   name: string
@@ -288,7 +308,16 @@ export const memoryApi = {
 
 /** 子智能体 */
 export const agentsApi = {
-  list: () => apiGet<{ agents: AgentInfo[] }>('/api/agents'),
+  list: () => apiGet<{ agents: AgentInfo[]; diagnostics?: AgentDiagnostic[] }>('/api/agents'),
+  create: (data: AgentCreateInput) => apiPost<{ ok: boolean; file: string }>('/api/agents', data),
+  remove: (name: string) =>
+    fetch(`/api/agents/${encodeURIComponent(name)}`, { method: 'DELETE' }).then(async (res) => {
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok || json.ok === false) {
+        throw new Error(json.error || `DELETE /api/agents/${name} 失败：${res.status}`)
+      }
+      return json as { ok: boolean }
+    }),
 }
 
 /** 技能管理 */
@@ -336,6 +365,8 @@ export interface SessionInfo {
   updated_at: string
   message_count: number
   pinned: boolean
+  /** 所属自定义任务分组 id，空串表示未分组 */
+  group_id: string
 }
 
 /** 会话详情（含消息） */
@@ -360,6 +391,14 @@ export interface SessionGroup {
   sessions: SessionInfo[]
 }
 
+/** 自定义任务分组（跨工作区的任务聚合标签） */
+export interface TaskGroupInfo {
+  id: string
+  name: string
+  color: string
+  created_at: string
+}
+
 /** 会话管理 */
 export const sessionsApi = {
   create: (workspace_path: string, title?: string) =>
@@ -374,10 +413,25 @@ export const sessionsApi = {
     apiPatch<{ ok: boolean }>(`/api/sessions/${session_id}`, { title }),
   pin: (session_id: string, pinned: boolean) =>
     apiPatch<{ ok: boolean }>(`/api/sessions/${session_id}`, { pinned }),
+  /** 归组/移出分组：group_id 传空串表示移出 */
+  setGroup: (session_id: string, group_id: string) =>
+    apiPatch<{ ok: boolean }>(`/api/sessions/${session_id}`, { group_id }),
   switch: (session_id: string) =>
     apiPost<{ ok: boolean; messages: Record<string, unknown>[]; workspace_path: string }>(`/api/sessions/${session_id}/switch`),
   grouped: () =>
-    apiGet<{ groups: SessionGroup[]; current_tasks: Array<{ session_id: string; state: string }> }>('/api/sessions/grouped'),
+    apiGet<{ groups: SessionGroup[]; task_groups: TaskGroupInfo[]; current_tasks: Array<{ session_id: string; state: string }> }>('/api/sessions/grouped'),
+}
+
+/** 自定义任务分组管理 */
+export const sessionGroupsApi = {
+  list: () =>
+    apiGet<{ groups: TaskGroupInfo[] }>('/api/session-groups'),
+  create: (name: string, color?: string) =>
+    apiPost<{ ok: boolean; group: TaskGroupInfo }>('/api/session-groups', { name, color }),
+  update: (id: string, data: { name?: string; color?: string }) =>
+    apiPatch<{ ok: boolean }>(`/api/session-groups/${id}`, data),
+  remove: (id: string) =>
+    apiDelete<{ ok: boolean }>(`/api/session-groups/${id}`),
 }
 
 /** 工作区管理 */

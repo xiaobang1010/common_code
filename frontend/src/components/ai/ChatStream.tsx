@@ -56,17 +56,29 @@ function ChatStream({ hasWorkspace, onOpenWorkspace }: Props) {
 
   return (
     <div style={{ position: 'relative', flex: 1, minHeight: 0, display: 'flex' }}>
+      {/* 滚动容器保持全宽：滚动条贴 AI 面板右缘，不随内容列缩进 */}
       <div
         ref={containerRef}
         style={{
           flex: 1,
           overflowY: 'auto',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '20px',
-          padding: '20px 24px',
         }}
       >
+        {/* 限宽可读列：消息与空态共用；minHeight 撑满滚动容器保证空态垂直居中，
+            窄屏（面板不足 880px）时 max-width 自动退化为全宽、仅保留左右留白 */}
+        <div
+          style={{
+            maxWidth: 'var(--content-max-width)',
+            width: '100%',
+            margin: '0 auto',
+            boxSizing: 'border-box',
+            minHeight: '100%',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '20px',
+            padding: '20px var(--content-pad-x)',
+          }}
+        >
         {blockIds.length === 0 ? (
           hasWorkspace ? (
           <div
@@ -90,7 +102,7 @@ function ChatStream({ hasWorkspace, onOpenWorkspace }: Props) {
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                boxShadow: '0 8px 24px rgba(0, 0, 0, 0.35)',
+                boxShadow: 'var(--shadow-lg)',
                 marginBottom: '4px',
               }}
             >
@@ -143,7 +155,7 @@ function ChatStream({ hasWorkspace, onOpenWorkspace }: Props) {
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                boxShadow: '0 8px 24px rgba(0, 0, 0, 0.35)',
+                boxShadow: 'var(--shadow-lg)',
                 marginBottom: '4px',
               }}
             >
@@ -211,8 +223,9 @@ function ChatStream({ hasWorkspace, onOpenWorkspace }: Props) {
             <WorkBlockView key={id} blockId={id} />
           ))
         )}
-        {/* 底部哨兵：可见表示用户贴底 */}
+        {/* 底部哨兵：可见表示用户贴底（随消息列包裹在内容列内） */}
         <div ref={sentinelRef} style={{ height: '1px', flexShrink: 0 }} />
+        </div>
       </div>
 
       {/* 用户上滚查看历史时显示回到底部按钮；流式期间并列停止入口，保证离底时控制仍可触达 */}
@@ -270,7 +283,7 @@ function ChatStream({ hasWorkspace, onOpenWorkspace }: Props) {
               }}
               onMouseEnter={(e) => {
                 e.currentTarget.style.background = 'var(--error)'
-                e.currentTarget.style.color = '#fff'
+                e.currentTarget.style.color = 'var(--button-primary-text)'
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.background = 'var(--bg-elevated)'

@@ -9,13 +9,16 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator
 
 import openai
 
-from query.services.api.client import get_active_api_format, get_llm_client
+from query.services.api.client import (
+    get_active_api_format,
+    get_async_llm_client,
+    get_default_model,
+)
 from query.services.api.errors import classify_error
 from query.services.api.message_format import to_openai_messages, to_openai_tools
 from query.services.api.with_retry import RetryConfig, with_retry_stream
@@ -96,12 +99,10 @@ async def query_model_with_streaming(
             yield event
         return
 
-    from query.services.api.client import get_default_model
-
     if model is None:
         model = get_default_model()
 
-    client = get_llm_client()
+    client = get_async_llm_client()
 
     # 构建请求参数
     openai_messages = _build_messages(messages)
@@ -120,28 +121,36 @@ async def query_model_with_streaming(
 
     async def _stream_events() -> AsyncGenerator[StreamEvent, None]:
         """内部生成器：创建流并解析 chunk 为 StreamEvent。"""
-        # 同步客户端：create() 直接返回 Stream 对象
-        stream = client.chat.completions.create(**params)
+        # 异步客户端：create 与 chunk 读取均为 await/async for，
+        # 模型思考间隙会让出事件循环，不再阻塞其他协程
+        stream = await client.chat.completions.create(**params)
 
-        for chunk in stream:
+        async for chunk in stream:
             events = parse_stream_chunk(chunk)
             for event in events:
                 yield event
-            # 让出控制权，避免阻塞事件循环
-            await asyncio.sleep(0)
 
-    # 用 with_retry_stream 包装，对建立阶段的可重试错误（rate_limit、server_error）做指数退避重试
-    retry_config = RetryConfig()  # 使用默认配置
+    # 用 with_retry_stream 包装，对建立阶段的可重试错误（rate_limit、server_error、
+    # 首包看护超时）做指数退避重试。流式场景收紧重试次数：首包挂起多为
+    # 供应商/代理问题，3 次重试（叠加 120 秒首包看护）已给足自愈窗口，
+    # 避免坏链路上静默重试过久
+    retry_config = RetryConfig(max_retries=3, base_delay=1.0, max_delay=8.0)
+
+    async def _on_retry(n: int, total: int, error: Exception) -> StreamEvent:
+        # 重试反馈走 phase 事件（前端工作块直接显示），避免重试全程静默
+        return StreamEvent(
+            type="phase",
+            content=f"模型响应超时（{type(error).__name__}），正在重试 {n}/{total}…",
+        )
+
     try:
-        async for event in with_retry_stream(_stream_events, retry_config):
+        async for event in with_retry_stream(
+            _stream_events, retry_config, on_retry=_on_retry
+        ):
             yield event
     except openai.APIError as e:
         # 不可重试错误或重试耗尽后到这里
         api_error = classify_error(e)
-        # 临时调试：打印 400 的完整错误和请求摘要
-        import sys as _sys
-        _sys.stderr.write(f"[400 DEBUG] status={getattr(e,'status_code',None)} msg={api_error.message} msgs={len(params.get('messages',[]))} tools={len(params.get('tools',[]))}\n")
-        _sys.stderr.flush()
         yield StreamEvent(
             type="error",
             error=e,

@@ -5,6 +5,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 // @ts-ignore
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { useChatStore, formatDuration, lastActivityAtRef, type WorkBlock, type WorkStep } from '../../stores/useChatStore'
+import SubagentCard from './SubagentCard'
 
 interface Props {
   // 只订阅自己的工作块：流式更新只触发本组件重渲
@@ -195,6 +196,9 @@ const EventLine = memo(function EventLine({ step }: { step: WorkStep }) {
     cursor: clickable ? 'pointer' : 'default',
   }
 
+  // Agent 步骤：事件行下方渲染独立状态卡片（状态/耗时/usage/输出预览/停止）
+  const isAgentStep = step.toolName === 'Agent' || step.toolName === 'Task'
+
   return (
     <div>
       {clickable ? (
@@ -211,6 +215,12 @@ const EventLine = memo(function EventLine({ step }: { step: WorkStep }) {
         </button>
       ) : (
         <div style={rowStyle}>{row}</div>
+      )}
+
+      {isAgentStep && (
+        <div style={{ padding: '0 0 6px 20px' }}>
+          <SubagentCard step={step} />
+        </div>
       )}
 
       {expanded && (
@@ -289,10 +299,14 @@ const StatusLine = memo(function StatusLine({ block, expanded, onToggle }: {
     ? EXIT_HINT[block.exitReason] ?? block.exitReason
     : ''
 
-  // 活动行：连接异常 > 工具执行 > 生成回复 > 阶段事件 > 等待
+  // 活动行：长时间无响应 > 工具执行 > 生成回复 > 阶段事件 > 等待。
+  // idle 分级：思考间隙超 10s 属正常（模型慢，不误报连接异常）；
+  // 超 60s 才升级为疑似连接异常的强提示
+  const idleWarn = isRunning && idleMs > 60000
   const activity = (() => {
     if (!isRunning) return ''
-    if (idleMs > 10000) return '连接异常，可在输入区停止后重试'
+    if (idleMs > 60000) return '长时间无响应，可能连接异常，可在输入区停止后重试'
+    if (idleMs > 10000) return '模型响应较慢，可继续浏览其他区域'
     const runningStep = block.steps.find(s => s.isRunning)
     if (runningStep) return `正在执行工具 ${runningStep.toolName}`
     if (block.finalReplyStreaming && block.finalReply) return '正在生成回复'
@@ -349,8 +363,8 @@ const StatusLine = memo(function StatusLine({ block, expanded, onToggle }: {
       )}
       <div style={{ borderBottom: '1px solid var(--border-subtle)' }} />
       {activity && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '5px 0 8px', fontSize: '11px', color: 'var(--text-tertiary)', fontFamily: 'var(--font-ui)' }}>
-          <span className="work-pulse" style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: 'var(--text-tertiary)', animation: 'breathe 1.6s ease-in-out infinite', flexShrink: 0 }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '5px 0 8px', fontSize: '11px', color: idleWarn ? 'var(--error)' : 'var(--text-tertiary)', fontFamily: 'var(--font-ui)' }}>
+          <span className="work-pulse" style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: idleWarn ? 'var(--error)' : 'var(--text-tertiary)', animation: 'breathe 1.6s ease-in-out infinite', flexShrink: 0 }} />
           {/* role=status 提供隐式 aria-live=polite：阶段文案变化才播报，逐秒计时不播报 */}
           <span role="status">{activity}</span>
         </div>
@@ -435,6 +449,14 @@ export const markdownComponents = {
   },
   ol({ children }: { children?: React.ReactNode }) {
     return <ol style={{ margin: '6px 0', paddingLeft: '20px' }}>{children}</ol>
+  },
+  // 表格可能很宽：外层包横向滚动容器，让宽表格在限宽列内部滚动而不撑破列边界
+  table({ children }: { children?: React.ReactNode }) {
+    return (
+      <div style={{ overflowX: 'auto' }}>
+        <table>{children}</table>
+      </div>
+    )
   },
   h1({ children }: { children?: React.ReactNode }) {
     return <h1 style={{ fontSize: '17px', fontWeight: 600, margin: '12px 0 6px' }}>{children}</h1>
@@ -555,7 +577,7 @@ function WorkBlockView({ blockId }: Props) {
           fontSize: '14px',
           lineHeight: 1.6,
           wordBreak: 'break-word',
-          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.2)',
+          boxShadow: 'var(--shadow-md)',
           fontWeight: 500,
           whiteSpace: 'pre-wrap',
         }}

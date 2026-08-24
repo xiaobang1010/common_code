@@ -20,6 +20,8 @@ class Session:
         messages: OpenAI 格式消息列表
         message_count: 消息数量（列表场景下避免传输完整 messages）
         pinned: 是否置顶（持久状态，列表排序 pinned 优先）
+        group_id: 所属自定义任务分组 id（空串表示未分组；分组只是视图标签，
+            不改变任务的 workspace_path 归属）
     """
 
     id: str
@@ -31,6 +33,7 @@ class Session:
     messages: list[dict]
     message_count: int = 0
     pinned: bool = False
+    group_id: str = ""
 
 
 @dataclass
@@ -52,3 +55,20 @@ class Workspace:
     session_count: int = 0
     pinned: bool = False
     alias: str = ""
+
+
+@dataclass
+class TaskGroup:
+    """自定义任务分组（跨工作区的任务聚合视图标签）。
+
+    Attributes:
+        id: 分组唯一标识（UUID）
+        name: 分组名称（必填，允许同名，以 id 区分）
+        color: 颜色标识（十六进制色值，空串表示未设置）
+        created_at: 创建时间（ISO 格式，列表按此升序）
+    """
+
+    id: str
+    name: str
+    color: str = ""
+    created_at: str = ""
