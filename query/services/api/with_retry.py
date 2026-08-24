@@ -106,6 +106,8 @@ async def with_retry(
 async def with_retry_stream(
     fn: Callable[[], AsyncGenerator[T, None]],
     retry_config: RetryConfig | None = None,
+    first_event_timeout: float = 120.0,
+    on_retry: Callable[[int, int, Exception], Any] | None = None,
 ) -> AsyncGenerator[T, None]:
     """带重试的 async generator 包装器。
 
@@ -114,15 +116,24 @@ async def with_retry_stream(
 
     重试逻辑：
       - 调用 fn() 获取 async generator
-      - 尝试获取首个事件（await gen.__anext__()）
-      - 首个事件获取失败（抛异常）→ 判断是否可重试 → 重试
+      - 尝试获取首个事件（await gen.__anext__()，受 first_event_timeout 看护）
+      - 首个事件获取失败（抛异常/看护超时）→ 判断是否可重试 → 重试
       - 首个事件获取成功 → 重试窗口关闭，正常迭代剩余事件
       - 迭代中失败 → 不重试，异常冒泡
       - StopAsyncIteration（空 generator）→ 正常结束，不重试
 
+    首事件看护：请求建立后服务器长时间不吐首个 chunk（代理挂流、
+    供应商并发限流挂起等）时，httpx 读超时（数百秒）太慢，
+    wait_for 在 first_event_timeout 内快速失败并进入重试判定，
+    避免用户界面长时间停留在「等待模型响应」。
+
     Args:
         fn: 返回 async generator 的工厂函数（无参数）
         retry_config: 重试配置，为 None 时使用默认配置
+        first_event_timeout: 首事件等待上限（秒）
+        on_retry: 回调（即将进行的重试序号 1 起、总重试次数、触发的异常），
+            返回值非 None 时作为提示事件随流 yield（调用方借此透出
+            「正在重试」反馈，避免重试全程静默）
 
     Yields:
         fn 产出的所有事件
@@ -134,13 +145,18 @@ async def with_retry_stream(
         gen = fn()
         try:
             # 尝试获取首个事件——这是重试窗口
-            first_event = await gen.__anext__()
+            first_event = await asyncio.wait_for(
+                gen.__anext__(), timeout=first_event_timeout
+            )
         except StopAsyncIteration:
             # 空 generator，正常结束
             return
         except Exception as error:
             last_error = error
             api_error = classify_error(error)
+
+            # 关闭失败的生成器，释放悬挂的连接
+            await gen.aclose()
 
             # 不在可重试集合中，直接抛出
             if api_error.type not in config.retryable_errors:
@@ -149,6 +165,15 @@ async def with_retry_stream(
             # 已达最大重试次数，抛出
             if attempt >= config.max_retries:
                 raise
+
+            # 透出重试反馈：回调返回的提示事件随流 yield（回调异常不阻断重试）
+            if on_retry is not None:
+                try:
+                    notice = await on_retry(attempt + 1, config.max_retries, error)
+                except Exception:
+                    notice = None
+                if notice is not None:
+                    yield notice
 
             # 计算延迟并等待
             delay = _calculate_delay(

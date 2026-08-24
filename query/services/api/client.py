@@ -109,7 +109,9 @@ def build_http_client() -> httpx.Client:
 
     kwargs: dict[str, Any] = {
         "headers": headers,
-        "timeout": httpx.Timeout(600.0, connect=10.0),
+        # 读超时=相邻 chunk 间隔上限（流式输出时秒级），挂流时 120 秒
+        # 快速失败进入重试/报错，不再让界面干等 10 分钟
+        "timeout": httpx.Timeout(120.0, connect=10.0),
     }
     if proxy:
         kwargs["proxy"] = proxy
@@ -137,7 +139,8 @@ def build_async_http_client() -> httpx.AsyncClient:
 
     kwargs: dict[str, Any] = {
         "headers": headers,
-        "timeout": httpx.Timeout(600.0, connect=10.0),
+        # 同 build_http_client：挂流时 120 秒快速失败（读超时=相邻 chunk 间隔上限）
+        "timeout": httpx.Timeout(120.0, connect=10.0),
     }
     if proxy:
         kwargs["proxy"] = proxy

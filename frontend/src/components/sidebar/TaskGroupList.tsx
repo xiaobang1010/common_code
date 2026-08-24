@@ -13,7 +13,7 @@ interface TaskGroupListProps {
   allGroups: SessionGroup[]
   currentWorkspacePath: string | null
   currentSessionId: string | null
-  runningSessionId: string | null
+  runningSessionIds: string[]
   hasWorkspace: boolean
   onCreateInGroup: (groupId: string) => void
   onRenameGroup: (groupId: string, name: string) => void
@@ -160,7 +160,7 @@ function CustomGroupSection({
   sessions,
   hasWorkspace,
   currentSessionId,
-  runningSessionId,
+  runningSessionIds,
   currentWorkspacePath,
   onCreateInGroup,
   onRenameGroup,
@@ -178,7 +178,7 @@ function CustomGroupSection({
   TaskGroupListProps,
   | 'hasWorkspace'
   | 'currentSessionId'
-  | 'runningSessionId'
+  | 'runningSessionIds'
   | 'currentWorkspacePath'
   | 'onCreateInGroup'
   | 'onRenameGroup'
@@ -399,7 +399,7 @@ function CustomGroupSection({
             key={session.id}
             session={session}
             isActive={session.id === currentSessionId}
-            isRunning={session.id === runningSessionId}
+            isRunning={runningSessionIds.includes(session.id)}
             enableDrag
             onSwitch={(id) => {
               if (session.workspace_path === currentWorkspacePath) onSwitchSession(id)
@@ -421,7 +421,7 @@ function TaskGroupList({
   allGroups,
   currentWorkspacePath,
   currentSessionId,
-  runningSessionId,
+  runningSessionIds,
   hasWorkspace,
   onCreateInGroup,
   onRenameGroup,
@@ -499,7 +499,7 @@ function TaskGroupList({
               key={session.id}
               session={session}
               isActive={session.id === currentSessionId}
-              isRunning={session.id === runningSessionId}
+              isRunning={runningSessionIds.includes(session.id)}
               enableDrag
               onSwitch={(id) => {
                 if (session.workspace_path === currentWorkspacePath) onSwitchSession(id)
@@ -521,7 +521,7 @@ function TaskGroupList({
           sessions={allSessions.filter((s) => s.group_id === group.id)}
           hasWorkspace={hasWorkspace}
           currentSessionId={currentSessionId}
-          runningSessionId={runningSessionId}
+          runningSessionIds={runningSessionIds}
           currentWorkspacePath={currentWorkspacePath}
           onCreateInGroup={onCreateInGroup}
           onRenameGroup={onRenameGroup}
