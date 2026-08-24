@@ -130,10 +130,23 @@ async def query_model_with_streaming(
             for event in events:
                 yield event
 
-    # 用 with_retry_stream 包装，对建立阶段的可重试错误（rate_limit、server_error）做指数退避重试
-    retry_config = RetryConfig()  # 使用默认配置
+    # 用 with_retry_stream 包装，对建立阶段的可重试错误（rate_limit、server_error、
+    # 首包看护超时）做指数退避重试。流式场景收紧重试次数：首包挂起多为
+    # 供应商/代理问题，3 次重试（叠加 120 秒首包看护）已给足自愈窗口，
+    # 避免坏链路上静默重试过久
+    retry_config = RetryConfig(max_retries=3, base_delay=1.0, max_delay=8.0)
+
+    async def _on_retry(n: int, total: int, error: Exception) -> StreamEvent:
+        # 重试反馈走 phase 事件（前端工作块直接显示），避免重试全程静默
+        return StreamEvent(
+            type="phase",
+            content=f"模型响应超时（{type(error).__name__}），正在重试 {n}/{total}…",
+        )
+
     try:
-        async for event in with_retry_stream(_stream_events, retry_config):
+        async for event in with_retry_stream(
+            _stream_events, retry_config, on_retry=_on_retry
+        ):
             yield event
     except openai.APIError as e:
         # 不可重试错误或重试耗尽后到这里

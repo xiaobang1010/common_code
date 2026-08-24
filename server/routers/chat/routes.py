@@ -377,3 +377,46 @@ async def abort_query(request: Request) -> JSONResponse:
     except asyncio.TimeoutError:
         return JSONResponse(content={"ok": False, "error": "stream finalize timeout"})
     return JSONResponse(content={"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# GET /api/debug/tasks - 协程栈诊断（排查任务挂起）
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/debug/tasks")
+async def debug_tasks() -> dict:
+    """dump 所有 asyncio 任务栈帧与运行任务注册表状态。
+
+    排查「任务长时间运行中但无产出」时，用它看任务协程挂在哪一行。
+    """
+    tasks_out: list[dict] = []
+    for task in asyncio.all_tasks():
+        if task is asyncio.current_task():
+            continue
+        frames = [
+            f"{frame.f_code.co_filename}:{frame.f_lineno} {frame.f_code.co_name}"
+            for frame in task.get_stack()
+        ]
+        tasks_out.append({
+            "name": task.get_name(),
+            "done": task.done(),
+            "coro": repr(task.get_coro())[:150],
+            "frames": frames,
+        })
+    runs_out: list[dict] = []
+    for sid, run in server.state.running_runs.items():
+        coro_frames: list[str] = []
+        if run.task is not None and not run.task.done():
+            coro_frames = [
+                f"{frame.f_code.co_filename}:{frame.f_lineno} {frame.f_code.co_name}"
+                for frame in run.task.get_stack()
+            ]
+        runs_out.append({
+            "session_id": sid,
+            "finished": run.finished.is_set(),
+            "task_done": run.task.done() if run.task is not None else None,
+            "frames": coro_frames,
+            "subscribers": len(run.subscribers),
+        })
+    return {"tasks": tasks_out, "running_runs": runs_out}
