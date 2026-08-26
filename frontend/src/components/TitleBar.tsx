@@ -9,7 +9,6 @@ interface TitleBarProps {
   panelActive: boolean
   onTogglePanel: () => void
   onOpenSettings: () => void
-  onNewSession: () => void
   // 当前任务标题（侧栏折叠时仍可见）
   currentTaskTitle: string
   // 当前查看会话是否有后台任务在跑：切回运行中会话时无前台流式连接，
@@ -74,7 +73,6 @@ function TitleBar({
   panelActive,
   onTogglePanel,
   onOpenSettings,
-  onNewSession,
   currentTaskTitle,
   taskRunning = false,
 }: TitleBarProps) {
@@ -190,41 +188,8 @@ function TitleBar({
           </svg>
         </button>
 
-        {/* 新建任务 */}
-        <button
-          onClick={onNewSession}
-          title="新建任务"
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            width: '28px',
-            height: '28px',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-sm)',
-            background: 'transparent',
-            color: 'var(--text-secondary)',
-            cursor: 'pointer',
-            transition: 'all var(--transition-fast)',
-            flexShrink: 0,
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.borderColor = 'var(--border-strong)'
-            e.currentTarget.style.color = 'var(--text-primary)'
-            e.currentTarget.style.backgroundColor = 'var(--hover-bg)'
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.borderColor = 'var(--border)'
-            e.currentTarget.style.color = 'var(--text-secondary)'
-            e.currentTarget.style.backgroundColor = 'transparent'
-          }}
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 5v14M5 12h14" />
-          </svg>
-        </button>
-
-        {/* 设置入口（齿轮，直接打开设置面板） */}
+        {/* 设置入口（齿轮，直接打开设置面板）。新建任务入口已精简：
+            侧栏常驻按钮 / 工作区行悬停「+」/ Ctrl+N 均可用 */}
         <SettingsButton onOpenSettings={onOpenSettings} />
       </div>
     </div>

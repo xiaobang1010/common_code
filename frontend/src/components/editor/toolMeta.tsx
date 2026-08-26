@@ -41,7 +41,7 @@ const FilesIcon = (
   </svg>
 )
 
-// 搜索图标：文档 + 放大镜（与审查卡的纯放大镜区分）
+// 搜索图标：文档 + 放大镜
 const SearchIcon = (
   <svg {...iconProps}>
     <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -51,19 +51,22 @@ const SearchIcon = (
   </svg>
 )
 
-// 审查图标：放大镜
+// 审查图标：剪贴板 + 对勾（审核语义，避免与搜索的放大镜混淆）
 const ReviewIcon = (
   <svg {...iconProps}>
-    <circle cx="11" cy="11" r="7" />
-    <path d="M21 21l-4.3-4.3" />
+    <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+    <rect x="8" y="2" width="8" height="4" rx="1" />
+    <path d="M9 13l2 2 4-4" />
   </svg>
 )
 
 // 工具标签元信息：顺序即标签栏与入口卡片的展示顺序（默认三标签 + 按需打开）
-export const TOOL_META: { id: ToolId; title: string; icon: ReactNode }[] = [
+// railHidden：入口卡片（IconRail）不渲染该条目，但功能保留（标签栏/面板/Ctrl+K 照常），
+// 不能直接从表中删除：标签渲染、面板映射与 localStorage 恢复均依赖此表
+export const TOOL_META: { id: ToolId; title: string; icon: ReactNode; railHidden?: boolean }[] = [
   { id: 'summary', title: '概要', icon: SummaryIcon },
   { id: 'terminal', title: '终端', icon: TerminalIcon },
   { id: 'files', title: '文件', icon: FilesIcon },
-  { id: 'search', title: '搜索', icon: SearchIcon },
+  { id: 'search', title: '搜索', icon: SearchIcon, railHidden: true },
   { id: 'review', title: '审查', icon: ReviewIcon },
 ]

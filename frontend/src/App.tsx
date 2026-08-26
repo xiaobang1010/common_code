@@ -598,7 +598,6 @@ function App() {
         panelActive={!editorCollapsed}
         onTogglePanel={togglePanel}
         onOpenSettings={() => setSettingsOpen(true)}
-        onNewSession={handleCreateSession}
         currentTaskTitle={currentTaskTitle}
         taskRunning={runningSessionId !== null}
       />
