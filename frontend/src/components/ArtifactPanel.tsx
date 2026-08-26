@@ -996,7 +996,7 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
       terminal: <TerminalToolContent />,
       files: fileViewNode ?? filesEmptyNode,
       search: <SearchPanel onFileOpen={openFile} />,
-      review: <ReviewCard onFileOpen={openFile} />,
+      review: <ReviewCard />,
     }
 
     // 折叠时不渲染任何形态（入口由右缘图标轨承接）

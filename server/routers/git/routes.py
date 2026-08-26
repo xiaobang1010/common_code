@@ -7,9 +7,17 @@ import subprocess
 
 from fastapi import APIRouter
 
-from server.paths import project_root
+from server.paths import is_within_root, project_root
 
 router = APIRouter()
+
+# 统一的 git 全局参数：关闭路径转义，中文文件名原样输出（配 utf-8 解码）
+GIT_GLOBAL_ARGS = ["-c", "core.quotepath=false"]
+# 统一的子进程文本解码选项：git 输出为 utf-8 字节，Windows 默认本地编码会乱码
+GIT_TEXT_OPTS = {"encoding": "utf-8", "errors": "replace"}
+
+# diff 单侧内容超过该字节数时不下发全文，前端用占位提示代替对比视图
+MAX_DIFF_BYTES = 1024 * 1024
 
 
 def _parse_porcelain_line(line: str) -> list[dict]:
@@ -64,10 +72,11 @@ def _numstat_stats(root: str) -> dict[str, tuple[int, int]]:
     """
     try:
         proc = subprocess.run(
-            ["git", "diff", "HEAD", "--numstat"],
+            ["git", *GIT_GLOBAL_ARGS, "diff", "HEAD", "--numstat"],
             cwd=root,
             capture_output=True,
             text=True,
+            **GIT_TEXT_OPTS,
             timeout=10,
         )
     except (subprocess.SubprocessError, OSError):
@@ -95,10 +104,14 @@ def _numstat_stats(root: str) -> dict[str, tuple[int, int]]:
     return stats
 
 
-def _count_file_lines(root: str, rel_path: str) -> int:
-    """统计未跟踪文件的总行数，作为新增行数统计。读取失败返回 0。"""
+def _count_file_lines(abs_path: str) -> int:
+    """统计未跟踪文件的总行数，作为新增行数统计。读取失败返回 0。
+
+    abs_path 必须是已解析的绝对路径：porcelain 输出的路径是仓库根相对
+    口径，工作区可能是仓库子目录，直接用工作区根 join 会落点错位。
+    """
     try:
-        with open(os.path.join(root, rel_path), "rb") as f:
+        with open(abs_path, "rb") as f:
             return sum(1 for _ in f)
     except OSError:
         return 0
@@ -118,19 +131,21 @@ def git_status() -> dict:
 
     try:
         branch_proc = subprocess.run(
-            ["git", "branch", "--show-current"],
+            ["git", *GIT_GLOBAL_ARGS, "branch", "--show-current"],
             cwd=root,
             capture_output=True,
             text=True,
+            **GIT_TEXT_OPTS,
             timeout=5,
         )
         branch = branch_proc.stdout.strip() if branch_proc.returncode == 0 else ""
 
         status_proc = subprocess.run(
-            ["git", "status", "--porcelain"],
+            ["git", *GIT_GLOBAL_ARGS, "status", "--porcelain"],
             cwd=root,
             capture_output=True,
             text=True,
+            **GIT_TEXT_OPTS,
             timeout=5,
         )
 
@@ -143,13 +158,20 @@ def git_status() -> dict:
 
         # 逐文件行数统计：已跟踪文件用 numstat，未跟踪文件数总行数
         stats = _numstat_stats(root)
+        # 未跟踪文件的路径是仓库根相对口径，工作区是子目录时需按仓库根解析落点
+        toplevel = ""
+        if any(change.get("untracked") for change in changes):
+            toplevel = _repo_toplevel(root)
         seen_paths: set[str] = set()
         total_adds = 0
         total_dels = 0
         for change in changes:
             path = change["path"]
             if change.get("untracked"):
-                adds = _count_file_lines(root, path)
+                abs_path = os.path.join(root, path)
+                if not os.path.isfile(abs_path) and toplevel:
+                    abs_path = os.path.join(toplevel, path)
+                adds = _count_file_lines(abs_path)
                 dels = 0
             else:
                 adds, dels = stats.get(path, (0, 0))
@@ -188,10 +210,11 @@ def git_stage(body: dict) -> dict:
     root = project_root()
     try:
         proc = subprocess.run(
-            ["git", "add", path],
+            ["git", *GIT_GLOBAL_ARGS, "add", path],
             cwd=root,
             capture_output=True,
             text=True,
+            **GIT_TEXT_OPTS,
             timeout=10,
         )
     except (subprocess.SubprocessError, OSError) as e:
@@ -214,10 +237,11 @@ def git_unstage(body: dict) -> dict:
     root = project_root()
     try:
         proc = subprocess.run(
-            ["git", "reset", "HEAD", path],
+            ["git", *GIT_GLOBAL_ARGS, "reset", "HEAD", path],
             cwd=root,
             capture_output=True,
             text=True,
+            **GIT_TEXT_OPTS,
             timeout=10,
         )
     except (subprocess.SubprocessError, OSError) as e:
@@ -240,10 +264,11 @@ def git_commit(body: dict) -> dict:
     root = project_root()
     try:
         proc = subprocess.run(
-            ["git", "commit", "-m", message],
+            ["git", *GIT_GLOBAL_ARGS, "commit", "-m", message],
             cwd=root,
             capture_output=True,
             text=True,
+            **GIT_TEXT_OPTS,
             timeout=30,
         )
     except (subprocess.SubprocessError, OSError) as e:
@@ -253,28 +278,147 @@ def git_commit(body: dict) -> dict:
     return {"ok": True}
 
 
-@router.get("/api/git/diff")
-def git_diff(path: str = "") -> dict:
-    """获取文件 diff 接口，执行 git diff。
-
-    参数 path：文件路径，可选。
-    返回 {"diff": "..."}。
-    """
-    root = project_root()
-    cmd = ["git", "diff"]
-    if path:
-        cmd.append(path)
+def _repo_toplevel(root: str) -> str:
+    """返回工作区所在 git 仓库的根目录，不在仓库内时返回空串。"""
     try:
         proc = subprocess.run(
-            cmd,
+            ["git", *GIT_GLOBAL_ARGS, "rev-parse", "--show-toplevel"],
             cwd=root,
             capture_output=True,
             text=True,
-            timeout=15,
+            **GIT_TEXT_OPTS,
+            timeout=5,
         )
     except (subprocess.SubprocessError, OSError):
-        return {"diff": ""}
-    return {"diff": proc.stdout}
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return proc.stdout.strip()
+
+
+def _load_side_content(data: bytes) -> tuple[str, bool]:
+    """把单侧原始字节转成文本，返回 (文本内容, 是否二进制)。
+
+    前 8KB 出现空字节即判定为二进制，文本侧不做解码。换行统一归一为 LF：
+    Windows 下 core.autocrlf 会让磁盘是 CRLF 而 HEAD 是 LF，不归一会导致
+    整个文件在对比视图里被标红。
+    """
+    if b"\0" in data[:8192]:
+        return "", True
+    return data.decode("utf-8", errors="replace").replace("\r\n", "\n"), False
+
+
+def _git_show_head(toplevel: str, rel_path: str) -> bytes | None:
+    """取 HEAD 版本的文件原始字节，取不到（未跟踪等）返回 None。"""
+    try:
+        proc = subprocess.run(
+            ["git", *GIT_GLOBAL_ARGS, "show", f"HEAD:{rel_path}"],
+            cwd=toplevel,
+            capture_output=True,
+            timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout
+
+
+def _diff_payload(path: str, error: str = "") -> dict:
+    """构造空的 diff 结果结构，error 非空表示本次未能取得对比内容。"""
+    return {
+        "path": path,
+        "oldText": "",
+        "newText": "",
+        "binary": False,
+        "tooLarge": False,
+        "additions": 0,
+        "deletions": 0,
+        "error": error,
+    }
+
+
+@router.get("/api/git/diff")
+def git_diff(path: str = "") -> dict:
+    """获取单个文件前后对比内容的接口（HEAD 版本 vs 工作区当前版本）。
+
+    参数 path：仓库根相对路径，与 /api/git/status 变更清单的口径一致。
+    返回 {"path", "oldText", "newText", "binary", "tooLarge", "additions",
+    "deletions", "error"}。未跟踪的新文件 oldText 为空串（全绿新增），
+    已删除文件 newText 为空串（全红删除）；二进制与超过 1MB 的文件不下发
+    内容，由前端展示占位提示。路径越出工作区、不在 git 仓库等情况在
+    error 中说明，内容字段为空。
+    """
+    root = project_root()
+    if not path or path.endswith("/"):
+        return _diff_payload(path, error="path is required")
+
+    toplevel = _repo_toplevel(root)
+    if not toplevel:
+        return _diff_payload(path, error="not a git repository")
+
+    # path 是仓库根相对口径：先落到仓库根上展开 realpath，再要求落点仍在
+    # 当前工作区内；「仓库内但工作区外」（如工作区是仓库子目录时的兄弟目录）
+    # 同样拒绝，安全边界始终是工作区
+    candidate = os.path.realpath(os.path.join(toplevel, path))
+    if not is_within_root(candidate, os.path.realpath(root)):
+        return _diff_payload(path, error="path outside workspace")
+
+    new_text = ""
+    old_text = ""
+    binary = False
+    too_large = False
+
+    # 新侧：工作区磁盘上的当前内容；文件已删除时保持空串即全红删除
+    if os.path.isfile(candidate):
+        try:
+            if os.path.getsize(candidate) > MAX_DIFF_BYTES:
+                too_large = True
+            else:
+                with open(candidate, "rb") as f:
+                    text, is_bin = _load_side_content(f.read())
+                if is_bin:
+                    binary = True
+                else:
+                    new_text = text
+        except OSError:
+            return _diff_payload(path, error="cannot read file")
+
+    head_data = _git_show_head(toplevel, path)
+    if head_data is None and not os.path.isfile(candidate):
+        # HEAD 里没有、磁盘上也没有，说明路径本身无效
+        return _diff_payload(path, error="file not found")
+
+    # 旧侧：HEAD 版本内容；未跟踪的新文件取不到，保持空串即全绿新增。
+    # 任一侧已判定二进制/超大时不再解码另一侧
+    if head_data is not None and not binary and not too_large:
+        if len(head_data) > MAX_DIFF_BYTES:
+            too_large = True
+        else:
+            text, is_bin = _load_side_content(head_data)
+            if is_bin:
+                binary = True
+            else:
+                old_text = text
+
+    # 行数统计与 status 清单同口径：普通文件走 numstat，未跟踪按整文件行数计新增。
+    # candidate 已是仓库根相对口径解析后的绝对路径（工作区为子目录时也能命中）
+    if head_data is None and new_text:
+        adds = _count_file_lines(candidate)
+        dels = 0
+    else:
+        adds, dels = _numstat_stats(root).get(path, (0, 0))
+
+    return {
+        "path": path,
+        "oldText": old_text,
+        "newText": new_text,
+        "binary": binary,
+        "tooLarge": too_large,
+        "additions": adds,
+        "deletions": dels,
+        "error": "",
+    }
 
 
 @router.get("/api/git/branches")
@@ -292,10 +436,11 @@ def git_branches(path: str = "") -> dict:
     try:
         # 获取当前分支
         cur_proc = subprocess.run(
-            ["git", "branch", "--show-current"],
+            ["git", *GIT_GLOBAL_ARGS, "branch", "--show-current"],
             cwd=cwd,
             capture_output=True,
             text=True,
+            **GIT_TEXT_OPTS,
             timeout=5,
         )
         if cur_proc.returncode == 0:
@@ -303,10 +448,11 @@ def git_branches(path: str = "") -> dict:
 
         # 获取所有分支
         list_proc = subprocess.run(
-            ["git", "branch"],
+            ["git", *GIT_GLOBAL_ARGS, "branch"],
             cwd=cwd,
             capture_output=True,
             text=True,
+            **GIT_TEXT_OPTS,
             timeout=5,
         )
         if list_proc.returncode == 0:
@@ -342,10 +488,11 @@ def git_checkout(body: dict) -> dict:
     root = project_root()
     try:
         proc = subprocess.run(
-            ["git", "checkout", branch],
+            ["git", *GIT_GLOBAL_ARGS, "checkout", branch],
             cwd=root,
             capture_output=True,
             text=True,
+            **GIT_TEXT_OPTS,
             timeout=15,
         )
     except (subprocess.SubprocessError, OSError) as e:

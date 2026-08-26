@@ -67,7 +67,7 @@ function Empty({ text }: { text: string }) {
 
 // 概要卡：进展（会话工作块）/ 产物（git 变更文件）/ 引用（上下文用量）
 function SummaryCard({ blockCount, usage, onOpenFile }: SummaryCardProps) {
-  const gitStatus = useGitStatus()
+  const { data: gitStatus } = useGitStatus()
   // 产物只列文件：git 会把新增目录也报为变更项，过滤掉
   const artifacts = gitStatus
     ? dedupeChanges(gitStatus.changes).filter((c) => !c.path.endsWith('/'))

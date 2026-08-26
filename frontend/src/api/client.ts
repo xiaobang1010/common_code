@@ -454,6 +454,21 @@ export const gitApi = {
     apiGet<{ branches: string[]; current: string }>(`/api/git/branches?path=${encodeURIComponent(path)}`),
   checkout: (branch: string) =>
     apiPost<{ ok: boolean; branch: string }>('/api/git/checkout', { branch }),
+  /** 单文件前后对比（HEAD 版本 vs 工作区当前版本），path 为仓库根相对口径 */
+  diff: (path: string) =>
+    apiGet<FileDiffResult>(`/api/git/diff?path=${encodeURIComponent(path)}`),
+}
+
+/** 单文件 diff 返回：前后全文供 DiffEditor 直接渲染，error 非空表示未取到内容 */
+export interface FileDiffResult {
+  path: string
+  oldText: string
+  newText: string
+  binary: boolean
+  tooLarge: boolean
+  additions: number
+  deletions: number
+  error: string
 }
 
 // ---------------------------------------------------------------------------
