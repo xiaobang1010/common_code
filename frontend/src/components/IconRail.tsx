@@ -48,7 +48,8 @@ function IconRail({ onToolClick }: IconRailProps) {
         userSelect: 'none',
       }}
     >
-      {TOOL_META.map(({ id, title, icon }) => (
+      {/* railHidden 条目（如搜索）不在卡片中呈现：入口冗余，功能由侧栏/Ctrl+K 承载 */}
+      {TOOL_META.filter((t) => !t.railHidden).map(({ id, title, icon }) => (
         <button
           key={id}
           onClick={() => onToolClick(id)}
