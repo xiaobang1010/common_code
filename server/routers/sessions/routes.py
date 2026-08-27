@@ -264,8 +264,8 @@ def switch_session(session_id: str) -> dict:
     # 不中止运行中任务：任务后台继续跑并写回原会话（后台任务模型）。
     # 切换仅更换查看视图引擎，任务的独立引擎不受影响
 
-    # 如果工作区不同，切换工作区
-    if session.workspace_path != project_root():
+    # 如果工作区不同，切换工作区（workspace_path 为空的脏数据不覆盖全局根）
+    if session.workspace_path and session.workspace_path != project_root():
         set_project_root(session.workspace_path)
         # 重建引擎
         from dataclasses import replace

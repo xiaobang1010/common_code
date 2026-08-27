@@ -60,13 +60,12 @@ const ReviewIcon = (
   </svg>
 )
 
-// 工具标签元信息：顺序即标签栏与入口卡片的展示顺序（默认三标签 + 按需打开）
-// railHidden：入口卡片（IconRail）不渲染该条目，但功能保留（标签栏/面板/Ctrl+K 照常），
-// 不能直接从表中删除：标签渲染、面板映射与 localStorage 恢复均依赖此表
-export const TOOL_META: { id: ToolId; title: string; icon: ReactNode; railHidden?: boolean }[] = [
+// 工具标签元信息：顺序即标签栏的展示顺序（默认三标签 + 按需打开）。
+// 不能随意从表中删除条目：标签渲染、面板映射与 localStorage 恢复均依赖此表
+export const TOOL_META: { id: ToolId; title: string; icon: ReactNode }[] = [
   { id: 'summary', title: '概要', icon: SummaryIcon },
   { id: 'terminal', title: '终端', icon: TerminalIcon },
   { id: 'files', title: '文件', icon: FilesIcon },
-  { id: 'search', title: '搜索', icon: SearchIcon, railHidden: true },
+  { id: 'search', title: '搜索', icon: SearchIcon },
   { id: 'review', title: '审查', icon: ReviewIcon },
 ]

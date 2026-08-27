@@ -1,9 +1,9 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
-import Sidebar from './components/Sidebar'
+import Sidebar, { type SidebarView } from './components/Sidebar'
 import ArtifactPanel, { type ArtifactPanelHandle } from './components/ArtifactPanel'
 import AIPanel from './components/AIPanel'
 import TitleBar from './components/TitleBar'
-import IconRail from './components/IconRail'
+import CapsuleCard from './components/CapsuleCard'
 import Resizer from './components/Resizer'
 import SettingsModal from './components/settings/SettingsModal'
 import WorkspaceSelector from './components/ai/WorkspaceSelector'
@@ -25,8 +25,6 @@ const EDITOR_MAX_RATIO = 0.85 // 编辑器最多占窗口 85%
 const LAYOUT_KEYS = {
   sidebarWidth: 'layout.sidebarWidth',
   editorWidth: 'layout.editorWidth',
-  treeWidth: 'layout.treeWidth',
-  treeCollapsed: 'layout.treeCollapsed',
   toolTabsOpen: 'layout.toolTabsOpen',
   activeToolId: 'layout.activeToolId',
   toolTabsMigrated: 'layout.toolTabsMigrated',
@@ -67,7 +65,7 @@ function loadInitialToolTabs(): ToolId[] {
 function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   // 侧栏视图（分组/项目）：持久化恢复，默认「项目」（保持现状心智）
-  const [sidebarView, setSidebarView] = useState<'projects' | 'groups'>(() =>
+  const [sidebarView, setSidebarView] = useState<SidebarView>(() =>
     localStorage.getItem(LAYOUT_KEYS.sidebarView) === 'groups' ? 'groups' : 'projects',
   )
   // 右侧面板（产物区）：默认收起；展开后默认呈现概要产物视图，打开文件不再是唯一展开时机
@@ -182,7 +180,7 @@ function App() {
     localStorage.setItem(LAYOUT_KEYS.activeToolId, activeToolId ?? '')
   }, [activeToolId])
 
-  // 恢复默认布局：清持久化并重置各宽度与面板开关（树状态由 ArtifactPanel 监听事件重置）
+  // 恢复默认布局：清持久化并重置各宽度与面板开关
   const resetLayout = useCallback(() => {
     Object.values(LAYOUT_KEYS).forEach((k) => localStorage.removeItem(k))
     setSidebarWidth(240)
@@ -191,7 +189,6 @@ function App() {
     setActiveToolId('summary')
     setSidebarCollapsed(false)
     setEditorCollapsed(true)
-    window.dispatchEvent(new Event('layout-reset'))
   }, [])
 
   // 窄屏退让：树列折叠由 ArtifactPanel 按编辑区/窗口宽度处理；
@@ -336,6 +333,13 @@ function App() {
     ? chatSessionId
     : null
 
+  // 当前工作区显示名（侧栏文件树头部标题行）：别名 > 名称 > 路径末段
+  const workspaceDisplayName = useMemo(() => {
+    const ws = sessions.currentWorkspace
+    if (!ws) return ''
+    return ws.alias || ws.name || ws.path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || ''
+  }, [sessions.currentWorkspace])
+
   // 全部运行中会话 id（含其他工作区的后台任务），侧边栏行级运行标记用：
   // 跨工作区并行时，未在查看的后台任务也要能看到「正在运行」
   const runningSessionIds = sessions.currentTasks.map(t => t.session_id)
@@ -388,8 +392,9 @@ function App() {
     await handleCreateSession()
   }, [sessions, handleCreateSession])
 
-  // 切换侧栏视图：状态 + localStorage 持久化一并更新
-  const handleChangeSidebarView = useCallback((view: 'projects' | 'groups') => {
+  // 切换侧栏视图：状态 + localStorage 持久化一并更新（tab 只在项目/分组间切换）
+  const handleChangeSidebarView = useCallback((view: SidebarView) => {
+    if (view === 'files') return
     setSidebarView(view)
     localStorage.setItem(LAYOUT_KEYS.sidebarView, view)
   }, [])
@@ -506,6 +511,33 @@ function App() {
     }
   }, [sessions, setSessionId, loadMessagesWithRunningState, clearMessages])
 
+  // 文件树视图的来源视图：返回任务时恢复；files 不写 localStorage（重启兜底 projects）
+  const fileTreeReturnViewRef = useRef<'projects' | 'groups'>('projects')
+
+  // 工作区行「文件树」按钮：非当前工作区先切换（连带切会话，与跨工作区「+」一致），
+  // 再进入文件树视图并记录来源
+  const handleOpenFileTree = useCallback(async (workspacePath: string) => {
+    if (sessions.currentWorkspace?.path !== workspacePath) {
+      await handleSwitchWorkspace(workspacePath)
+    }
+    setSidebarView((prev) => {
+      if (prev === 'projects' || prev === 'groups') fileTreeReturnViewRef.current = prev
+      return 'files'
+    })
+  }, [sessions.currentWorkspace?.path, handleSwitchWorkspace])
+
+  // 文件树视图「返回任务」：恢复来源视图并持久化
+  const handleBackFromFileTree = useCallback(() => {
+    const back = fileTreeReturnViewRef.current
+    setSidebarView(back)
+    localStorage.setItem(LAYOUT_KEYS.sidebarView, back)
+  }, [])
+
+  // 文件树点击文件：右侧面板打开（openFile 自带折叠时自动展开，勿在外层先行 toggle）
+  const handleOpenFileFromTree = useCallback((path: string) => {
+    editorRef.current?.openFile(path)
+  }, [])
+
   // 浏览选择目录
   const handleBrowse = useCallback(async () => {
     const w = window as unknown as { electronAPI?: { selectDirectory?: () => Promise<string | null> } }
@@ -602,7 +634,7 @@ function App() {
         taskRunning={runningSessionId !== null}
       />
 
-      {/* 主体行：会话栏 + AI面板 + 编辑区 + 右缘图标轨 */}
+      {/* 主体行：会话栏 + AI面板 + 编辑区（折叠时右上角浮状态胶囊卡） */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         {/* 会话栏：折叠时不占位，展开时固定宽度 + 可拖拽 */}
         {!sidebarCollapsed && (
@@ -629,6 +661,10 @@ function App() {
                 onDeleteSession={handleDeleteSession}
                 onRemoveWorkspace={handleRemoveWorkspace}
                 onOpenWorkspace={handleOpenWorkspace}
+                onOpenFileTree={handleOpenFileTree}
+                onBackFromFileTree={handleBackFromFileTree}
+                onOpenFileFromTree={handleOpenFileFromTree}
+                workspaceName={workspaceDisplayName}
                 onOpenSearch={() => openTool('search')}
                 runningSessionIds={runningSessionIds}
                 onRenameSession={sessions.renameSession}
@@ -662,6 +698,10 @@ function App() {
             onDeleteSession={handleDeleteSession}
             onRemoveWorkspace={handleRemoveWorkspace}
             onOpenWorkspace={handleOpenWorkspace}
+            onOpenFileTree={handleOpenFileTree}
+            onBackFromFileTree={handleBackFromFileTree}
+            onOpenFileFromTree={handleOpenFileFromTree}
+            workspaceName={workspaceDisplayName}
             onOpenSearch={() => openTool('search')}
             runningSessionIds={runningSessionIds}
             onRenameSession={sessions.renameSession}
@@ -698,7 +738,6 @@ function App() {
             ref={editorRef}
             collapsed={editorCollapsed}
             onToggleCollapse={toggleEditor}
-            workspacePath={sessions.currentWorkspace?.path ?? null}
             toolTabsOpen={toolTabsOpen}
             activeToolId={activeToolId}
             onOpenTool={openTool}
@@ -708,8 +747,14 @@ function App() {
         </div>
       </div>
 
-      {/* 收起态右上角悬浮卡片：面板展开时不渲染；图标点击直达对应工具标签 */}
-      {editorCollapsed && <IconRail onToolClick={openTool} />}
+      {/* 收起态右上角状态胶囊卡：面板展开时不渲染；区块点击直达对应工具标签 */}
+      {editorCollapsed && (
+        <CapsuleCard
+          onOpenTool={openTool}
+          isTaskRunning={runningSessionId !== null}
+          sessionId={chatSessionId}
+        />
+      )}
 
       {/* 状态信息已并入输入区底部行（ChatInput），无独立状态栏 */}
 

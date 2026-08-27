@@ -57,13 +57,18 @@ def set_project_root(path: str) -> None:
     同步更新 startup.bootstrap.state 的 cwd（UserPromptSubmit hooks、
     engine 构造读取的就是它），保证切换后文件沙箱、Bash、hooks 与 UI
     指向同一工作区，避免三处根分叉。
+
+    path 必须先 normpath 归一：DB/前端可能传入正斜杠风格（D:/x/y），
+    而 is_within_root 用 os.path.commonpath 做前缀比较，斜杠方向不一致
+    会让文件接口全部误判「越出工作区」（空列表 / path traversal denied）。
     """
     global _project_root_value
-    _project_root_value = path
+    normalized = os.path.normpath(path) if path else path
+    _project_root_value = normalized
     try:
         from startup.bootstrap.state import set_cwd_state
 
-        set_cwd_state(path)
+        set_cwd_state(normalized)
     except Exception:
         # 状态同步失败不阻断切换
         pass

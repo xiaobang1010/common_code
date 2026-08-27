@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { filesApi } from '../../api/client'
+import { dedupeChanges, useGitStatus } from '../inspector/useGitStatus'
 
 // 文件列表接口返回的单项
 interface FileItem {
@@ -14,6 +15,8 @@ interface FileTreeProps {
   activePath?: string
   // 双击文件节点显式固定预览标签（打开后保留为正式标签）
   onPinFile?: (path: string) => void
+  // 工作区显示名：头部标题行展示（侧栏文件树视图使用，可不传）
+  workspaceName?: string
 }
 
 // 根据文件扩展名返回对应颜色 - 精致的语法色
@@ -98,6 +101,25 @@ const pruneTree = (nodes: FullTreeNode[], q: string): FullTreeNode[] =>
   nodes
     .map((n) => ({ ...n, children: pruneTree(n.children, q) }))
     .filter((n) => n.item.name.toLowerCase().includes(q) || n.children.length > 0)
+
+// 变更路径集合：files 为归一后的文件路径；dirs 为未跟踪整目录条目
+// （git porcelain 折叠输出 `dir/`，剥尾斜杠），其内文件按前缀命中
+interface ChangedPaths {
+  files: Set<string>
+  dirs: Set<string>
+}
+
+// 剪枝：只保留「仅显示变更文件」命中的节点及其父级目录链。
+// 文件按归一后路径精确命中，或落在某未跟踪目录条目前缀下；目录需有存活子节点
+const pruneByChanged = (nodes: FullTreeNode[], changed: ChangedPaths): FullTreeNode[] =>
+  nodes
+    .map((n) => ({ ...n, children: pruneByChanged(n.children, changed) }))
+    .filter((n) =>
+      n.item.type === 'dir'
+        ? n.children.length > 0
+        : changed.files.has(n.item.path) ||
+          [...changed.dirs].some((d) => n.item.path === d || n.item.path.startsWith(d + '/')),
+    )
 
 // 单个树节点
 interface FileTreeNodeProps {
@@ -243,7 +265,7 @@ function FilteredTreeNode({ node, depth, q, onFileOpen, activePath, onPinFile }:
   )
 }
 
-function FileTree({ onFileOpen, activePath, onPinFile }: FileTreeProps) {
+function FileTree({ onFileOpen, activePath, onPinFile, workspaceName }: FileTreeProps) {
   const [rootItems, setRootItems] = useState<FileItem[]>([])
   // 首开加载：无数据时的全量 loading；刷新期间用 refreshing 轻量指示，不清空旧树
   const [loading, setLoading] = useState(true)
@@ -259,9 +281,35 @@ function FileTree({ onFileOpen, activePath, onPinFile }: FileTreeProps) {
   const [filterTree, setFilterTree] = useState<FullTreeNode[] | null>(null)
   const [filterLoading, setFilterLoading] = useState(false)
 
+  // 「仅显示变更文件」：打开后整树只保留 git 变更文件及其祖先目录。
+  // 变更集合与搜索框同时生效（两道过滤取交集）
+  const [showChangedOnly, setShowChangedOnly] = useState(false)
+  const [refreshTick, setRefreshTick] = useState(0)
+  const git = useGitStatus()
+
+  // 变更路径归一为工作区相对口径：changes[].path 是仓库根相对口径，按
+  // repo_prefix 剥前缀；未跟踪整目录条目（尾斜杠）单独归入 dirs 集合，
+  // 其内文件按前缀命中。status 响应缺失 repo_prefix 时按无前缀处理
+  const changedPaths = useMemo<ChangedPaths>(() => {
+    const prefix = git.data?.repoPrefix ?? ''
+    const files = new Set<string>()
+    const dirs = new Set<string>()
+    for (const c of dedupeChanges(git.data?.changes ?? [])) {
+      const isDir = c.path.endsWith('/')
+      let out = isDir ? c.path.slice(0, -1) : c.path
+      if (prefix && (out === prefix || out.startsWith(prefix + '/'))) {
+        out = out.slice(prefix.length + 1)
+      }
+      if (!out) continue
+      ;(isDir ? dirs : files).add(out)
+    }
+    return { files, dirs }
+  }, [git.data])
+
   useEffect(() => {
     const q = filter.trim().toLowerCase()
-    if (!q) {
+    const needFullTree = !!q || showChangedOnly
+    if (!needFullTree) {
       setFilterTree(null)
       setFilterLoading(false)
       return
@@ -270,10 +318,12 @@ function FileTree({ onFileOpen, activePath, onPinFile }: FileTreeProps) {
     setFilterLoading(true)
     loadFullTree()
       .then((tree) => {
-        if (!cancelled) {
-          setFilterTree(pruneTree(tree, q))
-          setFilterLoading(false)
-        }
+        if (cancelled) return
+        let result = tree
+        if (showChangedOnly) result = pruneByChanged(result, changedPaths)
+        if (q) result = pruneTree(result, q)
+        setFilterTree(result)
+        setFilterLoading(false)
       })
       .catch(() => {
         if (!cancelled) setFilterLoading(false)
@@ -281,7 +331,7 @@ function FileTree({ onFileOpen, activePath, onPinFile }: FileTreeProps) {
     return () => {
       cancelled = true
     }
-  }, [filter])
+  }, [filter, showChangedOnly, changedPaths, refreshTick])
 
   const loadRoot = useCallback(async () => {
     setRefreshing(true)
@@ -299,6 +349,13 @@ function FileTree({ onFileOpen, activePath, onPinFile }: FileTreeProps) {
       setRefreshing(false)
     }
   }, [])
+
+  // 手动刷新：重拉根层、bump 版本重置懒加载展开态、触发过滤分支重算
+  const refreshTree = useCallback(() => {
+    setTreeVersion((v) => v + 1)
+    setRefreshTick((t) => t + 1)
+    void loadRoot()
+  }, [loadRoot])
 
   useEffect(() => {
     loadRoot()
@@ -391,6 +448,82 @@ function FileTree({ onFileOpen, activePath, onPinFile }: FileTreeProps) {
             outline: 'none',
           }}
         />
+      </div>
+
+      {/* 工作区标题行：工作区名 + 「仅显示变更文件」「刷新文件树」两个默认按钮 */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px',
+          padding: '8px 8px 4px',
+        }}
+      >
+        <span
+          style={{
+            fontSize: '12px',
+            fontFamily: 'var(--font-ui)',
+            fontWeight: 600,
+            color: 'var(--text-primary)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            minWidth: 0,
+          }}
+          title={workspaceName}
+        >
+          {workspaceName}
+        </span>
+        <span style={{ flex: 1 }} />
+        <button
+          onClick={() => setShowChangedOnly((v) => !v)}
+          title="仅显示变更文件"
+          style={{
+            width: '22px',
+            height: '22px',
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-sm)',
+            background: showChangedOnly ? 'var(--selected-bg)' : 'transparent',
+            color: showChangedOnly ? 'var(--text-primary)' : 'var(--text-tertiary)',
+            cursor: 'pointer',
+            transition: 'all var(--transition-fast)',
+            padding: 0,
+          }}
+        >
+          {/* 筛选漏斗图标 */}
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 5h18l-7 8v5l-4 2v-7z" />
+          </svg>
+        </button>
+        <button
+          onClick={refreshTree}
+          title="刷新文件树"
+          style={{
+            width: '22px',
+            height: '22px',
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-sm)',
+            background: refreshing ? 'var(--selected-bg)' : 'transparent',
+            color: 'var(--text-tertiary)',
+            cursor: 'pointer',
+            transition: 'all var(--transition-fast)',
+            padding: 0,
+          }}
+        >
+          {/* 环形刷新箭头 */}
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+            <path d="M21 3v6h-6" />
+          </svg>
+        </button>
       </div>
 
       {/* 顶部新建入口 */}
@@ -531,7 +664,9 @@ function FileTree({ onFileOpen, activePath, onPinFile }: FileTreeProps) {
           {filterLoading && filterTree.length === 0 ? (
             <div style={{ padding: '8px 16px', color: 'var(--text-tertiary)', fontSize: '12px' }}>过滤中…</div>
           ) : filterTree.length === 0 ? (
-            <div style={{ padding: '8px 16px', color: 'var(--text-tertiary)', fontSize: '12px' }}>没有匹配的文件</div>
+            <div style={{ padding: '8px 16px', color: 'var(--text-tertiary)', fontSize: '12px' }}>
+              {showChangedOnly && !filter.trim() ? '无变更文件' : '没有匹配的文件'}
+            </div>
           ) : (
             filterTree.map((n) => (
               <FilteredTreeNode key={n.item.path} node={n} depth={0} q={filter.trim().toLowerCase()} onFileOpen={onFileOpen} activePath={activePath} onPinFile={onPinFile} />

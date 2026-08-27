@@ -564,7 +564,8 @@ function WorkBlockView({ blockId }: Props) {
   const reasonText = !isRunning && expanded ? exitReasonLine(block) : ''
 
   return (
-    <div className="work-block" style={{ display: 'flex', flexDirection: 'column', gap: '10px', animation: 'fade-in-up 280ms ease-out' }}>
+    // data-workblock-running：状态胶囊卡「智能体」跳转的回退锚点（目标卡片不在 DOM 时滚到运行中块）
+    <div className="work-block" data-workblock-running={isRunning || undefined} style={{ display: 'flex', flexDirection: 'column', gap: '10px', animation: 'fade-in-up 280ms ease-out' }}>
       {/* 用户消息 */}
       <div
         style={{
