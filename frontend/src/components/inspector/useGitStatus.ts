@@ -20,6 +20,9 @@ export interface GitStatusData {
   branch: string
   changes: GitChange[]
   totals: GitTotals
+  // 工作区相对仓库根的路径前缀（正斜杠，工作区即仓库根为空串）：
+  // changes[].path 是仓库根相对口径，剥掉此前缀即得工作区相对路径
+  repoPrefix: string
 }
 
 // 轮询拉取 git 状态的 hook：首次加载 + 每 10 秒刷新 + SSE 文件事件即时刷新
@@ -35,6 +38,7 @@ export function useGitStatus(): { data: GitStatusData | null; refresh: () => voi
         branch: json.branch || '',
         changes: json.changes || [],
         totals: json.totals || { files: 0, additions: 0, deletions: 0 },
+        repoPrefix: json.repo_prefix || '',
       })
     } catch {
       // 后端未就绪时静默忽略

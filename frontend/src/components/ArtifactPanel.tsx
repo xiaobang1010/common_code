@@ -7,8 +7,6 @@ import Breadcrumb from './editor/Breadcrumb'
 import CodeEditor from './editor/CodeEditor'
 import Terminal from './editor/Terminal'
 import TabContextMenu from './editor/TabContextMenu'
-import Resizer from './Resizer'
-import FileTree from './sidebar/FileTree'
 import SearchPanel from './sidebar/SearchPanel'
 import SummaryCard from './inspector/cards/SummaryCard'
 import ReviewCard from './inspector/cards/ReviewCard'
@@ -64,9 +62,7 @@ export interface ArtifactPanelHandle {
 interface ArtifactPanelProps {
   collapsed: boolean
   onToggleCollapse: () => void
-  // 当前工作区路径，null 表示未选择工作区（树列显示占位提示用）
-  workspacePath: string | null
-  // 工具标签状态由 App 持有（标题栏开关/图标轨/快捷键共用）
+  // 工具标签状态由 App 持有（标题栏开关/快捷键共用）
   toolTabsOpen: ToolId[]
   activeToolId: ToolId | null
   onOpenTool: (id: ToolId) => void
@@ -256,7 +252,7 @@ function TerminalToolContent() {
 }
 
 const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
-  ({ collapsed, onToggleCollapse, workspacePath, toolTabsOpen, activeToolId, onOpenTool, onCloseTool, onActivateFile }, ref) => {
+  ({ collapsed, onToggleCollapse, toolTabsOpen, activeToolId, onOpenTool, onCloseTool, onActivateFile }, ref) => {
     const [openTabs, setOpenTabs] = useState<OpenTab[]>([])
     const [activePath, setActivePath] = useState('')
     const [conflict, setConflict] = useState<ConflictInfo | null>(null)
@@ -272,13 +268,6 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
     // 最近打开的文件（会话内前端内存记录，重启不持久化）
     const [recentFiles, setRecentFiles] = useState<string[]>([])
 
-    // 右缘文件树窄列：默认 220px，可拖拽 160-320px，可折叠（持久化）
-    const [treeWidth, setTreeWidth] = useState(() => {
-      const v = Number(localStorage.getItem('layout.treeWidth'))
-      return v >= 160 && v <= 320 ? v : 220
-    })
-    const [treeCollapsed, setTreeCollapsed] = useState(() => localStorage.getItem('layout.treeCollapsed') === '1')
-
     const openTabsRef = useRef<OpenTab[]>([])
     const activePathRef = useRef('')
     const activeToolIdRef = useRef<ToolId | null>(activeToolId)
@@ -293,45 +282,6 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
       onOpenToolRef.current = onOpenTool
       onCloseToolRef.current = onCloseTool
     }, [activeToolId, onActivateFile, onOpenTool, onCloseTool])
-
-    // 树列状态持久化
-    useEffect(() => {
-      localStorage.setItem('layout.treeWidth', String(treeWidth))
-    }, [treeWidth])
-    useEffect(() => {
-      localStorage.setItem('layout.treeCollapsed', treeCollapsed ? '1' : '0')
-    }, [treeCollapsed])
-
-    // 「恢复默认布局」重置事件
-    useEffect(() => {
-      const handler = () => {
-        setTreeWidth(220)
-        setTreeCollapsed(false)
-      }
-      window.addEventListener('layout-reset', handler)
-      return () => window.removeEventListener('layout-reset', handler)
-    }, [])
-
-    // 窄屏退让：编辑区自身宽度不足 640px 自动折叠树列；窗口不足 1000px 树列自动折叠
-    const contentAreaRef = useRef<HTMLDivElement>(null)
-    useEffect(() => {
-      const el = contentAreaRef.current
-      const foldTree = () => {
-        if (window.innerWidth < 1000) setTreeCollapsed(true)
-      }
-      window.addEventListener('resize', foldTree)
-      let ro: ResizeObserver | null = null
-      if (el) {
-        ro = new ResizeObserver(() => {
-          if (el.clientWidth < 640) setTreeCollapsed(true)
-        })
-        ro.observe(el)
-      }
-      return () => {
-        window.removeEventListener('resize', foldTree)
-        ro?.disconnect()
-      }
-    }, [])
 
     // 激活文件标签：同时清掉工具标签激活态（内容区回到文件视图）
     const setActive = useCallback((path: string) => {
@@ -426,14 +376,6 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
               : t
           )
         )
-      },
-      [updateTabs]
-    )
-
-    // 双击文件树节点显式固定预览标签：该文件转为正式标签（pinned=true），不再参与预览槽复用
-    const pinFile = useCallback(
-      (path: string) => {
-        updateTabs((prev) => prev.map((t) => (t.path === path ? { ...t, pinned: true } : t)))
       },
       [updateTabs]
     )
@@ -758,13 +700,6 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
       return () => es.close()
     }, [updateTabs])
 
-    // 树列拖拽调宽：分隔条是树列的左边界
-    // 向右拖（delta 正）= 左边界右移 = 树列变窄
-    // 向左拖（delta 负）= 左边界左移 = 树列变宽
-    const handleTreeResize = useCallback((delta: number) => {
-      setTreeWidth((prev) => Math.max(160, Math.min(320, prev - delta)))
-    }, [])
-
     const activeTab = openTabs.find((t) => t.path === activePath)
     const pendingCloseName = pendingClose ? openTabs.find((t) => t.path === pendingClose)?.name : ''
     const activeDirty = activeTab ? activeTab.bufferContent !== activeTab.diskContent : false
@@ -775,10 +710,6 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
     useEffect(() => {
       setPreviewMode(false)
     }, [activePath])
-
-    // 文件上下文：树列只在此显示（files 标签激活，或已打开文件且未切到其它工具）。
-    // 打开文件后树不消失 = 只要 activeToolId 为 null 且存在激活文件，树就保留
-    const inFilesContext = activeToolId === 'files' || (activeToolId === null && !!activeTab)
 
     // 文件视图节点：无工具激活（activeToolId===null）与「文件」工具（activeToolId==='files'）共用
     const fileViewNode = activeTab ? (
@@ -896,7 +827,7 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
       </div>
     ) : null
 
-    // 文件空态节点：无打开文件时的占位（含最近打开入口与折叠态「展开文件树」兜底）
+    // 文件空态节点：无打开文件时的占位（含最近打开入口）
     const filesEmptyNode = !activeTab ? (
       <div
         style={{
@@ -913,31 +844,6 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
         <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-secondary)', fontFamily: 'var(--font-ui)' }}>Files</span>
         <span style={{ fontSize: '12px', fontFamily: 'var(--font-ui)' }}>本次任务生成·修改的文件</span>
         <span style={{ fontSize: '12px', fontFamily: 'var(--font-ui)' }}>没有已打开的文件</span>
-        {treeCollapsed && inFilesContext && (
-          <button
-            onClick={() => setTreeCollapsed(false)}
-            title="展开文件树"
-            style={{
-              marginTop: '10px',
-              border: '1px solid var(--border)',
-              background: 'transparent',
-              color: 'var(--text-secondary)',
-              cursor: 'pointer',
-              fontSize: '12px',
-              fontFamily: 'var(--font-ui)',
-              padding: '4px 14px',
-              borderRadius: 'var(--radius-sm)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-            }}
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M15 6l-6 6 6 6" />
-            </svg>
-            展开文件树
-          </button>
-        )}
         {recentFiles.length > 0 && (
           <div
             style={{
@@ -999,7 +905,7 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
       review: <ReviewCard />,
     }
 
-    // 折叠时不渲染任何形态（入口由右缘图标轨承接）
+    // 折叠时不渲染任何形态（入口由右上角状态胶囊卡承接）
     if (collapsed) {
       return null
     }
@@ -1152,7 +1058,7 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
               {activeTab.saving ? '保存中…' : '保存'}
             </button>
           )}
-          {/* 顶栏不再常驻文件树开关：树列展开/收起改由文件上下文内控制（树列头部收起按钮 + 折叠态展开条/空态入口） */}
+          {/* 顶栏不常驻文件树开关：文件树入口在左侧栏工作区行 */}
           <button
             onClick={onToggleCollapse}
             title="折叠编辑器"
@@ -1185,8 +1091,8 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
         {/* 面包屑：文件上下文（无工具激活或文件工具内）显示激活文件的完整路径 */}
         {activeTab && (activeToolId === null || activeToolId === 'files') && <Breadcrumb path={activeTab.path} />}
 
-        {/* 中部：内容区（文件/工具二选一）+ 右缘文件树窄列 */}
-        <div ref={contentAreaRef} style={{ flex: 1, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
+        {/* 中部：内容区（文件/工具二选一）。文件树已迁至左侧栏文件树视图 */}
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
           <div style={{ flex: 1, minWidth: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
             {/* 文件视图：无工具激活时展示（内容见 fileViewNode，files 工具内通过 toolContents 复用同一节点） */}
             {activeToolId === null && fileViewNode}
@@ -1221,139 +1127,6 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
             {/* 无打开文件且无激活工具标签时的空态（内容见 filesEmptyNode，files 工具内通过 toolContents 复用） */}
             {activeToolId === null && filesEmptyNode}
           </div>
-
-          {/* 右缘文件树窄列：默认 220px，可拖拽 160-320px，可折叠。
-              只在文件上下文（files 标签激活或打开文件后未切走）内显示；折叠时退出全宽、留右侧展开窄条 */}
-          {inFilesContext && !treeCollapsed && (
-            <>
-              <Resizer direction="horizontal" onResize={handleTreeResize} />
-              <div
-                style={{
-                  width: treeWidth,
-                  flexShrink: 0,
-                  minWidth: 160,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  borderLeft: '1px solid var(--border)',
-                  backgroundColor: 'var(--bg-base)',
-                  overflow: 'hidden',
-                }}
-              >
-                {/* 树列头部：标题 + 收起按钮（收起后由右侧展开窄条承接展开） */}
-                <div
-                  style={{
-                    height: '32px',
-                    flexShrink: 0,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    paddingLeft: '10px',
-                    borderBottom: '1px solid var(--border-subtle)',
-                  }}
-                >
-                  <span
-                    style={{
-                      fontSize: '11px',
-                      color: 'var(--text-tertiary)',
-                      fontWeight: 500,
-                      letterSpacing: '0.5px',
-                      fontFamily: 'var(--font-ui)',
-                      userSelect: 'none',
-                    }}
-                  >
-                    文件
-                  </span>
-                  <button
-                    onClick={() => setTreeCollapsed(true)}
-                    title="收起文件树"
-                    style={{
-                      border: 'none',
-                      background: 'transparent',
-                      color: 'var(--text-tertiary)',
-                      cursor: 'pointer',
-                      padding: '0 8px',
-                      height: '100%',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      transition: 'all var(--transition-fast)',
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = 'var(--bg-tertiary)'
-                      e.currentTarget.style.color = 'var(--text-primary)'
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = 'transparent'
-                      e.currentTarget.style.color = 'var(--text-tertiary)'
-                    }}
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M9 6l6 6-6 6" />
-                    </svg>
-                  </button>
-                </div>
-                <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-                  {workspacePath ? (
-                    <FileTree onFileOpen={openFile} activePath={activePath} onPinFile={pinFile} />
-                  ) : (
-                    <div
-                      style={{
-                        padding: '16px',
-                        color: 'var(--text-tertiary)',
-                        fontSize: '12px',
-                        fontFamily: 'var(--font-ui)',
-                      }}
-                    >
-                      未选择工作区
-                    </div>
-                  )}
-                </div>
-              </div>
-            </>
-          )}
-
-          {/* 树列折叠态展开窄条：文件上下文内保留相同右侧位置的展开入口（与树列头部收起对应） */}
-          {inFilesContext && treeCollapsed && (
-            <div
-              style={{
-                width: 24,
-                flexShrink: 0,
-                borderLeft: '1px solid var(--border)',
-                backgroundColor: 'var(--bg-base)',
-                display: 'flex',
-                flexDirection: 'column',
-              }}
-            >
-              <button
-                onClick={() => setTreeCollapsed(false)}
-                title="展开文件树"
-                style={{
-                  border: 'none',
-                  background: 'transparent',
-                  color: 'var(--text-tertiary)',
-                  cursor: 'pointer',
-                  padding: 0,
-                  height: '100%',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  transition: 'all var(--transition-fast)',
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = 'var(--bg-tertiary)'
-                  e.currentTarget.style.color = 'var(--text-primary)'
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = 'transparent'
-                  e.currentTarget.style.color = 'var(--text-tertiary)'
-                }}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M15 6l-6 6 6 6" />
-                </svg>
-              </button>
-            </div>
-          )}
         </div>
 
         {/* 快速打开（Ctrl+P） */}
