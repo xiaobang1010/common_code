@@ -122,10 +122,13 @@ def git_status() -> dict:
     """Git 状态接口。
 
     返回 {"branch": "...", "changes": [{"path", "status", "staged", "additions", "deletions"}],
-    "totals": {"files", "additions", "deletions"}}。
+    "totals": {"files", "additions", "deletions"}, "repo_prefix": "..."}。
     其中 staged 为 True 表示已暂存，False 表示未暂存；
     additions/deletions 为该文件的变更行数统计（未跟踪文件按文件总行数计新增）；
-    totals 按去重后的文件路径汇总。不在 git 仓库或调用失败时返回空分支和空变更列表。
+    totals 按去重后的文件路径汇总；
+    repo_prefix 为工作区相对仓库根的路径前缀（正斜杠口径，工作区即仓库根时为空串），
+    供前端把仓库根相对的 changes[].path 归一成工作区相对口径。
+    不在 git 仓库或调用失败时返回空分支和空变更列表。
     """
     root = project_root()
 
@@ -156,12 +159,13 @@ def git_status() -> dict:
                 if parsed:
                     changes.extend(parsed)
 
+        # 仓库根定位：未跟踪文件路径与 repo_prefix 都按仓库根口径计算
+        toplevel = _repo_toplevel(root)
+        rel_root = os.path.relpath(root, toplevel) if toplevel else "."
+        repo_prefix = "" if rel_root == "." else rel_root.replace(os.sep, "/")
+
         # 逐文件行数统计：已跟踪文件用 numstat，未跟踪文件数总行数
         stats = _numstat_stats(root)
-        # 未跟踪文件的路径是仓库根相对口径，工作区是子目录时需按仓库根解析落点
-        toplevel = ""
-        if any(change.get("untracked") for change in changes):
-            toplevel = _repo_toplevel(root)
         seen_paths: set[str] = set()
         total_adds = 0
         total_dels = 0
@@ -192,9 +196,10 @@ def git_status() -> dict:
                 "additions": total_adds,
                 "deletions": total_dels,
             },
+            "repo_prefix": repo_prefix,
         }
     except (subprocess.SubprocessError, OSError):
-        return {"branch": "", "changes": []}
+        return {"branch": "", "changes": [], "repo_prefix": ""}
 
 
 @router.post("/api/git/stage")

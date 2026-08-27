@@ -219,3 +219,21 @@ def test_diff_chinese_filename_via_status(git_env):
     assert result["error"] == ""
     assert result["oldText"] == "第一版\n"
     assert "第二版" in result["newText"]
+
+
+def test_status_repo_prefix_root_workspace(git_env):
+    """repo_prefix：工作区即仓库根时为空串。"""
+    from server.routers.git.routes import git_status
+
+    git_env({"a.txt": "x\n"})
+    assert git_status()["repo_prefix"] == ""
+
+
+def test_status_repo_prefix_subdir_workspace(git_env):
+    """repo_prefix：子目录工作区为正斜杠口径的仓库内相对前缀。"""
+    from server.routers.git.routes import git_status
+
+    git_env({"sub/a.txt": "x\n"}, workspace_rel="sub")
+    prefix = git_status()["repo_prefix"]
+    assert prefix == "sub"
+    assert "\\" not in prefix
