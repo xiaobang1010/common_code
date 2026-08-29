@@ -9,13 +9,14 @@ export interface RunningSubagent {
 
 // 轮询当前会话运行中/等待中子代理的 hook：供状态胶囊卡「智能体」区块使用。
 // 无会话或无运行项时返回空数组，调用方据此隐藏区块。
-// 每 3 秒轮询一次，组件卸载即停。
+// 每 3 秒轮询一次，组件卸载即停；切换会话时先清旧列表再重取，
+// 重取完成前不显示上一个会话的运行中子代理。
 export function useRunningSubagents(sessionId: string | null): { running: RunningSubagent[] } {
   const [running, setRunning] = useState<RunningSubagent[]>([])
 
   useEffect(() => {
+    setRunning([])
     if (!sessionId) {
-      setRunning([])
       return
     }
     let cancelled = false

@@ -63,7 +63,8 @@ class SessionStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     messages TEXT DEFAULT '[]',
-                    pinned INTEGER DEFAULT 0
+                    pinned INTEGER DEFAULT 0,
+                    spec_name TEXT DEFAULT ''
                 )
                 """
             )
@@ -121,6 +122,8 @@ class SessionStore:
         session_cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()}
         if "group_id" not in session_cols:
             conn.execute("ALTER TABLE sessions ADD COLUMN group_id TEXT DEFAULT ''")
+        if "spec_name" not in session_cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN spec_name TEXT DEFAULT ''")
 
     # ------------------------------------------------------------------
     # 行转换辅助
@@ -357,6 +360,48 @@ class SessionStore:
                 return cur.rowcount > 0
             finally:
                 conn.close()
+
+    def update_session_spec(self, session_id: str, spec_name: str) -> bool:
+        """记录会话归属的 spec 目录名（胶囊卡「进展」按会话取数的数据源）。
+
+        AI 往 .agent/specs/<名字>/ 写盘时由文件事件钩子调用。幂等：同名
+        重复记录不产生写库；改判归属（换 spec）时直接覆盖。只写元信息，
+        不动 updated_at——每次勾选清单都重排会话列表太吵。
+
+        Args:
+            session_id: 会话 ID
+            spec_name: spec 目录名（.agent/specs/ 下一级目录名）
+
+        Returns:
+            True 本次有实际写入，False 表示无变化或会话不存在
+        """
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    """
+                    UPDATE sessions SET spec_name = ?
+                    WHERE id = ? AND (spec_name IS NULL OR spec_name != ?)
+                    """,
+                    (spec_name, session_id, spec_name),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    def get_session_spec(self, session_id: str) -> str | None:
+        """读取会话归属的 spec 目录名，未记录或会话不存在返回 None。"""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT spec_name FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            return row["spec_name"] or None
+        finally:
+            conn.close()
 
     def save_messages(
         self, session_id: str, messages: list[dict]

@@ -3,8 +3,9 @@
 启动流程：
 1. setup() 初始化基础设施和会话状态（环境变量、配置、向量模型、hooks、AppState）
 2. 加载插件（LLM 供应商、记忆后端），重捕 hooks 快照纳入插件提供的 hooks
-3. 构造权限桥和引擎，装配全局变量和会话存储供路由访问
-4. 启动 uvicorn，往 stdout 写端口 JSON 供 Electron 读取
+3. 创建会话存储并恢复最近使用的工作区（空库/目录不存在回退启动目录）
+4. 构造权限桥和引擎，装配全局变量供路由访问
+5. 启动 uvicorn，往 stdout 写端口 JSON 供 Electron 读取
 
 用法：uv run python -m server
 """
@@ -16,6 +17,7 @@ import json
 import logging
 import socket
 import sys
+from dataclasses import replace
 
 import uvicorn
 
@@ -23,9 +25,11 @@ from query.engine import QueryEngine, build_engine_config
 from server import app as app_module
 from server import state as server_state
 from server.loop_monitor import start_loop_monitor
+from server.paths import set_project_root
 from server.permission_bridge import PermissionBridge
 from server.question_bridge import QuestionBridge
-from startup.setup import setup
+from session.store import SessionStore
+from startup.setup import restore_last_workspace, setup
 
 logger = logging.getLogger(__name__)
 
@@ -85,24 +89,36 @@ async def main() -> None:
 
     update_hooks_snapshot()
 
-    # 3. 构造权限桥、提问桥和引擎
+    # 3. 会话存储与工作区恢复：store 提前到引擎构造前，启动即恢复最近使用的
+    # 工作区——否则 project_root/cwd_state/启动引擎都停留在启动目录（代码仓库），
+    # 与前端初始化选中的最近工作区错位，取数接口、SessionStart hooks 全部落错。
+    # 空库或目录已不存在时回退启动目录（restore_last_workspace 返回 None）
+    session_store = SessionStore()
+    server_state.session_store = session_store
+    restored = restore_last_workspace(session_store)
+    if restored:
+        # 引 server.paths 的实现（startup.bootstrap.state 有同名函数但语义不同）：
+        # 内部 normpath 并同步 bootstrap cwd，SessionStart hooks 随之同源
+        set_project_root(restored)
+        logger.info("已恢复最近使用的工作区: %s", restored)
+
+    # 4. 构造权限桥、提问桥和引擎
     bridge = PermissionBridge()
     q_bridge = QuestionBridge()
     config = build_engine_config(
         permission_prompt=bridge.request_permission,
         question_prompt=q_bridge.ask_question,
     )
+    if restored:
+        # 启动引擎 cwd 与恢复的工作区对齐（对齐 switch 路由的引擎重建语义）
+        config = replace(config, cwd=restored)
     engine = QueryEngine(config)
 
-    # 装配全局变量和会话存储，供路由访问
+    # 装配全局变量，供路由访问
     server_state.app_state = app_state
     server_state.engine = engine
     server_state.permission_bridge = bridge
     server_state.question_bridge = q_bridge
-
-    from session.store import SessionStore
-
-    server_state.session_store = SessionStore()
 
     # team 层启动恢复：扫描全部团队，释放崩溃 teammate 名下的任务
     # （best-effort，失败不影响服务启动）
@@ -115,7 +131,7 @@ async def main() -> None:
     except Exception as e:
         print(f"团队崩溃恢复跳过: {e}", file=sys.stderr)
 
-    # 4. 启动服务，写端口 JSON 给 Electron
+    # 5. 启动服务，写端口 JSON 给 Electron
     port = find_free_port()
     uvicorn_config = uvicorn.Config(
         app=app_module.app,

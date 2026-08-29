@@ -39,11 +39,34 @@ class FileEventBroker:
 file_event_broker = FileEventBroker()
 
 
+def _record_spec_attribution(rel: str) -> None:
+    """把 .agent/specs/<名字>/ 下的写盘归属记到任务所属会话上。
+
+    胶囊卡「进展」按会话取数（/api/spec/progress?session_id=），
+    这里是归属的主要数据源：写盘即记录，不等消息落库。session_var
+    未设置（非任务上下文，如用户在编辑器里手改）或会话不存在时静默
+    跳过——人工改 spec 不改归属，归属跟任务走。
+    """
+    parts = rel.split("/")
+    if len(parts) < 3 or parts[0] != ".agent" or parts[1] != "specs" or not parts[2]:
+        return
+    try:
+        from server import state as server_state
+
+        session_id = server_state.session_var.get()
+        if session_id:
+            server_state.session_store.update_session_spec(session_id, parts[2])
+    except Exception:
+        # 归属记录失败不影响事件下发与写盘本身
+        pass
+
+
 def notify_file_changed(absolute_path: str, change_type: str, mtime: int, size: int) -> None:
     """AI 工具写盘成功后调用，推送 file_changed 事件。
 
     计算相对工作区的路径；工作区外（如 additional_directories 白名单目录）
     的写入会被过滤，不推送给前端（前端文件树不存在该路径）。
+    spec 目录（.agent/specs/<名字>/）内的写入同时记录会话归属。
     """
     root = os.path.realpath(project_root())
     resolved = os.path.realpath(absolute_path)
@@ -55,6 +78,7 @@ def notify_file_changed(absolute_path: str, change_type: str, mtime: int, size: 
     if rel.startswith(".."):
         # 工作区外的写入，不下发
         return
+    _record_spec_attribution(rel)
     file_event_broker.publish(
         {
             "type": "file_changed",
