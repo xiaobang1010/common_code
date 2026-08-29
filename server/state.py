@@ -34,6 +34,11 @@ engine_session_id: Any = None
 # asyncio.Task 创建时拷贝当前 context，任务内所有读取天然隔离。
 workspace_var: ContextVar[str | None] = ContextVar("workspace_var", default=None)
 
+# 任务所属会话上下文变量：与 workspace_var 同点设置，供文件事件钩子把
+# .agent/specs/<名字>/ 的写盘归属记到会话上（进展按会话取数的数据源）。
+# 子代理任务拷贝父任务 context 天然继承，归属记到父会话
+session_var: ContextVar[str | None] = ContextVar("session_var", default=None)
+
 
 @dataclass
 class RunContext:

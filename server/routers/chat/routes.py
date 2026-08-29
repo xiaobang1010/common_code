@@ -237,8 +237,10 @@ async def chat_event_stream(prompt: str, session_id: str = ""):
         """后台任务体：跑引擎循环，收尾统一走清理路径。"""
         try:
             # cwd 隔离：任务上下文里设置自己的工作区，
-            # 任务内的工具沙箱/Bash/记忆归属/提示词工作区信息都取它
+            # 任务内的工具沙箱/Bash/记忆归属/提示词工作区信息都取它；
+            # session_var 同步记录任务所属会话，供写盘事件钩子记 spec 归属
             token = server.state.workspace_var.set(task_workspace)
+            session_token = server.state.session_var.set(run_session_id)
             try:
                 # user_context 必须传 None：引擎以「user_context 为 None」判定首轮记忆注入
                 async for ev in task_engine.submitMessage(prompt, user_context=None, system_context=None):
@@ -260,6 +262,7 @@ async def chat_event_stream(prompt: str, session_id: str = ""):
                     dispatch(ev)
             finally:
                 server.state.workspace_var.reset(token)
+                server.state.session_var.reset(session_token)
         except Exception as e:
             dispatch(e)
         finally:

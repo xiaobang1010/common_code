@@ -8,6 +8,7 @@ import {
   type TaskGroupInfo,
   type WorkspaceInfo,
 } from '../api/client'
+import { useWorkspaceSignal } from '../stores/useWorkspaceSignal'
 
 /**
  * 会话和工作区管理 hook
@@ -34,6 +35,15 @@ export function useSessions() {
     currentSessionIdRef.current = id
     setCurrentSessionId(id)
   }, [])
+
+  // 当前工作区路径写入信号 store：git 状态/spec 进展等接口按服务端全局
+  // 「当前工作区」取数，数据钩子感知不到这里的切换动作，靠信号变化触发立即重取。
+  // 放在本 hook 内（工作区状态的唯一属主）覆盖所有切换来源，含初始化首次落定
+  const currentWorkspacePath = currentWorkspace?.path ?? null
+  const setCurrentWorkspaceSignal = useWorkspaceSignal((s) => s.setCurrentPath)
+  useEffect(() => {
+    setCurrentWorkspaceSignal(currentWorkspacePath)
+  }, [currentWorkspacePath, setCurrentWorkspaceSignal])
 
   // 刷新工作区列表
   const loadWorkspaces = useCallback(async () => {

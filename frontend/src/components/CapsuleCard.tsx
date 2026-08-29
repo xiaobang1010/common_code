@@ -142,7 +142,8 @@ function jumpToSubagent(agentId: string) {
 function CapsuleCard({ onOpenTool, isTaskRunning, sessionId }: CapsuleCardProps) {
   const git = useGitStatus()
   const { running: runningAgents } = useRunningSubagents(sessionId)
-  const { data: specData } = useSpecProgress()
+  // 进展精确到会话：传 sessionId 让后端按会话归属返回 spec，同工作区切会话各看各的
+  const { data: specData } = useSpecProgress(sessionId)
   const blockCount = useChatStore((s) => s.blockIds.length)
   // 卡片形态：收起（小胶囊摘要，默认）/ 展开（固定宽度完整卡）
   const [expanded, setExpanded] = useState(false)
