@@ -14,7 +14,6 @@ import random
 
 from tools.commands.commands_context import CommandContext
 from tools.commands.commands import Command, get_commands, find_command
-from tools.spec import create_spec, update_spec, spec_exists, list_specs
 
 
 # ---------------------------------------------------------------------------
@@ -254,62 +253,3 @@ async def cmd_exit(context: CommandContext) -> str:
         context.repl.stop()
 
     return random.choice(_GOODBYE_MESSAGES)
-
-
-# ---------------------------------------------------------------------------
-# /spec — Spec 驱动开发
-# ---------------------------------------------------------------------------
-
-
-async def cmd_spec(context: CommandContext) -> str:
-    """根据描述生成 spec 文档（spec.md / tasks.md / checklist.md）。"""
-    args = context.args.strip()
-
-    # 无参数：显示帮助
-    if not args:
-        return (
-            "Spec mode — spec-driven development\n\n"
-            "Usage: /spec <description>\n\n"
-            "Generates spec.md / tasks.md / checklist.md under .agent/specs/<change-id>/\n"
-            "based on your description and codebase context.\n\n"
-            "If a matching spec already exists, it will be updated."
-        )
-
-    # 从描述生成 change-id：取前几个词，用连字符连接，转小写
-    import re
-    words = re.sub(r"[^\w\s-]", "", args.lower()).split()
-    change_id = "-".join(words[:4]) if words else "unnamed-spec"
-
-    # 获取 project_root
-    project_root = context.project_root
-    if not project_root:
-        try:
-            from startup.bootstrap.state import get_cwd_state
-            project_root = get_cwd_state()
-        except ImportError:
-            project_root = "."
-
-    # 检查现有 spec
-    existing_specs = list_specs(project_root)
-
-    # 查找语义匹配的现有 spec（change-id 包含关系或相同）
-    matched_change_id = None
-    for spec_info in existing_specs:
-        if change_id == spec_info["change_id"] or change_id in spec_info["change_id"] or spec_info["change_id"] in change_id:
-            matched_change_id = spec_info["change_id"]
-            break
-
-    if matched_change_id and spec_exists(project_root, matched_change_id):
-        # 更新现有 spec
-        result = update_spec(project_root, matched_change_id, args)
-        return f"Updated existing spec '{matched_change_id}':\n{result}\n\nReview the changes and approve before implementation."
-    else:
-        # 创建新 spec
-        path = create_spec(project_root, change_id, args)
-        return (
-            f"Created new spec '{change_id}':\n"
-            f"  {path}/spec.md\n"
-            f"  {path}/tasks.md\n"
-            f"  {path}/checklist.md\n\n"
-            f"Review the spec and approve before implementation."
-        )

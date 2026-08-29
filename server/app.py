@@ -27,6 +27,8 @@ from server.routers import (
     sessions_router,
     workspaces_router,
     session_groups_router,
+    spec_router,
+    commands_router,
 )
 
 app = FastAPI(title="Common Code Server")
@@ -55,6 +57,8 @@ app.include_router(subagents_router)
 app.include_router(sessions_router)
 app.include_router(workspaces_router)
 app.include_router(session_groups_router)
+app.include_router(spec_router)
+app.include_router(commands_router)
 
 # 静态文件 - 挂载前端构建产物
 # 必须放在所有 API 路由（/api/*）之后，否则 /api/* 请求会被静态文件拦截。

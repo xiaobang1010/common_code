@@ -5,6 +5,7 @@
 
 import { create } from 'zustand'
 import { permissionsApi, questionApi, type PermissionMode } from '../api/client'
+import { parseUserMessage } from '../utils/skillParse'
 
 // 工作块中的中间步骤：工具调用
 export interface WorkStep {
@@ -37,6 +38,8 @@ export interface WorkBlock {
   // 最近一次后端阶段事件（如 memory_ready / model_requested），
   // 卡片文案按优先级推导时使用；首 token、工具开始的文案由渲染时推导，不写这里
   phase?: string
+  // 斜杠技能触发来源（如 "spec"）：用户气泡显示技能徽章而非纯文本输入
+  skillName?: string
 }
 
 // token 用量
@@ -145,7 +148,7 @@ interface ChatState {
   questionRequest: QuestionRequest | null
   permissionMode: PermissionMode
 
-  sendMessage: (prompt: string) => Promise<void>
+  sendMessage: (prompt: string) => Promise<boolean>
   abort: () => Promise<void>
   loadMessages: (rawMessages: Record<string, unknown>[], opts?: { runningStartedAt?: number }) => void
   clearMessages: () => void
@@ -422,9 +425,10 @@ export const useChatStore = create<ChatState>((set, get) => {
     }
   }
 
-  // 发送消息
-  const sendMessage = async (prompt: string) => {
-    if (!prompt.trim() || get().isStreaming) return
+  // 发送消息。返回 false 表示消息被拒收（任务运行中 / 空内容），调用方可据此提示
+  const sendMessage = async (prompt: string): Promise<boolean> => {
+    if (!prompt.trim()) return false
+    if (get().isStreaming) return false
 
     // 斜杠命令走同步接口
     if (prompt.startsWith('/')) {
@@ -437,9 +441,11 @@ export const useChatStore = create<ChatState>((set, get) => {
         })
         const data = await resp.json()
         if (data.is_skill) {
-          // skill 触发：创建工作块，skill 正文作为 prompt 发到 /api/chat
+          // skill 触发：创建工作块。用户气泡显示「技能徽章 + 去掉 /name 前缀的
+          // 原始描述」（对齐 ZCode），技能正文经 skill_prompt 发到 /api/chat
           const blockId = createBlock(`Launching skill: ${data.skill_name}`)
-          updateBlock(blockId, b => ({ ...b, userMessage: prompt }))
+          const taskText = prompt.replace(/^\/\S+\s*/, '').trim() || prompt
+          updateBlock(blockId, b => ({ ...b, userMessage: taskText, skillName: data.skill_name }))
           sseAbortRef.current = new AbortController()
           const chatResp = await fetch('/api/chat', {
             method: 'POST',
@@ -477,7 +483,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         currentBlockId.current = null
       }
       await fetchState()
-      return
+      return true
     }
 
     // 普通对话：创建工作块走 SSE 流
@@ -523,6 +529,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       }
     }
     await fetchState()
+    return true
   }
 
   // 回传权限决策
@@ -649,12 +656,17 @@ export const useChatStore = create<ChatState>((set, get) => {
       const content = (raw.content as string) || ''
 
       if (role === 'user') {
+        const parsed = parseUserMessage(content)
+        // skip：系统注入消息（Skill 正文等），不建块不显示，后续步骤归当前块
+        if (parsed.kind === 'skip') continue
         // 新工作块：id 用「会话 + 消息序号」稳定派生，轮询刷新时不重挂载
         if (currentBlock) newBlocks.push(currentBlock)
         const start = tsOf(raw)
         currentBlock = {
           id: `${sessionId}:b${userMsgIndex++}`,
-          userMessage: content,
+          userMessage: parsed.text,
+          // skill：渐进披露重写提示 → 「技能徽章 + 任务描述」展示
+          skillName: parsed.kind === 'skill' ? parsed.skillName : undefined,
           steps: [],
           finalReply: '',
           finalReplyStreaming: false,

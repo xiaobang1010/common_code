@@ -64,7 +64,6 @@ def _init_builtin_commands() -> None:
         cmd_model,
         cmd_cost,
         cmd_exit,
-        cmd_spec,
     )
 
     builtin_commands = [
@@ -75,7 +74,6 @@ def _init_builtin_commands() -> None:
         Command(name="model", description="View or switch the current model", handler=cmd_model),
         Command(name="cost", description="Show the total cost and duration of the current session", handler=cmd_cost),
         Command(name="exit", description="Exit the REPL", handler=cmd_exit, aliases=["quit", "q"]),
-        Command(name="spec", description="Generate spec documents for spec-driven development", handler=cmd_spec, aliases=["sp"]),
     ]
 
     for cmd in builtin_commands:
