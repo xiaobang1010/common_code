@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from dataclasses import replace
 from typing import Any
@@ -118,6 +119,24 @@ def serialize_event(event: Any) -> dict:
 # POST /api/chat - SSE 流式对话
 # ---------------------------------------------------------------------------
 
+# 技能重写提示形状（/api/command 技能命中时前端发来的 prompt）：标题取任务描述
+_SKILL_PROMPT_RE = re.compile(
+    r"^Use the skill named `([^`\n]+)` for this turn\.\n[\s\S]*?\nUser request:[ \t]*([\s\S]*)$"
+)
+
+
+def _extract_session_title(prompt: str) -> str:
+    """从 prompt 提取会话标题。
+
+    技能重写提示取 User request 段（空段回退固定文案 /spec）；
+    其余走原 prompt[:40] 截断逻辑。
+    """
+    m = _SKILL_PROMPT_RE.match(prompt)
+    if m:
+        task = m.group(2).strip()
+        return task[:40] if task else "/spec"
+    return prompt.strip()[:40]
+
 
 async def chat_event_stream(prompt: str, session_id: str = ""):
     """SSE 事件生成器（订阅者角色）。
@@ -172,7 +191,7 @@ async def chat_event_stream(prompt: str, session_id: str = ""):
                 run_session_id, [*prefix_messages, {"role": "user", "content": prompt, "_ts": time.time() * 1000}]
             )
             if session is not None and not session.title and prompt.strip():
-                session_store.update_session_title(run_session_id, prompt.strip()[:40])
+                session_store.update_session_title(run_session_id, _extract_session_title(prompt))
         except Exception:
             pass
 
@@ -253,7 +272,7 @@ async def chat_event_stream(prompt: str, session_id: str = ""):
                         if msg.get("role") == "user":
                             content = msg.get("content", "")
                             if isinstance(content, str) and content.strip():
-                                session_store.update_session_title(run_session_id, content.strip()[:40])
+                                session_store.update_session_title(run_session_id, _extract_session_title(content))
                                 break
             except Exception:
                 pass

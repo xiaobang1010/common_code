@@ -566,7 +566,7 @@ function WorkBlockView({ blockId }: Props) {
   return (
     // data-workblock-running：状态胶囊卡「智能体」跳转的回退锚点（目标卡片不在 DOM 时滚到运行中块）
     <div className="work-block" data-workblock-running={isRunning || undefined} style={{ display: 'flex', flexDirection: 'column', gap: '10px', animation: 'fade-in-up 280ms ease-out' }}>
-      {/* 用户消息 */}
+      {/* 用户消息：技能触发时首行显示「徽章 + 技能名」（对齐 ZCode 的 Spec 徽章样式） */}
       <div
         style={{
           alignSelf: 'flex-end',
@@ -583,6 +583,29 @@ function WorkBlockView({ blockId }: Props) {
           whiteSpace: 'pre-wrap',
         }}
       >
+        {block.skillName && (
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '5px',
+              marginRight: '8px',
+              padding: '1px 9px',
+              borderRadius: 'var(--radius-sm)',
+              background: 'var(--selected-bg)',
+              color: 'var(--text-primary)',
+              fontSize: '12px',
+              fontWeight: 600,
+              verticalAlign: 'middle',
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 20h9" />
+              <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
+            </svg>
+            {block.skillName.charAt(0).toUpperCase() + block.skillName.slice(1)}
+          </span>
+        )}
         {block.userMessage}
       </div>
 

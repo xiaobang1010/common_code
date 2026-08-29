@@ -6,7 +6,7 @@ import { useSettingsStore } from '../../stores/useSettingsStore'
 import QuestionCard from './QuestionCard'
 
 interface Props {
-  onSend: (prompt: string) => void
+  onSend: (prompt: string) => boolean | Promise<boolean>
   // 是否正在流式输出（用于显示停止按钮）
   isStreaming: boolean
   // 停止当前对话
@@ -36,7 +36,6 @@ const BUILTIN_COMMANDS = [
   { name: '/model', desc: '切换模型' },
   { name: '/cost', desc: '查看成本' },
   { name: '/exit', desc: '退出' },
-  { name: '/spec', desc: '查看规格' },
 ]
 
 function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, questionRequest, onAnswer, permissionMode, onPermissionModeChange, currentTaskSessionId }: Props) {
@@ -139,11 +138,22 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
     setCommandsDismissed(false)
   }, [value])
 
+  // 任务运行中发送被拒收的提示：transient 显示，超时自动消失
+  const [rejectHint, setRejectHint] = useState(false)
+  const rejectTimerRef = useRef<number | undefined>(undefined)
+
   const handleSend = () => {
     const trimmed = value.trim()
     if (!trimmed || taskActive) return
-    onSend(trimmed)
-    setValue('')
+    const showHint = () => {
+      setRejectHint(true)
+      if (rejectTimerRef.current) window.clearTimeout(rejectTimerRef.current)
+      rejectTimerRef.current = window.setTimeout(() => setRejectHint(false), 3000)
+    }
+    Promise.resolve(onSend(trimmed)).then(sent => {
+      if (sent) setValue('')
+      else showHint()
+    })
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -219,6 +229,24 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
 
   return (
     <div style={{ position: 'relative' }}>
+      {/* 任务运行中发送被拒收的提示条 */}
+      {rejectHint && (
+        <div
+          style={{
+            margin: '0 0 8px',
+            padding: '6px 12px',
+            borderRadius: 'var(--radius-md)',
+            border: '1px solid var(--warning)',
+            background: 'var(--warning-soft)',
+            color: 'var(--text-primary)',
+            fontSize: '12px',
+            fontFamily: 'var(--font-ui)',
+          }}
+        >
+          当前任务正在运行中，消息未发送——请等待完成或点击「停止」后再发送
+        </div>
+      )}
+
       {/* 提问卡片 - 模型主动提问时内嵌在输入框上方 */}
       {questionRequest && (
         <QuestionCard questionRequest={questionRequest} onAnswer={onAnswer} />

@@ -14,6 +14,8 @@ from server.routers.subagents import router as subagents_router
 from server.routers.sessions import router as sessions_router
 from server.routers.workspaces import router as workspaces_router
 from server.routers.session_groups import router as session_groups_router
+from server.routers.spec import router as spec_router
+from server.routers.commands import router as commands_router
 
 __all__ = [
     "chat_router",
@@ -30,4 +32,6 @@ __all__ = [
     "sessions_router",
     "workspaces_router",
     "session_groups_router",
+    "spec_router",
+    "commands_router",
 ]

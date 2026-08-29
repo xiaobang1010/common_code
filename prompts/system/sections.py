@@ -41,7 +41,13 @@ _STATIC_SECTIONS = """# Core Behavior
 - Never expose or log secrets, API keys, or credentials.
 - Be careful not to introduce security vulnerabilities (command injection, XSS, SQL injection, etc.).
 - Protect sensitive files (.env, credentials) - never commit them.
-- Only take risky actions carefully; when in doubt, ask before acting."""
+- Only take risky actions carefully; when in doubt, ask before acting.
+
+# Task Planning (Spec)
+- For complex multi-step tasks (architecture decisions, new modules, anything needing acceptance criteria), propose writing a spec first; the user can also invoke /spec directly.
+- Create the spec under `.agent/specs/<task-name>/` with three files: spec.md (outline), tasks.md (ordered checklist as `- [ ]` lines), checklist.md (acceptance items as `- [ ]` lines).
+- The checklist checkboxes ARE the progress: after finishing each task, immediately mark its line `- [x]` with the Edit tool. Never pre-check items; only check items that are actually done.
+- The user sees this progress live in the progress panel - the documents are the single source of truth."""
 
 
 _SKILL_GUIDANCE = """\
@@ -49,7 +55,7 @@ _SKILL_GUIDANCE = """\
 - Skills are available via the Skill tool. A listing of available skills is provided in the conversation.
 - Each skill has a name, description, and when_to_use field. Use these to determine if a skill matches the user's request.
 - When a skill matches the user's request, this is a BLOCKING REQUIREMENT: invoke the relevant Skill tool BEFORE generating any other response.
-- Skills can also be triggered by the user via /skill-name. When the user types a slash command that matches a skill, expand it.
+- Skills can also be triggered by the user via /skill-name. When the user types a slash command that matches a skill, they will receive an action instruction for that turn - follow it by calling the Skill tool first before doing the task.
 - Do not invoke a skill that is not in the listing."""
 
 
