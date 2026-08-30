@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from query.utils.messages import sanitize_dangling_tool_calls
 from tools.utils.schema import tool_to_openai_schema
 
 if TYPE_CHECKING:
@@ -102,8 +103,15 @@ def build_api_request(
         temperature: 温度
         **kwargs: 额外参数直接传入请求体
     """
+    # 悬空 tool_calls 清洗：主对话与子代理的每轮请求都经此函数，
+    # 在收口处保证「assistant(tool_calls) → tool 结果」序列合法，
+    # 中断/输出超限恢复留下的残缺历史不会原样发给模型
+    # （压缩等内部直调 query_model_with_streaming 的路径不经过这里，
+    # 其失败由 query_loop 的 try/except 兜底）
+    sanitized = sanitize_dangling_tool_calls(messages)
+
     # system 消息放在最前，然后是 user/assistant/tool 消息
-    all_messages = [*system_prompt, *messages]
+    all_messages = [*system_prompt, *sanitized]
 
     # 转换工具 schema
     tool_schemas = [tool_to_api_schema(t) for t in tools] if tools else []

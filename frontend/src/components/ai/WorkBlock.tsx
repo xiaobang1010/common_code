@@ -533,6 +533,23 @@ function WorkBlockView({ blockId }: Props) {
 
   const toggleExpanded = useCallback(() => setExpanded(v => !v), [])
 
+  // 编辑态：悬停操作组点「编辑」后气泡替换为输入框，确认走 editAndResend 截断重发。
+  // hooks 放在早退 return 之前，保证调用顺序稳定
+  const editAndResend = useChatStore(s => s.editAndResend)
+  const [editing, setEditing] = useState(false)
+  const [editText, setEditText] = useState('')
+  const startEdit = useCallback(() => {
+    setEditText(block?.userMessage ?? '')
+    setEditing(true)
+  }, [block?.userMessage])
+  // 确认后本块会被截断移除（组件随之卸载），无需复位 editing；
+  // 发起失败（块已不存在等）同样卸载，新块里已有错误提示
+  const confirmEdit = useCallback(() => {
+    if (!editText.trim()) return
+    void editAndResend(blockId, editText)
+  }, [editAndResend, blockId, editText])
+  const cancelEdit = useCallback(() => setEditing(false), [])
+
   // 流式结束后延迟约 250ms 再升级完整高亮：流式期间与延迟窗口内保持轻量渲染，
   // 避免长回复完成瞬间从轻量渲染切到 Prism 高亮的可见跳变
   const [highlightReady, setHighlightReady] = useState(!block?.finalReplyStreaming)
@@ -566,48 +583,196 @@ function WorkBlockView({ blockId }: Props) {
   return (
     // data-workblock-running：状态胶囊卡「智能体」跳转的回退锚点（目标卡片不在 DOM 时滚到运行中块）
     <div className="work-block" data-workblock-running={isRunning || undefined} style={{ display: 'flex', flexDirection: 'column', gap: '10px', animation: 'fade-in-up 280ms ease-out' }}>
-      {/* 用户消息：技能触发时首行显示「徽章 + 技能名」（对齐 ZCode 的 Spec 徽章样式） */}
-      <div
-        style={{
-          alignSelf: 'flex-end',
-          maxWidth: '80%',
-          padding: '10px 14px',
-          borderRadius: 'var(--radius-lg)',
-          background: 'var(--bg-tertiary)',
-          color: 'var(--text-primary)',
-          fontSize: '14px',
-          lineHeight: 1.6,
-          wordBreak: 'break-word',
-          boxShadow: 'var(--shadow-md)',
-          fontWeight: 500,
-          whiteSpace: 'pre-wrap',
-        }}
-      >
-        {block.skillName && (
-          <span
+      {/* 用户消息：技能触发时首行显示「徽章 + 技能名」（对齐 ZCode 的 Spec 徽章样式）。
+          悬停显示操作组（复制/编辑，对齐 Claude.ai 交互）；运行中块与命令块不提供编辑。
+          编辑态气泡替换为输入框：Ctrl+Enter 确认重发、Esc 取消 */}
+      {editing ? (
+        <div
+          style={{
+            alignSelf: 'flex-end',
+            maxWidth: '80%',
+            width: '100%',
+            padding: '10px 12px',
+            borderRadius: 'var(--radius-lg)',
+            background: 'var(--bg-tertiary)',
+            boxShadow: 'var(--shadow-md)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '8px',
+            boxSizing: 'border-box',
+          }}
+        >
+          <textarea
+            autoFocus
+            value={editText}
+            onChange={e => setEditText(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault()
+                confirmEdit()
+              } else if (e.key === 'Escape') {
+                e.preventDefault()
+                cancelEdit()
+              }
+            }}
+            rows={Math.min(10, Math.max(2, editText.split('\n').length))}
             style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '5px',
-              marginRight: '8px',
-              padding: '1px 9px',
-              borderRadius: 'var(--radius-sm)',
-              background: 'var(--selected-bg)',
+              width: '100%',
+              background: 'transparent',
               color: 'var(--text-primary)',
-              fontSize: '12px',
-              fontWeight: 600,
-              verticalAlign: 'middle',
+              border: 'none',
+              outline: 'none',
+              resize: 'vertical',
+              fontSize: '14px',
+              lineHeight: 1.6,
+              fontFamily: 'var(--font-ui)',
+              whiteSpace: 'pre-wrap',
+            }}
+          />
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+            <button
+              type="button"
+              onClick={cancelEdit}
+              style={{
+                padding: '4px 12px',
+                fontSize: '12px',
+                border: '1px solid var(--border-strong)',
+                borderRadius: 'var(--radius-md)',
+                background: 'transparent',
+                color: 'var(--text-secondary)',
+                cursor: 'pointer',
+              }}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={confirmEdit}
+              disabled={!editText.trim()}
+              style={{
+                padding: '4px 12px',
+                fontSize: '12px',
+                border: 'none',
+                borderRadius: 'var(--radius-md)',
+                background: 'var(--button-primary-bg)',
+                color: 'var(--button-primary-text)',
+                cursor: editText.trim() ? 'pointer' : 'not-allowed',
+                opacity: editText.trim() ? 1 : 0.5,
+              }}
+            >
+              重发
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div
+          className="msg-bubble-wrap"
+          style={{ alignSelf: 'flex-end', maxWidth: '80%', position: 'relative' }}
+        >
+          {/* 悬停操作组：贴对话条下方右缘（对齐 ZCode 交互），裸图标无底板，仅已完成对话块显示编辑 */}
+          {!isRunning && block.exitReason !== 'command' && (
+            <div
+              className="msg-actions"
+              style={{
+                position: 'absolute',
+                // top 与气泡底缘齐平 + 内边距留出视觉间隙：悬停从气泡移到按钮
+                // 的路径不离开容器，操作组不会中途淡出
+                top: '100%',
+                right: 0,
+                zIndex: 5,
+                display: 'flex',
+                gap: '10px',
+                paddingTop: '5px',
+              }}
+            >
+              <button
+                type="button"
+                className="msg-action-btn"
+                title="复制"
+                onClick={() => void navigator.clipboard.writeText(block.userMessage)}
+                style={{
+                  width: '22px',
+                  height: '22px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderRadius: '5px',
+                  border: 'none',
+                  padding: 0,
+                  color: 'var(--text-tertiary)',
+                  cursor: 'pointer',
+                }}
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="9" y="9" width="13" height="13" rx="2" />
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="msg-action-btn"
+                title="编辑"
+                onClick={startEdit}
+                style={{
+                  width: '22px',
+                  height: '22px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderRadius: '5px',
+                  border: 'none',
+                  padding: 0,
+                  color: 'var(--text-tertiary)',
+                  cursor: 'pointer',
+                }}
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+                </svg>
+              </button>
+            </div>
+          )}
+          <div
+            style={{
+              padding: '10px 14px',
+              borderRadius: 'var(--radius-lg)',
+              background: 'var(--bg-tertiary)',
+              color: 'var(--text-primary)',
+              fontSize: '14px',
+              lineHeight: 1.6,
+              wordBreak: 'break-word',
+              boxShadow: 'var(--shadow-md)',
+              fontWeight: 500,
+              whiteSpace: 'pre-wrap',
             }}
           >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 20h9" />
-              <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
-            </svg>
-            {block.skillName.charAt(0).toUpperCase() + block.skillName.slice(1)}
-          </span>
-        )}
-        {block.userMessage}
-      </div>
+            {block.skillName && (
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                  marginRight: '8px',
+                  padding: '1px 9px',
+                  borderRadius: 'var(--radius-sm)',
+                  background: 'var(--selected-bg)',
+                  color: 'var(--text-primary)',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  verticalAlign: 'middle',
+                }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 20h9" />
+                  <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
+                </svg>
+                {block.skillName.charAt(0).toUpperCase() + block.skillName.slice(1)}
+              </span>
+            )}
+            {block.userMessage}
+          </div>
+        </div>
+      )}
 
       {/* 流程区：状态行 + 细分隔线 + 活动行 + 事件行，纯文本流排布 */}
       {showFlow && (

@@ -228,6 +228,32 @@ body {
   outline-offset: 1px;
 }
 
+/* 用户气泡悬停操作组（复制/编辑）：默认隐藏，悬停气泡容器时淡入 */
+.msg-bubble-wrap .msg-actions {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+.msg-bubble-wrap:hover .msg-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* 悬停时抬升气泡容器：下方 work-block 自成层叠上下文（content-visibility），
+   会按 DOM 顺序盖住操作组，抬升后操作组才能接收悬停与点击 */
+.msg-bubble-wrap:hover {
+  z-index: 6;
+}
+
+/* 操作按钮：裸图标无底板（对齐 ZCode），悬停时才显浅色高亮
+   （底色走 CSS，内联样式会赢过 CSS 规则） */
+.msg-action-btn {
+  background: transparent;
+  transition: background var(--transition-fast);
+}
+.msg-action-btn:hover {
+  background: var(--hover-bg);
+}
+
 /* 减弱动效：spinner 与呼吸点静止 */
 @media (prefers-reduced-motion: reduce) {
   .work-spin,

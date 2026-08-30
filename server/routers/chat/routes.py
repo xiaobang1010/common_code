@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from query.engine import QueryEngine, build_engine_config
 from query.loop import LoopResult
 from query.services.api.llm import StreamEvent
+from query.utils.messages import sanitize_dangling_tool_calls
 from server.paths import project_root
 from server.routers.sessions.routes import get_git_branch
 import server.state
@@ -138,7 +139,35 @@ def _extract_session_title(prompt: str) -> str:
     return prompt.strip()[:40]
 
 
-async def chat_event_stream(prompt: str, session_id: str = ""):
+# 系统注入消息前缀：与前端 parseUserMessage（frontend/src/utils/skillParse.ts）
+# 的 startsWith 判定一致（不 strip），编辑重发的可见序号两侧必须同规则
+_SYSTEM_REMINDER_PREFIX = "<system-reminder>"
+
+
+def _visible_user_indexes(messages: list[dict]) -> list[int]:
+    """返回可见用户消息在 messages 中的下标列表。
+
+    可见判定与前端 parseUserMessage 对齐：`<system-reminder>` 开头为
+    系统注入消息（skip），其余 user 消息可见——含技能重写提示
+    （_SKILL_PROMPT_RE 命中形状）。编辑重发的 edit_user_index 即此
+    列表的下标。
+    """
+    indexes: list[int] = []
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        content = msg.get("content", "")
+        if not isinstance(content, str):
+            continue
+        if content.startswith(_SYSTEM_REMINDER_PREFIX):
+            continue
+        indexes.append(i)
+    return indexes
+
+
+async def chat_event_stream(
+    prompt: str, session_id: str = "", edit_user_index: int | None = None
+):
     """SSE 事件生成器（订阅者角色）。
 
     任务模型：每次对话创建独立 RunContext（专属 QueryEngine + 消息缓冲 +
@@ -149,6 +178,10 @@ async def chat_event_stream(prompt: str, session_id: str = ""):
     保留语义（chat-session-binding）：session_id 为空自动建会话（校验工作区
     已登记）、启动前立即持久化「DB 前缀 + 本条 user」、标题即时生成、
     session_meta 固定回传、同会话串行约束。
+
+    编辑重发：edit_user_index 非 None 时，按可见用户消息序号（_visible_user_indexes）
+    定位 DB 中的目标消息，把该消息及其后全部截掉，新 prompt 作为该位置的用户
+    消息重跑一轮；索引越界时 yield error 事件返回，不做任何持久化。
     """
     from query.services.pricing import calculate_cost
 
@@ -179,8 +212,29 @@ async def chat_event_stream(prompt: str, session_id: str = ""):
         return
 
     # ---- 快照：DB 会话消息前缀（不含本条 user，user 由 submitMessage 内部追加） ----
+    # 前缀过一遍悬空 tool_calls 清洗：防御存量脏数据进入新一轮请求（不回写 DB）
     session = session_store.get_session(run_session_id) if session_store is not None else None
-    prefix_messages: list[dict] = list(session.messages) if session else []
+    prefix_messages: list[dict] = (
+        sanitize_dangling_tool_calls(list(session.messages)) if session else []
+    )
+
+    # ---- 编辑重发：截断到目标可见用户消息之前（该消息由新 prompt 替换重跑） ----
+    # 截断作用于清洗后的前缀，随下方 save_messages 一并持久化；越界在持久化前
+    # 拒绝，历史不受影响。sanitize 只插入 tool 消息，不改 user 消息的相对次序，
+    # 可见序号与前端按块推算的一致
+    if edit_user_index is not None:
+        visible = _visible_user_indexes(prefix_messages)
+        if (
+            isinstance(edit_user_index, bool)
+            or not isinstance(edit_user_index, int)
+            or not 0 <= edit_user_index < len(visible)
+        ):
+            yield (
+                f"data: {json.dumps({'type': 'error', 'error': '编辑位置无效，历史未被修改'}, ensure_ascii=False)}\n\n"
+            )
+            return
+        prefix_messages = prefix_messages[: visible[edit_user_index]]
+
     # 任务工作区：会话所属工作区（跨工作区后台任务的 cwd 隔离依据）
     task_workspace = session.workspace_path if session else project_root()
 
@@ -268,7 +322,11 @@ async def chat_event_stream(prompt: str, session_id: str = ""):
         finally:
             # ---- 收尾统一清理路径：保存 -> 回写视图 -> 移出注册表 -> 按来源清桥 -> 置位 ----
             try:
-                session_store.save_messages(run_session_id, task_engine.mutable_messages)
+                # 入库前清洗：中断/输出超限恢复留下的悬空 tool_calls 就地补合成结果，
+                # 保证 DB 里的历史序列始终合法
+                session_store.save_messages(
+                    run_session_id, sanitize_dangling_tool_calls(task_engine.mutable_messages)
+                )
                 final_session = session_store.get_session(run_session_id)
                 if final_session and not final_session.title:
                     for msg in task_engine.mutable_messages:
@@ -351,13 +409,15 @@ async def chat_event_stream(prompt: str, session_id: str = ""):
 async def chat(body: dict) -> StreamingResponse:
     """SSE 流式对话接口。
 
-    请求体：{"prompt": "...", "session_id": "..."}
+    请求体：{"prompt": "...", "session_id": "...", "edit_user_index": 0}
+    edit_user_index 可选，编辑重发时传目标可见用户消息序号（0 起）；
     返回：text/event-stream，每行 data: {JSON}\n\n
     """
     prompt = body.get("prompt", "")
     session_id = body.get("session_id", "")
+    edit_user_index = body.get("edit_user_index")
     return StreamingResponse(
-        chat_event_stream(prompt, session_id),
+        chat_event_stream(prompt, session_id, edit_user_index),
         media_type="text/event-stream",
     )
 
