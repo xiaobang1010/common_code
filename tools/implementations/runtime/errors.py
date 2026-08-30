@@ -65,8 +65,10 @@ def file_modified_error(path: str) -> ToolExecutionError:
 
 
 def file_exists_requires_baseline_error(path: str) -> ToolExecutionError:
-    """覆盖已存在文件但缺少一致性基线。"""
+    """覆盖已存在文件但缺少一致性基线（本进程内从未 Read/Write/Edit 过该文件）。"""
     return ToolExecutionError(
         "missing_baseline",
-        f"文件已存在，覆盖前请先读取该文件获取基线（mtime/size）：{path}",
+        f"文件已存在，覆盖前必须先读取：{path}。"
+        f"请先调用 Read 工具读取该文件，然后重新发起 Write 即可"
+        f"（基线由系统自动登记校验，无需手动传参）",
     )

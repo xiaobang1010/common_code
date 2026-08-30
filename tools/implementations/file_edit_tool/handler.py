@@ -15,6 +15,7 @@ from tools.implementations.runtime.errors import (
     file_not_found_error,
     file_too_large_error,
 )
+from tools.implementations.runtime.file_baseline import record_baseline
 from tools.implementations.runtime.paths import resolve_workspace_path
 from tools.protocol import ToolUseContext
 
@@ -50,7 +51,9 @@ async def handle_edit(inp: FileEditInput, context: ToolUseContext) -> dict:
     # 读写盘丢线程池执行，大文件编辑时不阻塞事件循环
     result = await asyncio.to_thread(_edit_sync, inp)
 
-    # 写盘成功后在事件循环侧广播文件变更事件（asyncio.Queue 非线程安全）
+    # 写盘成功后刷新基线登记（供本会话内后续覆盖写免 Read），再广播文件变更
+    # 事件（asyncio.Queue 非线程安全，广播留在事件循环上）
+    record_baseline(result["file_path"], result["mtime"], result["size"])
     mtime = result.pop("mtime")
     size = result.pop("size")
     notify_file_changed(result["file_path"], "edit", mtime, size)
@@ -128,16 +131,19 @@ def _edit_sync(inp: FileEditInput) -> dict:
             pass
         raise
 
-    # 变更统计（增删行数）
+    # 变更统计（增删行数）。size 取写盘后的真实字节数：
+    # 文本模式写盘会做 \n→\r\n 转换，预计算的 encode 长度与磁盘不一致，
+    # 会污染基线登记（后续覆盖写被误判 file_modified）
     removed = len(content.splitlines())
     added = len(updated.splitlines())
+    st = file_path.stat()
     return {
         "file_path": str(file_path),
         "replacements": replacements,
         "added_lines": max(0, added - removed),
         "removed_lines": max(0, removed - added),
-        "mtime": int(file_path.stat().st_mtime),
-        "size": size,
+        "mtime": int(st.st_mtime),
+        "size": st.st_size,
     }
 
 

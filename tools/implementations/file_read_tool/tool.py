@@ -32,7 +32,7 @@ FILE_READ_PROMPT = """\
 - offset 为起始行号（从 1 开始），limit 为读取行数
 - 结果使用 cat -n 格式，行号从 1 开始
 - 此工具只能读取文件，不能读取目录
-- 返回的 [文件基线] mtime/size 需在后续 Write/Edit 覆盖该文件时作为 base_mtime/base_size 回传
+- 读取成功后系统自动登记文件基线，后续 Write/Edit 覆盖该文件时自动校验，无需手动回传 mtime/size
 """
 
 
