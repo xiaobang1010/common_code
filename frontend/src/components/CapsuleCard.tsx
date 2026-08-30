@@ -187,7 +187,16 @@ function CapsuleCard({ onOpenTool, isTaskRunning, sessionId }: CapsuleCardProps)
 
   // ---- 收起态：活动摘要小胶囊（对齐 ZCode 的「→ 当前活动」形态），点击展开 ----
   if (!expanded) {
-    const specxy = checks && checks.total > 0 ? ` · ${checks.done}/${checks.total}` : ''
+    // 进度与展开态进展头部对齐：默认展示任务清单进度（展开面板默认也是任务分组），
+    // 任务清单为空时回退验证清单；验收全勾仍显示「验收通过」终态
+    const tasksList = specData?.tasks
+    const progressSource =
+      tasksList && tasksList.total > 0
+        ? tasksList
+        : checks && checks.total > 0
+          ? checks
+          : null
+    const specxy = progressSource ? ` · ${progressSource.done}/${progressSource.total}` : ''
     return (
       <div
         onClick={() => setExpanded(true)}

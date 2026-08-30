@@ -23,9 +23,9 @@ class FileEditInput(BaseModel):
     replace_all: bool = Field(default=False, description="是否替换所有匹配项")
     base_mtime: int | None = Field(
         default=None,
-        description="可选，来自最近一次 Read 的基线 mtime，写回前校验磁盘是否被改动",
+        description="可选，一般无需传；写回前校验的基线 mtime（缺省自动采用系统登记值）",
     )
     base_size: int | None = Field(
         default=None,
-        description="可选，来自最近一次 Read 的基线 size，写回前校验磁盘是否被改动",
+        description="可选，一般无需传；写回前校验的基线 size（缺省自动采用系统登记值）",
     )

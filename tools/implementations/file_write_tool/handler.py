@@ -14,6 +14,7 @@ from tools.implementations.runtime.errors import (
     file_modified_error,
     file_too_large_error,
 )
+from tools.implementations.runtime.file_baseline import get_baseline, record_baseline
 from tools.implementations.runtime.paths import resolve_workspace_path
 from tools.protocol import ToolUseContext
 
@@ -35,8 +36,10 @@ async def handle_write(inp: FileWriteInput, context: ToolUseContext) -> dict:
     # 磁盘 IO 丢线程池执行，写大文件时不阻塞事件循环
     result = await asyncio.to_thread(_write_sync, inp)
 
-    # 写盘成功后在事件循环侧广播文件变更事件（供前端刷新文件树 / 标记过期）。
-    # asyncio.Queue 非线程安全，广播必须留在事件循环上执行
+    # 写盘成功后刷新基线登记（供本会话内后续覆盖写免 Read），再广播文件变更
+    # 事件供前端刷新文件树 / 标记过期。asyncio.Queue 非线程安全，广播必须
+    # 留在事件循环上执行
+    _record_new_baseline(result)
     notify_file_changed(
         result["file_path"], "write", result.pop("mtime"), result["bytes_written"]
     )
@@ -50,12 +53,21 @@ def _write_sync(inp: FileWriteInput) -> dict:
 
     existed = file_path.exists()
 
-    # 覆盖已存在文件：强制要求基线，防止用旧快照覆盖他人改动
+    # 覆盖已存在文件：校验基线，防止用旧快照覆盖他人改动。
+    # 模型未回传基线时自动采用登记表里最近一次 Read/Write/Edit 的记录，
+    # 「先读后写」即可覆盖，无需模型手工抄写 mtime/size
     if existed:
-        if inp.base_mtime is None or inp.base_size is None:
+        base_mtime = inp.base_mtime
+        base_size = inp.base_size
+        if base_mtime is None or base_size is None:
+            recorded = get_baseline(str(file_path))
+            if recorded is not None:
+                base_mtime = base_mtime if base_mtime is not None else recorded[0]
+                base_size = base_size if base_size is not None else recorded[1]
+        if base_mtime is None or base_size is None:
             raise file_exists_requires_baseline_error(inp.file_path)
         st = file_path.stat()
-        if int(st.st_mtime) != inp.base_mtime or st.st_size != inp.base_size:
+        if int(st.st_mtime) != base_mtime or st.st_size != base_size:
             raise file_modified_error(inp.file_path)
 
     # 大小上限护栏
@@ -84,12 +96,22 @@ def _write_sync(inp: FileWriteInput) -> dict:
             pass
         raise
 
+    # bytes_written/mtime 取写盘后的真实 stat：文本模式写盘会做 \n→\r\n
+    # 转换，预计算的 encode 长度与磁盘不一致，会污染基线登记
+    st = file_path.stat()
     return {
         "file_path": str(file_path),
         "action": "overwritten" if existed else "created",
-        "bytes_written": size,
-        "mtime": int(file_path.stat().st_mtime),
+        "bytes_written": st.st_size,
+        "mtime": int(st.st_mtime),
     }
+
+
+def _record_new_baseline(structured: dict) -> None:
+    """写盘成功后刷新登记表基线，本会话内连续覆盖无需重新 Read。"""
+    record_baseline(
+        structured["file_path"], structured["mtime"], structured["bytes_written"]
+    )
 
 
 def format_model_content(structured: dict) -> str:

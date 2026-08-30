@@ -71,6 +71,8 @@ async def run_command(body: dict) -> dict:
                 ),
             }
 
+        # 重写提示形状被两侧消费：前端 skillParse.ts 解析历史、
+        # useChatStore.editAndResend 编辑重发时按此形状重组，改形状需三处同步
         lines = [
             f"Use the skill named `{name}` for this turn.",
             f'First call the `Skill` tool with skill="{name}" before doing the task.',

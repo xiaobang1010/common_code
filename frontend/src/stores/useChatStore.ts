@@ -149,6 +149,8 @@ interface ChatState {
   permissionMode: PermissionMode
 
   sendMessage: (prompt: string) => Promise<boolean>
+  // 编辑历史用户消息并从该处重发：截断后续块与 DB 历史，用新文本重建该轮
+  editAndResend: (blockId: string, newText: string) => Promise<boolean>
   abort: () => Promise<void>
   loadMessages: (rawMessages: Record<string, unknown>[], opts?: { runningStartedAt?: number }) => void
   clearMessages: () => void
@@ -425,6 +427,54 @@ export const useChatStore = create<ChatState>((set, get) => {
     }
   }
 
+  // 发起 /api/chat SSE 并驱动工作块渲染。
+  // editUserIndex 非 null 时走编辑重发通道（后端截断该可见用户消息之后的历史）。
+  // sendMessage 普通路径与 editAndResend 共用，catch/finally 语义保持一致
+  const runChatSSE = async (prompt: string, editUserIndex: number | null = null) => {
+    try {
+      sseAbortRef.current = new AbortController()
+      const resp = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(
+          editUserIndex === null
+            ? { prompt, session_id: sessionIdRef.current }
+            : { prompt, session_id: sessionIdRef.current, edit_user_index: editUserIndex }
+        ),
+        signal: sseAbortRef.current.signal,
+      })
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      await parseSSEStream(resp)
+    } catch (e) {
+      const blockId = currentBlockId.current
+      if (blockId) {
+        updateBlock(blockId, b => ({
+          ...b,
+          status: 'done' as const,
+          endTime: Date.now(),
+          exitReason: 'error',
+          finalReply: `请求失败: ${e instanceof Error ? e.message : String(e)}`,
+        }))
+      }
+    } finally {
+      set({ isStreaming: false })
+      // 兜底 flush：异常断开时把缓冲内容落盘，避免尾部文本丢失
+      flushContent()
+      // 如果没有收到 loop_result（异常断开），强制标记为 done
+      const blockId = currentBlockId.current
+      if (blockId) {
+        updateBlock(blockId, b => ({
+          ...b,
+          status: 'done' as const,
+          endTime: Date.now(),
+          exitReason: b.exitReason || 'aborted',
+          finalReplyStreaming: false,
+        }))
+        currentBlockId.current = null
+      }
+    }
+  }
+
   // 发送消息。返回 false 表示消息被拒收（任务运行中 / 空内容），调用方可据此提示
   const sendMessage = async (prompt: string): Promise<boolean> => {
     if (!prompt.trim()) return false
@@ -489,45 +539,59 @@ export const useChatStore = create<ChatState>((set, get) => {
     // 普通对话：创建工作块走 SSE 流
     set({ isStreaming: true })
     createBlock(prompt)
+    await runChatSSE(prompt)
+    await fetchState()
+    return true
+  }
 
-    try {
-      sseAbortRef.current = new AbortController()
-      const resp = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, session_id: sessionIdRef.current }),
-        signal: sseAbortRef.current.signal,
-      })
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-      await parseSSEStream(resp)
-    } catch (e) {
-      const blockId = currentBlockId.current
-      if (blockId) {
-        updateBlock(blockId, b => ({
-          ...b,
-          status: 'done' as const,
-          endTime: Date.now(),
-          exitReason: 'error',
-          finalReply: `请求失败: ${e instanceof Error ? e.message : String(e)}`,
-        }))
-      }
-    } finally {
-      set({ isStreaming: false })
-      // 兜底 flush：异常断开时把缓冲内容落盘，避免尾部文本丢失
-      flushContent()
-      // 如果没有收到 loop_result（异常断开），强制标记为 done
-      const blockId = currentBlockId.current
-      if (blockId) {
-        updateBlock(blockId, b => ({
-          ...b,
-          status: 'done' as const,
-          endTime: Date.now(),
-          exitReason: b.exitReason || 'aborted',
-          finalReplyStreaming: false,
-        }))
-        currentBlockId.current = null
-      }
+  // 编辑历史消息并从该处重发：截断该消息之后的所有块与 DB 历史，
+  // 用编辑后的文本重建该位置的轮次。返回 false 表示未发起（空文本/块不存在）
+  const editAndResend = async (blockId: string, newText: string): Promise<boolean> => {
+    const text = newText.trim()
+    if (!text) return false
+    // 运行中先停止（含断开旧流），再基于最新状态定位
+    if (get().isStreaming) await abort()
+    const state = get()
+    const targetBlock = state.blocksById[blockId]
+    if (!targetBlock) return false
+
+    // 定位 edit_user_index：块在 blockIds 中的下标，减去其前命令块数
+    // （命令块是前端本地产物，DB 无对应用户消息，不计入可见用户消息序号）
+    const idx = state.blockIds.indexOf(blockId)
+    if (idx === -1) return false
+    const commandsBefore = state.blockIds
+      .slice(0, idx)
+      .filter(id => state.blocksById[id]?.exitReason === 'command').length
+    const editUserIndex = idx - commandsBefore
+
+    // 本地截断：丢弃该块及其后所有块，blocksById 同步清理避免脏块残留
+    const keptIds = state.blockIds.slice(0, idx)
+    const keptById: Record<string, WorkBlock> = {}
+    for (const id of keptIds) keptById[id] = state.blocksById[id]
+    set({ blockIds: keptIds, blocksById: keptById })
+
+    // 组装 prompt：技能块按重写提示形状重组（徽章展示靠 skillName，模板形状
+    // 与 server/routers/commands/routes.py 的 skill_prompt 生成逻辑保持一致，
+    // 两侧任一改动需同步）；普通块直接用编辑后文本
+    const skillName = targetBlock.skillName
+    const prompt = skillName
+      ? [
+          `Use the skill named \`${skillName}\` for this turn.`,
+          `First call the \`Skill\` tool with skill="${skillName}" before doing the task.`,
+          'After the skill content is loaded, follow its instructions and continue.',
+          '',
+          `User request: ${text}`,
+        ].join('\n')
+      : text
+
+    set({ isStreaming: true })
+    createBlock(text)
+    // 重写提示不以 / 开头、不会命中 sendMessage 的技能分流，徽章在此补挂
+    if (skillName) {
+      const bid = currentBlockId.current
+      if (bid) updateBlock(bid, b => ({ ...b, skillName }))
     }
+    await runChatSSE(prompt, editUserIndex)
     await fetchState()
     return true
   }
@@ -574,6 +638,14 @@ export const useChatStore = create<ChatState>((set, get) => {
     } catch {
       // 忽略
     }
+    // 显式断开旧 SSE 连接：后端任务已收尾，但旧流 reader 可能还压着缓冲中的
+    // 迟到事件；不主动断开的话，这些事件会在用户新消息 createBlock 之后才被
+    // 处理，共享的 currentBlockId 让它们打进新块（提前标 done 甚至丢事件）。
+    // abort 触发旧 parseSSEStream 的 AbortError，旧 sendMessage 的 catch/finally
+    // 在本轮微任务里跑完（此时 currentBlockId 已置 null，自然跳过），之后用户
+    // 才可能触发新 sendMessage，迟到事件不再有落点
+    sseAbortRef.current?.abort()
+    sseAbortRef.current = null
     const blockId = currentBlockId.current
     if (blockId) {
       // 先 flush 缓冲，避免已接收但未显示的文本丢失
@@ -755,6 +827,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     questionRequest: null,
     permissionMode: 'default',
     sendMessage,
+    editAndResend,
     abort,
     loadMessages,
     clearMessages,
