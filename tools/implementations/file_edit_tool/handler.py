@@ -148,9 +148,11 @@ def _edit_sync(inp: FileEditInput) -> dict:
 
 
 def format_model_content(structured: dict) -> str:
-    """结构化结果 → 给模型的文本。"""
+    """结构化结果 → 给模型的文本。行数统计同时供前端事件行展示。"""
     replacements = structured.get("replacements", 1)
+    added = structured.get("added_lines", 0)
+    removed = structured.get("removed_lines", 0)
     return (
         f"文件 {structured['file_path']} 已成功更新"
-        f"（替换 {replacements} 处）。"
+        f"（替换 {replacements} 处，+{added} -{removed} 行）。"
     )

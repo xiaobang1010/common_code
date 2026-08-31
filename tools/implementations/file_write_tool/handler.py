@@ -103,6 +103,7 @@ def _write_sync(inp: FileWriteInput) -> dict:
         "file_path": str(file_path),
         "action": "overwritten" if existed else "created",
         "bytes_written": st.st_size,
+        "lines_written": len(inp.content.splitlines()),
         "mtime": int(st.st_mtime),
     }
 
@@ -115,6 +116,6 @@ def _record_new_baseline(structured: dict) -> None:
 
 
 def format_model_content(structured: dict) -> str:
-    """结构化结果 → 给模型的文本。"""
+    """结构化结果 → 给模型的文本。行数统计同时供前端事件行展示。"""
     action = "已覆盖" if structured.get("action") == "overwritten" else "已创建"
-    return f"文件 {structured['file_path']} {action}成功。"
+    return f"文件 {structured['file_path']} {action}成功（+{structured.get('lines_written', 0)} 行）。"
