@@ -1,18 +1,17 @@
 import { useState } from 'react'
-import type { TokenUsage } from '../../../stores/useChatStore'
 import { useGitStatus, dedupeChanges } from '../useGitStatus'
+import { useSpecProgress, deriveProgress } from '../../../hooks/useSpecProgress'
 
 interface SummaryCardProps {
+  // 当前会话 id：spec 进展按会话归属拉取（null = 无活跃会话，仅显示工作块数）
+  sessionId: string | null
   // 当前会话工作块数量
   blockCount: number
-  // token 用量（计算上下文占比）
-  usage: TokenUsage
   // 点击产物文件项：在文件上下文内打开对应文件（可选）
   onOpenFile?: (path: string) => void
 }
 
-// 上下文窗口大小
-const WINDOW_SIZE = 200000
+// 上下文用量展示已移至输入区底部（ChatInput），概要卡不再重复
 
 // 分区标题：可折叠 chevron，独立展开/收起各段
 function SectionHeader({ title, collapsed, onToggle }: { title: string; collapsed: boolean; onToggle: () => void }) {
@@ -65,43 +64,75 @@ function Empty({ text }: { text: string }) {
   )
 }
 
-// 概要卡：进展（会话工作块）/ 产物（git 变更文件）/ 引用（上下文用量）
-function SummaryCard({ blockCount, usage, onOpenFile }: SummaryCardProps) {
+// 进展行：标签 + 完成度数字；验收全勾时数字绿色强调，与胶囊卡一致
+function ProgressRow({ label, done, total, passed }: { label: string; done: number; total: number; passed: boolean }) {
+  return (
+    <div style={{ fontSize: '12px', color: 'var(--text-primary)', padding: '2px 12px' }}>
+      {label}{' '}
+      <span style={{ color: passed ? 'var(--success)' : undefined }}>
+        {done}/{total}
+      </span>
+    </div>
+  )
+}
+
+// 概要卡：进展（spec 进度 + 会话工作块）/ 产物（git 变更文件汇总 + 文件列表）
+function SummaryCard({ sessionId, blockCount, onOpenFile }: SummaryCardProps) {
   const { data: gitStatus } = useGitStatus()
+  // spec 进展按会话归属拉取，与胶囊卡共用同一数据源（useSpecProgress）与口径（deriveProgress）
+  const { data: specData } = useSpecProgress(sessionId)
   // 产物只列文件：git 会把新增目录也报为变更项，过滤掉
   const artifacts = gitStatus
     ? dedupeChanges(gitStatus.changes).filter((c) => !c.path.endsWith('/'))
     : []
 
-  // 上下文占比：当前 prompt tokens / 窗口大小，超过 80% 变红
-  const current = usage.last_prompt_tokens
-  const percent = Math.min(100, (current / WINDOW_SIZE) * 100)
+  // 进展口径：优先任务、回退验证（皆空回退工作块数）；验收全勾时数字绿色
+  const progress = deriveProgress(specData)
+  const checks = specData?.checks
+  const checksPassed = !!checks && checks.total > 0 && checks.done === checks.total
+  // 变更汇总：与胶囊卡产物区块同用 git.totals，保证两处数字一致
+  const totals = gitStatus?.totals ?? { files: 0, additions: 0, deletions: 0 }
 
-  // 三段独立折叠状态（默认全部展开）
-  const [collapsed, setCollapsed] = useState({ progress: false, artifacts: false, refs: false })
-  const toggle = (k: 'progress' | 'artifacts' | 'refs') =>
+  // 两段独立折叠状态（默认全部展开）
+  const [collapsed, setCollapsed] = useState({ progress: false, artifacts: false })
+  const toggle = (k: 'progress' | 'artifacts') =>
     setCollapsed((prev) => ({ ...prev, [k]: !prev[k] }))
 
   return (
     <div style={{ paddingBottom: '10px' }}>
-      {/* 进展 */}
+      {/* 进展：有 spec 显示任务/验证进度（口径同胶囊卡），其下保留工作块计数 */}
       <SectionHeader title="进展" collapsed={collapsed.progress} onToggle={() => toggle('progress')} />
-      {!collapsed.progress &&
-        (blockCount > 0 ? (
-          <div style={{ fontSize: '12px', color: 'var(--text-primary)', padding: '2px 12px' }}>
-            已完成 {blockCount} 个工作块
-          </div>
-        ) : (
-          <Empty text="暂无进展" />
-        ))}
+      {!collapsed.progress && (
+        <>
+          {specData && specData.tasks.total > 0 && (
+            <ProgressRow label="任务" done={specData.tasks.done} total={specData.tasks.total} passed={checksPassed} />
+          )}
+          {specData && specData.checks.total > 0 && (
+            <ProgressRow label="验证" done={specData.checks.done} total={specData.checks.total} passed={checksPassed} />
+          )}
+          {blockCount > 0 ? (
+            <div style={{ fontSize: '12px', color: 'var(--text-primary)', padding: '2px 12px' }}>
+              已完成 {blockCount} 个工作块
+            </div>
+          ) : (
+            !progress && <Empty text="暂无进展" />
+          )}
+        </>
+      )}
 
-      {/* 产物：文件项可点击在文件上下文内打开 */}
+      {/* 产物：汇总行数字与胶囊卡一致，文件项可点击在文件上下文内打开 */}
       <SectionHeader title="产物" collapsed={collapsed.artifacts} onToggle={() => toggle('artifacts')} />
       {!collapsed.artifacts &&
         (artifacts.length === 0 ? (
           <Empty text="暂无产物" />
         ) : (
-          artifacts.map((c) => (
+          <>
+            <div style={{ display: 'flex', gap: '6px', fontSize: '12px', color: 'var(--text-secondary)', padding: '2px 12px' }}>
+              <span>{totals.files} 文件</span>
+              <span style={{ color: 'var(--success)' }}>+{totals.additions}</span>
+              <span style={{ color: 'var(--error)' }}>−{totals.deletions}</span>
+            </div>
+            {artifacts.map((c) => (
             <button
               key={c.path}
               onClick={() => onOpenFile?.(c.path)}
@@ -136,35 +167,9 @@ function SummaryCard({ blockCount, usage, onOpenFile }: SummaryCardProps) {
             >
               {c.path}
             </button>
-          ))
+            ))}
+          </>
         ))}
-
-      {/* 引用：上下文用量 */}
-      <SectionHeader title="引用" collapsed={collapsed.refs} onToggle={() => toggle('refs')} />
-      {!collapsed.refs && (
-        <div style={{ padding: '4px 12px 0' }}>
-          <div
-            style={{
-              height: '4px',
-              backgroundColor: 'var(--bg-tertiary)',
-              borderRadius: '2px',
-              overflow: 'hidden',
-            }}
-          >
-            <div
-              style={{
-                height: '100%',
-                width: `${percent}%`,
-                backgroundColor: percent > 80 ? 'var(--error)' : 'var(--border-strong)',
-                transition: 'width 0.3s',
-              }}
-            />
-          </div>
-          <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '3px' }}>
-            上下文 {current.toLocaleString()} / {WINDOW_SIZE.toLocaleString()}
-          </div>
-        </div>
-      )}
     </div>
   )
 }

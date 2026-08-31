@@ -58,9 +58,8 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
   // modelVersion 来自 store，外部（如设置面板）切换模型时会变化，触发重新拉取供应商列表
   const modelVersion = useSettingsStore(s => s.modelVersion)
   const notifyModelChanged = useSettingsStore(s => s.notifyModelChanged)
-  // 状态信息（原状态栏并入输入区）：上下文/cost 订阅，模型展示复用下方切换按钮
+  // 上下文用量（输入区底部控件展示），模型展示复用下方切换按钮
   const tokenUsage = useChatStore(s => s.tokenUsage)
-  const totalCost = useChatStore(s => s.totalCost)
   // 供应商列表和当前激活的供应商/模型
   const [providers, setProviders] = useState<CustomLLMProviderInfo[]>([])
   const [activeProvider, setActiveProvider] = useState<string | null>(null)
@@ -226,6 +225,13 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
   const modelDisplayText = activeProviderInfo && activeModel
     ? `${activeProviderInfo.name} / ${activeModel}`
     : '未配置模型'
+
+  // 上下文窗口大小：当前激活模型的 context_window，取不到（未配置/接口失败）回退 200000
+  const contextWindow = providers
+    .find(p => p.id === activeProvider)
+    ?.models.find(m => m.model_id === activeModel)?.context_window || 200000
+  // 上下文占比：当前 prompt tokens / 窗口大小，超过 80% 进度圈变红
+  const contextPercent = Math.min(100, (tokenUsage.last_prompt_tokens / contextWindow) * 100)
 
   return (
     <div style={{ position: 'relative' }}>
@@ -534,137 +540,8 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
             pointerEvents: 'none',
           }}
         >
+          {/* 左侧组：权限模式切换 + 斜杠提示（容器锚定下拉并承接点外关闭） */}
           <div ref={permMenuRef} style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '6px', pointerEvents: 'auto' }}>
-            {/* 模型快速切换控件 */}
-            <div ref={modelMenuRef} style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-              <button
-                onClick={() => {
-                  if (providers.length === 0) return
-                  setShowModelMenu(!showModelMenu)
-                  setShowPermMenu(false)
-                }}
-                disabled={switching}
-                title={switching ? '切换中...' : '切换模型'}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '3px',
-                  padding: '2px 6px',
-                  border: '1px solid var(--border)',
-                  borderRadius: 'var(--radius-sm)',
-                  background: 'transparent',
-                  color: providers.length > 0 ? 'var(--text-secondary)' : 'var(--text-tertiary)',
-                  fontSize: '10px',
-                  fontFamily: 'var(--font-ui)',
-                  fontWeight: 500,
-                  cursor: switching ? 'wait' : 'pointer',
-                  transition: 'all var(--transition-fast)',
-                  whiteSpace: 'nowrap',
-                  maxWidth: '200px',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  opacity: switching ? 0.6 : 1,
-                }}
-                onMouseEnter={(e) => {
-                  if (!switching) {
-                    e.currentTarget.style.borderColor = 'var(--border-strong)'
-                    e.currentTarget.style.color = 'var(--text-primary)'
-                  }
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.borderColor = 'var(--border)'
-                  e.currentTarget.style.color = providers.length > 0 ? 'var(--text-secondary)' : 'var(--text-tertiary)'
-                }}
-              >
-                {switching ? '切换中...' : modelDisplayText}
-                {providers.length > 0 && !switching && (
-                  <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-                    <path d="m6 9 6 6 6-6" />
-                  </svg>
-                )}
-              </button>
-              {/* 模型选择下拉列表 - 按供应商分组 */}
-              {showModelMenu && (
-                <div
-                  style={{
-                    position: 'absolute',
-                    bottom: '100%',
-                    left: 0,
-                    marginBottom: '4px',
-                    backgroundColor: 'var(--bg-elevated)',
-                    border: '1px solid var(--border-strong)',
-                    borderRadius: 'var(--radius-md)',
-                    boxShadow: 'var(--shadow-md)',
-                    backdropFilter: 'blur(8px)',
-                    zIndex: 20,
-                    minWidth: '260px',
-                    maxHeight: '300px',
-                    overflowY: 'auto',
-                  }}
-                >
-                  {providers.map((provider, pIdx) => (
-                    <div key={provider.id}>
-                      {/* 供应商分组标题 */}
-                      <div
-                        style={{
-                          padding: '6px 10px 4px',
-                          fontSize: '10px',
-                          fontWeight: 600,
-                          color: 'var(--text-tertiary)',
-                          fontFamily: 'var(--font-ui)',
-                          backgroundColor: 'var(--bg-base)',
-                          borderTop: pIdx > 0 ? '1px solid var(--border-subtle)' : 'none',
-                        }}
-                      >
-                        {provider.name}
-                      </div>
-                      {/* 该供应商下的模型列表 */}
-                      {provider.models.map(model => {
-                        const isActive = provider.id === activeProvider && model.model_id === activeModel
-                        return (
-                          <div
-                            key={model.model_id}
-                            onClick={() => handleModelSelect(provider.id, model.model_id)}
-                            style={{
-                              padding: '6px 10px',
-                              cursor: 'pointer',
-                              backgroundColor: isActive ? 'var(--selected-bg)' : 'transparent',
-                              transition: 'background var(--transition-fast)',
-                            }}
-                            onMouseEnter={(e) => {
-                              if (!isActive) e.currentTarget.style.backgroundColor = 'var(--hover-bg)'
-                            }}
-                            onMouseLeave={(e) => {
-                              if (!isActive) e.currentTarget.style.backgroundColor = 'transparent'
-                            }}
-                          >
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                              <span style={{
-                                color: 'var(--text-primary)',
-                                fontSize: '12px',
-                                fontFamily: 'var(--font-mono)',
-                                fontWeight: 500,
-                              }}>
-                                {model.model_id}
-                              </span>
-                              {isActive && (
-                                <span style={{ color: 'var(--text-primary)', fontSize: '11px' }}>✓</span>
-                              )}
-                            </div>
-                            {model.context_window > 0 && (
-                              <div style={{ color: 'var(--text-tertiary)', fontSize: '10px', marginTop: '2px', fontFamily: 'var(--font-ui)' }}>
-                                上下文窗口 {model.context_window.toLocaleString()}
-                              </div>
-                            )}
-                          </div>
-                        )
-                      })}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-            {/* 权限模式切换按钮 */}
             <button
               onClick={() => { setShowPermMenu(!showPermMenu); setShowModelMenu(false) }}
               style={{
@@ -773,31 +650,172 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
                 </div>
               </div>
             )}
-            {/* 状态信息（原状态栏并入输入区）：上下文 / 缓存 / cost */}
-            <span
-              style={{
-                fontSize: '9px',
-                color: 'var(--text-tertiary)',
-                fontFamily: 'var(--font-mono)',
-                letterSpacing: '0.3px',
-                marginRight: '8px',
-              }}
-            >
-              上下文 {tokenUsage.last_prompt_tokens.toLocaleString()} · 缓存 {tokenUsage.last_cache_creation.toLocaleString()} · ${totalCost.toFixed(4)}
-            </span>
-            {/* 保留原来的快捷键提示，更小字体 */}
-            <span
-              style={{
-                fontSize: '9px',
-                color: 'var(--text-tertiary)',
-                fontFamily: 'var(--font-mono)',
-                letterSpacing: '0.3px',
-              }}
-            >
-              {value.startsWith('/') ? 'Tab 选中命令' : 'Shift+Enter 换行'}
-            </span>
+            {/* 斜杠输入时的命令补全提示 */}
+            {value.startsWith('/') && (
+              <span
+                style={{
+                  fontSize: '9px',
+                  color: 'var(--text-tertiary)',
+                  fontFamily: 'var(--font-mono)',
+                  letterSpacing: '0.3px',
+                }}
+              >
+                Tab 选中命令
+              </span>
+            )}
           </div>
-          {taskActive ? (
+          {/* 右侧组：进度圈 + 模型 + 发送/停止（整组靠右，圈在组首） */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', pointerEvents: 'auto' }}>
+            {/* 上下文用量进度圈：弧长即占比、起点 12 点，>80% 变红；悬停看具体数字 */}
+            <span
+              title={`上下文 ${tokenUsage.last_prompt_tokens.toLocaleString()} / ${contextWindow.toLocaleString()}（${contextPercent.toFixed(1)}%）`}
+              style={{ display: 'inline-flex', alignItems: 'center', flexShrink: 0 }}
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" style={{ transform: 'rotate(-90deg)' }}>
+                <circle cx="7" cy="7" r="5.5" fill="none" stroke="var(--border)" strokeWidth="2.5" />
+                <circle
+                  cx="7"
+                  cy="7"
+                  r="5.5"
+                  fill="none"
+                  stroke={contextPercent > 80 ? 'var(--error)' : 'var(--text-tertiary)'}
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  strokeDasharray={`${(contextPercent / 100) * 2 * Math.PI * 5.5} ${2 * Math.PI * 5.5}`}
+                  style={{ transition: 'stroke-dasharray 0.3s' }}
+                />
+              </svg>
+            </span>
+            {/* 模型快速切换控件 */}
+            <div ref={modelMenuRef} style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+              <button
+                onClick={() => {
+                  if (providers.length === 0) return
+                  setShowModelMenu(!showModelMenu)
+                  setShowPermMenu(false)
+                }}
+                disabled={switching}
+                title={switching ? '切换中...' : '切换模型'}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '3px',
+                  padding: '2px 6px',
+                  border: '1px solid var(--border)',
+                  borderRadius: 'var(--radius-sm)',
+                  background: 'transparent',
+                  color: providers.length > 0 ? 'var(--text-secondary)' : 'var(--text-tertiary)',
+                  fontSize: '10px',
+                  fontFamily: 'var(--font-ui)',
+                  fontWeight: 500,
+                  cursor: switching ? 'wait' : 'pointer',
+                  transition: 'all var(--transition-fast)',
+                  whiteSpace: 'nowrap',
+                  maxWidth: '200px',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  opacity: switching ? 0.6 : 1,
+                }}
+                onMouseEnter={(e) => {
+                  if (!switching) {
+                    e.currentTarget.style.borderColor = 'var(--border-strong)'
+                    e.currentTarget.style.color = 'var(--text-primary)'
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = 'var(--border)'
+                  e.currentTarget.style.color = providers.length > 0 ? 'var(--text-secondary)' : 'var(--text-tertiary)'
+                }}
+              >
+                {switching ? '切换中...' : modelDisplayText}
+                {providers.length > 0 && !switching && (
+                  <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                    <path d="m6 9 6 6 6-6" />
+                  </svg>
+                )}
+              </button>
+              {/* 模型选择下拉列表 - 按供应商分组（右缘锚定，防靠右排布后溢出窗口） */}
+              {showModelMenu && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    bottom: '100%',
+                    right: 0,
+                    marginBottom: '4px',
+                    backgroundColor: 'var(--bg-elevated)',
+                    border: '1px solid var(--border-strong)',
+                    borderRadius: 'var(--radius-md)',
+                    boxShadow: 'var(--shadow-md)',
+                    backdropFilter: 'blur(8px)',
+                    zIndex: 20,
+                    minWidth: '260px',
+                    maxHeight: '300px',
+                    overflowY: 'auto',
+                  }}
+                >
+                  {providers.map((provider, pIdx) => (
+                    <div key={provider.id}>
+                      {/* 供应商分组标题 */}
+                      <div
+                        style={{
+                          padding: '6px 10px 4px',
+                          fontSize: '10px',
+                          fontWeight: 600,
+                          color: 'var(--text-tertiary)',
+                          fontFamily: 'var(--font-ui)',
+                          backgroundColor: 'var(--bg-base)',
+                          borderTop: pIdx > 0 ? '1px solid var(--border-subtle)' : 'none',
+                        }}
+                      >
+                        {provider.name}
+                      </div>
+                      {/* 该供应商下的模型列表 */}
+                      {provider.models.map(model => {
+                        const isActive = provider.id === activeProvider && model.model_id === activeModel
+                        return (
+                          <div
+                            key={model.model_id}
+                            onClick={() => handleModelSelect(provider.id, model.model_id)}
+                            style={{
+                              padding: '6px 10px',
+                              cursor: 'pointer',
+                              backgroundColor: isActive ? 'var(--selected-bg)' : 'transparent',
+                              transition: 'background var(--transition-fast)',
+                            }}
+                            onMouseEnter={(e) => {
+                              if (!isActive) e.currentTarget.style.backgroundColor = 'var(--hover-bg)'
+                            }}
+                            onMouseLeave={(e) => {
+                              if (!isActive) e.currentTarget.style.backgroundColor = 'transparent'
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                              <span style={{
+                                color: 'var(--text-primary)',
+                                fontSize: '12px',
+                                fontFamily: 'var(--font-mono)',
+                                fontWeight: 500,
+                              }}>
+                                {model.model_id}
+                              </span>
+                              {isActive && (
+                                <span style={{ color: 'var(--text-primary)', fontSize: '11px' }}>✓</span>
+                              )}
+                            </div>
+                            {model.context_window > 0 && (
+                              <div style={{ color: 'var(--text-tertiary)', fontSize: '10px', marginTop: '2px', fontFamily: 'var(--font-ui)' }}>
+                                上下文窗口 {model.context_window.toLocaleString()}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            {taskActive ? (
             // 任务进行中（前台流式或本会话后台任务）：显示停止按钮
             <button
               onClick={onStop}
@@ -867,7 +885,8 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
                 <path d="M5 12h14M13 5l7 7-7 7" />
               </svg>
             </button>
-          )}
+            )}
+          </div>
         </div>
       </div>
     </div>

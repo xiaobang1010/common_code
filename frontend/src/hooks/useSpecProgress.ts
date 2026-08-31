@@ -20,6 +20,18 @@ export interface SpecProgressData {
   checks: SpecChecklist
 }
 
+// 共享进展口径：优先任务清单，任务为空回退验证清单，两者皆空返回 null。
+// 胶囊卡收起态与概要卡共用此函数，保证两处「进展」数字口径一致；
+// 展开态卡头不走这里（跟随「任务|验证」分组切换显示当前分组）
+export function deriveProgress(
+  data: SpecProgressData | null,
+): { done: number; total: number; source: 'tasks' | 'checks' } | null {
+  if (!data) return null
+  if (data.tasks.total > 0) return { done: data.tasks.done, total: data.tasks.total, source: 'tasks' }
+  if (data.checks.total > 0) return { done: data.checks.done, total: data.checks.total, source: 'checks' }
+  return null
+}
+
 // 拉取当前会话归属 spec 的勾选进度。
 // 参照 useGitStatus 的 SSE 用法但差异两点：去掉 10 秒定时轮询（spec 文档
 // 只在写入时变化）、新增 onopen 重连刷新（断线重连兜底）。AI 或用户改
