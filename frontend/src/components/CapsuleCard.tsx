@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { TOOL_META, type ToolId } from './editor/toolMeta'
 import { useGitStatus } from './inspector/useGitStatus'
 import { useRunningSubagents, type RunningSubagent } from '../hooks/useRunningSubagents'
-import { useSpecProgress, type SpecCheckItem } from '../hooks/useSpecProgress'
+import { useSpecProgress, deriveProgress, type SpecCheckItem } from '../hooks/useSpecProgress'
 import { useChatStore } from '../stores/useChatStore'
 
 interface CapsuleCardProps {
@@ -166,16 +166,12 @@ function CapsuleCard({ onOpenTool, sessionId }: CapsuleCardProps) {
 
   // ---- 收起态：活动摘要小胶囊（对齐 ZCode 的「→ 当前活动」形态），点击展开 ----
   if (!expanded) {
-    // 进度与展开态卡头对齐：默认展示任务清单进度（展开面板默认也是任务分组），
-    // 任务清单为空时回退验证清单；验收全勾时整体绿色
-    const tasksList = specData?.tasks
-    const progressSource =
-      tasksList && tasksList.total > 0
-        ? tasksList
-        : checks && checks.total > 0
-          ? checks
-          : null
-    const specxy = progressSource ? ` · ${progressSource.done}/${progressSource.total}` : ''
+    // 进度与展开态卡头对齐：与概要卡共用 deriveProgress 口径（优先任务、回退验证），
+    // 无 spec 时回退工作块数（同展开态卡头）；验收全勾时整体绿色
+    const progressSource = deriveProgress(specData)
+    const specxy = progressSource
+      ? ` · ${progressSource.done}/${progressSource.total}`
+      : ` ${blockCount} 个工作块`
     return (
       <div
         onClick={() => setExpanded(true)}
@@ -481,7 +477,7 @@ function CapsuleCard({ onOpenTool, sessionId }: CapsuleCardProps) {
             <span style={{ color: 'var(--error)' }}>−{totals.deletions}</span>
           </span>
         ) : (
-          <span style={{ ...sectionLabelStyle(true), marginLeft: 'auto' }}>无变更</span>
+          <span style={{ ...sectionLabelStyle(true), marginLeft: 'auto' }}>暂无产物</span>
         )}
       </div>
 

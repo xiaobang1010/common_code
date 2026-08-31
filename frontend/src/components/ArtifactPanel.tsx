@@ -896,9 +896,9 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
     // 工具面板内容：全部保持挂载（非激活用 display:none 隐藏），终端会话不丢失。
     // files 工具内容 = 文件视图或空态（文件视图见 fileViewNode 的展示分支）
     const blockCount = useChatStore((s) => s.blockIds.length)
-    const tokenUsage = useChatStore((s) => s.tokenUsage)
+    const sessionId = useChatStore((s) => s.sessionId)
     const toolContents: Record<ToolId, ReactNode> = {
-      summary: <SummaryCard blockCount={blockCount} usage={tokenUsage} onOpenFile={openFile} />,
+      summary: <SummaryCard sessionId={sessionId} blockCount={blockCount} onOpenFile={openFile} />,
       terminal: <TerminalToolContent />,
       files: fileViewNode ?? filesEmptyNode,
       search: <SearchPanel onFileOpen={openFile} />,
