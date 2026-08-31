@@ -1,10 +1,10 @@
-import { useState, useEffect, memo, useCallback, useRef } from 'react'
+import { useState, useEffect, memo, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 // @ts-ignore
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
-import { useChatStore, formatDuration, lastActivityAtRef, type WorkBlock, type WorkStep } from '../../stores/useChatStore'
+import { useChatStore, formatDuration, lastActivityAtRef, type WorkBlock, type TimelineItem } from '../../stores/useChatStore'
 import SubagentCard from './SubagentCard'
 
 interface Props {
@@ -12,24 +12,24 @@ interface Props {
   blockId: string
 }
 
-// ---------- 事件行动词映射（toolName 小写归一后匹配，未知工具兜底「已执行」+ 原名） ----------
+// ---------- 工具行分类标签（toolName 小写归一后匹配，未知工具兜底「已执行」+ 原名） ----------
 const VERB_BY_TOOL: Record<string, string> = {
-  bash: '已执行命令',
-  read: '已读取',
-  write: '已写入',
-  edit: '已修改',
-  grep: '已搜索',
-  glob: '已查找',
-  askuserquestion: '已提问',
-  skill: '已运行技能',
-  agent: '已委派子任务',
-  sendmessage: '已发送消息',
-  teamcreate: '已创建团队',
-  taskcreate: '已创建任务',
-  taskupdate: '已更新任务',
-  tasklist: '已查看任务',
-  taskget: '已获取任务',
-  summarizeteam: '已汇总团队',
+  bash: '终端',
+  read: '读取',
+  write: '写入',
+  edit: '修改',
+  grep: '搜索',
+  glob: '查找',
+  askuserquestion: '提问',
+  skill: '技能',
+  agent: '子任务',
+  sendmessage: '发送',
+  teamcreate: '建团队',
+  taskcreate: '建任务',
+  taskupdate: '改任务',
+  tasklist: '查任务',
+  taskget: '查任务',
+  summarizeteam: '汇总',
   error: '出错',
 }
 
@@ -56,7 +56,7 @@ function exitReasonLine(block: WorkBlock): string {
   const reason = block.exitReason ?? ''
   if (NORMAL_EXITS.has(reason)) return ''
   if (reason === 'error') {
-    const detail = block.steps.find(s => s.toolName === 'error')?.result?.replace(/^错误:\s*/, '').trim()
+    const detail = block.timeline.find(s => s.toolName === 'error')?.result?.replace(/^错误:\s*/, '').trim()
     return detail ? `出错：${detail}` : '出错'
   }
   return EXIT_REASON[reason] ?? reason
@@ -76,6 +76,13 @@ const ICON_PATHS: Record<string, React.ReactNode> = {
   users: (<><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></>),
   list: (<><path d="M8 6h13M8 12h13M8 18h13" /><path d="M3 6h.01M3 12h.01M3 18h.01" /></>),
   alert: (<><circle cx="12" cy="12" r="10" /><path d="M12 8v4M12 16h.01" /></>),
+  brain: (
+    <>
+      <path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z" />
+      <path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z" />
+      <path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4" />
+    </>
+  ),
   dot: (<circle cx="12" cy="12" r="3" fill="currentColor" stroke="none" />),
 }
 
@@ -128,20 +135,57 @@ function truncateMiddle(text: string, max = 48): string {
   return `${text.slice(0, keep)}…${text.slice(-keep)}`
 }
 
-// 工具步骤事件行：单行低调行（灰图标 + 动词 + 等宽对象名 + 状态位），点击展开详情
+// 文件类工具：事件行按「文件名 + 目录 + 变更统计」排布（对齐 ZCode）
+const FILE_TOOLS = new Set(['read', 'write', 'edit'])
+
+// 从 args 提取 file_path（文件类工具的路径参数名统一为 file_path）
+function extractFilePath(args: string): string | null {
+  if (!args) return null
+  try {
+    const parsed = JSON.parse(args)
+    const p = parsed?.file_path
+    return typeof p === 'string' && p.trim() ? p.trim() : null
+  } catch {
+    return null
+  }
+}
+
+// 路径拆文件名与目录：文件名亮色不截断，目录暗色可截断
+function splitPath(p: string): { name: string; dir: string } {
+  const idx = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
+  return idx >= 0 ? { name: p.slice(idx + 1), dir: p.slice(0, idx + 1) } : { name: p, dir: '' }
+}
+
+// 从结果文本提取变更统计：edit「+a -r 行」、write「+a 行」（后端 format_model_content 产出）
+function extractChangeStat(result: string | undefined): { added: number; removed: number } | null {
+  if (!result) return null
+  const both = result.match(/\+(\d+)\s*-\s*(\d+)\s*行/)
+  if (both) return { added: Number(both[1]), removed: Number(both[2]) }
+  const only = result.match(/\+\s*(\d+)\s*行/)
+  return only ? { added: Number(only[1]), removed: 0 } : null
+}
+
+// 工具步骤事件行：单行低调行（灰图标 + 分类标签 + 等宽对象名 + 状态位），点击展开详情
 // memo：步骤对象引用稳定时跳过重渲，避免父块更新时全部步骤重绘
-const EventLine = memo(function EventLine({ step }: { step: WorkStep }) {
+const EventLine = memo(function EventLine({ step }: { step: TimelineItem }) {
   const [expanded, setExpanded] = useState(false)
   const isError = step.toolName === 'error'
   const isRunning = !!step.isRunning && !isError
-  const known = VERB_BY_TOOL[step.toolName.toLowerCase()]
+  const known = VERB_BY_TOOL[step.toolName?.toLowerCase() ?? '']
   const verb = known ?? '已执行'
+  // 文件类工具按「文件名+目录+统计」排布；其余仍取 args 首个可读参数
+  const filePath = !isError && FILE_TOOLS.has(step.toolName?.toLowerCase() ?? '') ? extractFilePath(step.args ?? '') : null
+  const stat = filePath ? extractChangeStat(step.result) : null
+  const pathParts = filePath ? splitPath(filePath) : null
   // 错误步骤展示错误摘要；已知工具展示 args 提取的对象名；未知工具以原始 toolName 兜底
   const objectText = isError
     ? (step.result || '').replace(/^错误:\s*/, '')
-    : extractObject(step.args) ?? (known ? null : step.toolName)
-  // 可展开条件：有详情内容，或运行中（可看「等待结果...」占位）
-  const clickable = !!(step.reasoning || step.args || step.result) || isRunning
+    : pathParts
+      ? null
+      : extractObject(step.args ?? '') ?? (known ? null : step.toolName)
+  // 可展开条件：有详情内容，或运行中（可看「等待结果...」占位）。
+  // 思考已独立成行（ReasoningRow），展开区不再承载 reasoning
+  const clickable = !!(step.args || step.result) || isRunning
   const rowColor = isError ? 'var(--error)' : 'var(--text-tertiary)'
 
   const row = (
@@ -151,10 +195,38 @@ const EventLine = memo(function EventLine({ step }: { step: WorkStep }) {
           <path d="M21 12a9 9 0 1 1-6.219-8.56" />
         </svg>
       ) : (
-        <StepIcon kind={iconKind(step.toolName)} />
+        <StepIcon kind={iconKind(step.toolName ?? '')} />
       )}
       <span style={{ flexShrink: 0 }}>{verb}</span>
-      {objectText && (
+      {pathParts ? (
+        <>
+          <span title={filePath ?? undefined} style={{ fontFamily: 'var(--font-mono)', color: rowColor === 'var(--error)' ? rowColor : 'var(--text-secondary)', flexShrink: 0 }}>
+            {pathParts.name}
+          </span>
+          {pathParts.dir && (
+            <span
+              title={filePath ?? undefined}
+              style={{
+                fontFamily: 'var(--font-mono)',
+                color: 'var(--text-tertiary)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                flex: 1,
+                minWidth: 0,
+              }}
+            >
+              {truncateMiddle(pathParts.dir)}
+            </span>
+          )}
+          {stat && (
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', flexShrink: 0 }}>
+              <span style={{ color: 'var(--success)' }}>+{stat.added}</span>
+              {stat.removed > 0 && <span style={{ color: 'var(--error)', marginLeft: '6px' }}>-{stat.removed}</span>}
+            </span>
+          )}
+        </>
+      ) : objectText && (
         <span
           title={objectText}
           style={{
@@ -225,24 +297,6 @@ const EventLine = memo(function EventLine({ step }: { step: WorkStep }) {
 
       {expanded && (
         <div style={{ padding: '2px 0 8px 20px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          {step.reasoning && (
-            <div>
-              <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '2px', letterSpacing: '1px', textTransform: 'uppercase' }}>
-                思考过程
-              </div>
-              <div style={{
-                fontSize: '11px',
-                color: 'var(--text-tertiary)',
-                lineHeight: 1.6,
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-                maxHeight: '300px',
-                overflow: 'auto',
-              }}>
-                {step.reasoning}
-              </div>
-            </div>
-          )}
           {step.args && (
             <div>
               <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '2px', letterSpacing: '1px', textTransform: 'uppercase' }}>
@@ -274,8 +328,151 @@ const EventLine = memo(function EventLine({ step }: { step: WorkStep }) {
   )
 })
 
+// 思考行：脑图标 + 「思考 · X秒」，点击展开思维链全文。
+// 流式期间（open）显示「思考中 · X秒」并 1s tick 递增——tick 收敛在本组件内，
+// 关闭后定时器随之停止，不影响其余时间线行
+const ReasoningRow = memo(function ReasoningRow({ item }: { item: TimelineItem }) {
+  const [expanded, setExpanded] = useState(false)
+  const isStreaming = !!item.open
+  const [, force] = useState(0)
+  useEffect(() => {
+    if (!isStreaming) return
+    const timer = setInterval(() => force((n) => n + 1), 1000)
+    return () => clearInterval(timer)
+  }, [isStreaming])
+
+  const duration = (item.endTime || Date.now()) - (item.startTime || Date.now())
+  const content = item.content || ''
+  const clickable = !!content
+
+  const rowStyle: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    width: '100%',
+    padding: '3px 0',
+    background: 'transparent',
+    border: 'none',
+    fontSize: '12px',
+    fontFamily: 'var(--font-ui)',
+    color: 'var(--text-tertiary)',
+    textAlign: 'left',
+    userSelect: 'text',
+    borderRadius: 'var(--radius-sm)',
+    cursor: clickable ? 'pointer' : 'default',
+  }
+
+  const row = (
+    <>
+      {isStreaming ? (
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }}>
+          <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+        </svg>
+      ) : (
+        <StepIcon kind="brain" />
+      )}
+      <span style={{ flexShrink: 0 }}>{isStreaming ? '思考中' : '思考'}</span>
+      <span style={{ fontFamily: 'var(--font-mono)', flexShrink: 0 }}>· {formatDuration(duration)}</span>
+      {clickable && (
+        <span style={{ marginLeft: 'auto', flexShrink: 0, fontSize: '10px' }}>
+          {expanded ? '▾' : '▸'}
+        </span>
+      )}
+    </>
+  )
+
+  return (
+    <div>
+      {clickable ? (
+        <button
+          className="work-row"
+          type="button"
+          onClick={() => setExpanded(!expanded)}
+          aria-expanded={expanded}
+          style={rowStyle}
+          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--hover-bg)')}
+          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+        >
+          {row}
+        </button>
+      ) : (
+        <div style={rowStyle}>{row}</div>
+      )}
+      {expanded && content && (
+        <div style={{
+          padding: '2px 0 8px 20px',
+          fontSize: '11px',
+          color: 'var(--text-tertiary)',
+          lineHeight: 1.6,
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+          maxHeight: '300px',
+          overflow: 'auto',
+        }}>
+          {content}
+        </div>
+      )}
+    </div>
+  )
+})
+
+// 正文行：过渡叙述与最终回复同为一等事件，按 Markdown 渲染。
+// 流式中（open）用轻量渲染 + 行尾光标；结束后延迟 250ms 升级完整高亮，
+// 避免长回复完成瞬间从轻量渲染切到 Prism 高亮的可见跳变
+const TextItemView = memo(function TextItemView({ item }: { item: TimelineItem }) {
+  const streaming = !!item.open
+  const [highlightReady, setHighlightReady] = useState(!streaming)
+  useEffect(() => {
+    if (streaming) {
+      setHighlightReady(false)
+      return
+    }
+    const timer = window.setTimeout(() => setHighlightReady(true), 250)
+    return () => clearTimeout(timer)
+  }, [streaming])
+
+  if (!item.content) return null
+
+  return (
+    <div
+      style={{
+        alignSelf: 'flex-start',
+        maxWidth: '92%',
+        fontSize: '14px',
+        lineHeight: 1.6,
+        color: 'var(--text-primary)',
+        wordBreak: 'break-word',
+      }}
+    >
+      {streaming || !highlightReady ? (
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={lightMarkdownComponents}>
+          {item.content}
+        </ReactMarkdown>
+      ) : (
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+          {item.content}
+        </ReactMarkdown>
+      )}
+      {streaming && (
+        <span
+          style={{
+            display: 'inline-block',
+            width: '8px',
+            height: '14px',
+            backgroundColor: 'var(--text-primary)',
+            marginLeft: '2px',
+            verticalAlign: 'text-bottom',
+            animation: 'blink 1s step-end infinite',
+            borderRadius: '1px',
+          }}
+        />
+      )}
+    </div>
+  )
+})
+
 // 状态行：主行（工作中/已工作 + 耗时）+ 细分隔线 + 活动行。
-// 1s tick 收敛在本组件内：时间刷新与 idleMs 重算共用，事件行列表与最终回复不随 tick 重渲
+// 1s tick 收敛在本组件内：时间刷新与 idleMs 重算共用，事件行列表与正文行不随 tick 重渲
 const StatusLine = memo(function StatusLine({ block, expanded, onToggle }: {
   block: WorkBlock
   expanded: boolean
@@ -307,9 +504,10 @@ const StatusLine = memo(function StatusLine({ block, expanded, onToggle }: {
     if (!isRunning) return ''
     if (idleMs > 60000) return '长时间无响应，可能连接异常，可在输入区停止后重试'
     if (idleMs > 10000) return '模型响应较慢，可继续浏览其他区域'
-    const runningStep = block.steps.find(s => s.isRunning)
+    const runningStep = block.timeline.find(s => s.isRunning)
     if (runningStep) return `正在执行工具 ${runningStep.toolName}`
-    if (block.finalReplyStreaming && block.finalReply) return '正在生成回复'
+    const lastItem = block.timeline[block.timeline.length - 1]
+    if (lastItem?.type === 'text' && lastItem.open) return '正在生成回复'
     if (block.phase === 'model_requested') return '正在调用模型'
     if (block.phase === 'memory_ready') return '已加载上下文'
     return '等待模型响应'
@@ -517,19 +715,10 @@ const lightMarkdownComponents = {
 function WorkBlockView({ blockId }: Props) {
   // 局部订阅：只监听自己的工作块，其他 block 更新时不重渲
   const block = useChatStore(s => s.blocksById[blockId])
-  const [expanded, setExpanded] = useState(block?.status === 'running')
+  // 展开语义：是否显示过程行（reasoning/tool）；正文行恒可见。
+  // 完成后默认平铺整个时间线（对齐 ZCode），点状态行可折叠过程行降噪
+  const [expanded, setExpanded] = useState(true)
   const isRunning = block?.status === 'running'
-
-  // 展开策略：正常完成自动折叠；异常结束保持展开，让原因可见。
-  // 用 prevStatusRef 只响应 running→done 的切换，历史回合加载时不自动展开
-  const prevStatusRef = useRef(block?.status)
-  useEffect(() => {
-    if (block?.status === 'done' && prevStatusRef.current === 'running') {
-      const abnormal = !!block.exitReason && !NORMAL_EXITS.has(block.exitReason)
-      setExpanded(abnormal)
-    }
-    prevStatusRef.current = block?.status
-  }, [block?.status])
 
   const toggleExpanded = useCallback(() => setExpanded(v => !v), [])
 
@@ -550,35 +739,109 @@ function WorkBlockView({ blockId }: Props) {
   }, [editAndResend, blockId, editText])
   const cancelEdit = useCallback(() => setEditing(false), [])
 
-  // 流式结束后延迟约 250ms 再升级完整高亮：流式期间与延迟窗口内保持轻量渲染，
-  // 避免长回复完成瞬间从轻量渲染切到 Prism 高亮的可见跳变
-  const [highlightReady, setHighlightReady] = useState(!block?.finalReplyStreaming)
-  useEffect(() => {
-    if (block?.finalReplyStreaming) {
-      setHighlightReady(false)
-      return
-    }
-    const timer = window.setTimeout(() => setHighlightReady(true), 250)
-    return () => clearTimeout(timer)
-  }, [block?.finalReplyStreaming])
-
   if (!block) return null
 
-  const hasSteps = block.steps.length > 0
-  // 流程区显示规则：有步骤始终显示；无步骤运行中且未出文本时显示等待占位；
-  // 无步骤异常结束保留状态行（行尾灰字承载异常）；其余组合让位给文本流
-  const showFlow = hasSteps
-    || (isRunning && !block.finalReply)
-    || (!isRunning && !!(block.exitReason && !NORMAL_EXITS.has(block.exitReason)))
+  const hasItems = block.timeline.length > 0
+  const hasProcessRows = block.timeline.some(s => s.type !== 'text')
+  // 流程区显示规则：有时间线始终显示；无内容运行中显示等待占位；
+  // 无内容异常结束保留状态行（行尾灰字承载异常）；其余组合让位给空
+  const showFlow = hasItems
+    || isRunning
+    || !!(block.exitReason && !NORMAL_EXITS.has(block.exitReason))
 
-  // 运行中只显示最近 3 条步骤，其余折叠；结束后展开显示全部
+  // 运行中过程行只显示最近 3 条，其余折叠；结束后显示全部
   const [showAllSteps, setShowAllSteps] = useState(false)
-  const foldSteps = isRunning && !showAllSteps && block.steps.length > 3
-  const recentSteps = foldSteps ? block.steps.slice(-3) : block.steps
-  const hiddenCount = block.steps.length - recentSteps.length
+  const processIdx = block.timeline
+    .map((it, i) => (it.type === 'text' ? -1 : i))
+    .filter(i => i >= 0)
+  const foldRunning = isRunning && !showAllSteps && processIdx.length > 3
+  const hiddenProcess = foldRunning ? processIdx.slice(0, -3) : []
+  const hiddenSet = new Set(hiddenProcess)
 
-  // 异常结束且展开时，展开区首行显示原因
+  // 异常结束且过程行可见时，时间线首行显示原因
   const reasonText = !isRunning && expanded ? exitReasonLine(block) : ''
+
+  // 时间线按真实时序平铺：text → 正文行；reasoning → 思考行；tool → 事件行。
+  // 折叠态（!expanded）只保留正文行 + 一条「已处理 N 步」折叠条
+  const timelineNodes: React.ReactNode[] = []
+  let foldBarRendered = false
+  let runningFoldRendered = false
+  block.timeline.forEach((item, i) => {
+    if (item.type === 'text') {
+      timelineNodes.push(<TextItemView key={item.id} item={item} />)
+      return
+    }
+    if (!expanded) {
+      if (!foldBarRendered) {
+        foldBarRendered = true
+        timelineNodes.push(
+          <button
+            key="fold-bar"
+            className="work-row"
+            type="button"
+            onClick={toggleExpanded}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              width: '100%',
+              padding: '3px 0',
+              background: 'transparent',
+              border: 'none',
+              fontSize: '11px',
+              fontFamily: 'var(--font-ui)',
+              color: 'var(--text-tertiary)',
+              textAlign: 'left',
+              cursor: 'pointer',
+              borderRadius: 'var(--radius-sm)',
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--hover-bg)')}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+          >
+            已处理 {processIdx.length} 步 ▸
+          </button>,
+        )
+      }
+      return
+    }
+    if (hiddenSet.has(i)) {
+      if (!runningFoldRendered) {
+        runningFoldRendered = true
+        timelineNodes.push(
+          <button
+            key="running-fold"
+            className="work-row"
+            type="button"
+            onClick={() => setShowAllSteps(true)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              width: '100%',
+              padding: '3px 0',
+              background: 'transparent',
+              border: 'none',
+              fontSize: '11px',
+              fontFamily: 'var(--font-ui)',
+              color: 'var(--text-tertiary)',
+              textAlign: 'left',
+              cursor: 'pointer',
+              borderRadius: 'var(--radius-sm)',
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--hover-bg)')}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+          >
+            +{hiddenProcess.length} 条历史步骤
+          </button>,
+        )
+      }
+      return
+    }
+    timelineNodes.push(
+      item.type === 'reasoning'
+        ? <ReasoningRow key={item.id} item={item} />
+        : <EventLine key={item.id} step={item} />,
+    )
+  })
 
   return (
     // data-workblock-running：状态胶囊卡「智能体」跳转的回退锚点（目标卡片不在 DOM 时滚到运行中块）
@@ -774,97 +1037,20 @@ function WorkBlockView({ blockId }: Props) {
         </div>
       )}
 
-      {/* 流程区：状态行 + 细分隔线 + 活动行 + 事件行，纯文本流排布 */}
+      {/* 流程区：状态行 + 细分隔线 + 活动行 + 时间线（正文/思考/工具按序平铺） */}
       {showFlow && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
           <StatusLine
             block={block}
             expanded={expanded}
-            onToggle={hasSteps ? toggleExpanded : null}
+            onToggle={hasProcessRows ? toggleExpanded : null}
           />
-          {expanded && hasSteps && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-              {reasonText && (
-                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', padding: '2px 0', fontFamily: 'var(--font-ui)' }}>
-                  {reasonText}
-                </div>
-              )}
-              {recentSteps.map(step => (
-                <EventLine key={step.id} step={step} />
-              ))}
-              {foldSteps && (
-                <button
-                  className="work-row"
-                  type="button"
-                  onClick={() => setShowAllSteps(true)}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    width: '100%',
-                    padding: '3px 0',
-                    background: 'transparent',
-                    border: 'none',
-                    fontSize: '11px',
-                    fontFamily: 'var(--font-ui)',
-                    color: 'var(--text-tertiary)',
-                    textAlign: 'left',
-                    cursor: 'pointer',
-                    borderRadius: 'var(--radius-sm)',
-                  }}
-                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--hover-bg)')}
-                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-                >
-                  +{hiddenCount} 条历史步骤
-                </button>
-              )}
+          {reasonText && (
+            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', padding: '2px 0', fontFamily: 'var(--font-ui)' }}>
+              {reasonText}
             </div>
           )}
-        </div>
-      )}
-
-      {/* 最终回复（独立显示在工作块外） */}
-      {block.finalReply && (
-        <div
-          style={{
-            alignSelf: 'flex-start',
-            maxWidth: '92%',
-            fontSize: '14px',
-            lineHeight: 1.6,
-            color: 'var(--text-primary)',
-            wordBreak: 'break-word',
-          }}
-        >
-          {block.finalReplyStreaming || !highlightReady ? (
-            // 流式期间与结束后的延迟窗口内用轻量渲染（代码块不高亮），
-            // 窗口结束后切回完整 Markdown + 高亮
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              components={lightMarkdownComponents}
-            >
-              {block.finalReply}
-            </ReactMarkdown>
-          ) : (
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              components={markdownComponents}
-            >
-              {block.finalReply}
-            </ReactMarkdown>
-          )}
-          {block.finalReplyStreaming && (
-            <span
-              style={{
-                display: 'inline-block',
-                width: '8px',
-                height: '14px',
-                backgroundColor: 'var(--text-primary)',
-                marginLeft: '2px',
-                verticalAlign: 'text-bottom',
-                animation: 'blink 1s step-end infinite',
-                borderRadius: '1px',
-              }}
-            />
-          )}
+          {timelineNodes}
         </div>
       )}
     </div>

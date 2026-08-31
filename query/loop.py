@@ -219,12 +219,21 @@ def _build_tool_result_messages(
 def _build_assistant_message(
     content_parts: list[str],
     tool_calls: list[dict],
+    reasoning_parts: list[str] | None = None,
+    reasoning_first_ts: float | None = None,
+    reasoning_last_ts: float | None = None,
 ) -> dict:
     """从流式事件中收集的内容和工具调用构建 assistant 消息。"""
     content = "".join(content_parts) if content_parts else ""
     msg: dict[str, Any] = {"role": "assistant", "content": content, "_ts": time.time() * 1000}
     if tool_calls:
         msg["tool_calls"] = tool_calls
+    # 思维链：有思考输出时写入下划线内部字段（与 _ts 同约定，发给模型前会被剥离，
+    # 随会话整表 JSON 落库），供前端历史恢复重建「思考 · X秒」行
+    reasoning = "".join(reasoning_parts) if reasoning_parts else ""
+    if reasoning and reasoning_first_ts is not None and reasoning_last_ts is not None:
+        msg["_reasoning"] = reasoning
+        msg["_reasoning_ms"] = int(reasoning_last_ts - reasoning_first_ts)
     return msg
 
 
@@ -642,6 +651,11 @@ async def query_loop(
         yield StreamEvent(type="content", content="")  # stream_request_start 信号
 
         content_parts: list[str] = []
+        # 思维链累积与计时：起止取事件到达时刻（粗粒度耗时），供 assistant 消息
+        # 的 _reasoning/_reasoning_ms 字段与前端「思考 · X秒」显示
+        reasoning_parts: list[str] = []
+        reasoning_first_ts: float | None = None
+        reasoning_last_ts: float | None = None
         stream_events: list[StreamEvent] = []
         finish_reason: str | None = None
         usage_info: dict | None = None
@@ -678,6 +692,13 @@ async def query_loop(
 
                 if event.type == "content" and event.content:
                     content_parts.append(event.content)
+                elif event.type == "reasoning" and event.content:
+                    # 思维链增量：累积全文，首个记 start、每个刷新 last（耗时 = last - first）
+                    reasoning_parts.append(event.content)
+                    now_ms = time.time() * 1000
+                    if reasoning_first_ts is None:
+                        reasoning_first_ts = now_ms
+                    reasoning_last_ts = now_ms
                 elif event.type == "done" and event.finish_reason:
                     finish_reason = event.finish_reason
                 elif event.type == "usage" and event.usage:
@@ -736,7 +757,9 @@ async def query_loop(
         tool_calls = collect_tool_calls(stream_events)
 
         # 构建 assistant 消息
-        assistant_msg = _build_assistant_message(content_parts, tool_calls)
+        assistant_msg = _build_assistant_message(
+            content_parts, tool_calls, reasoning_parts, reasoning_first_ts, reasoning_last_ts
+        )
 
         # ---- 7. 错误恢复 ----
 
