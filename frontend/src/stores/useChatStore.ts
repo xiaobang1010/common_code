@@ -1,34 +1,40 @@
 // 聊天工作区（AI 面板）的全局状态 store
 // 状态规范化：blockIds + blocksById，组件按 selector 局部订阅，
 // 流式更新只触发当前工作块重渲，不再带动整棵 App 树
+// 轨迹模型：一次 agentic 循环的过程与回复统一为按真实时序入列的时间线
+// （text/reasoning/tool 三类一等事件交错排布），最终回复即最后一个 text 项
 // 逻辑迁移自 hooks/useChat.ts
 
 import { create } from 'zustand'
 import { permissionsApi, questionApi, type PermissionMode } from '../api/client'
 import { parseUserMessage } from '../utils/skillParse'
 
-// 工作块中的中间步骤：工具调用
-export interface WorkStep {
+// 时间线事件：任务轨迹的三类一等事件，按 SSE 到达的真实时序入列
+export interface TimelineItem {
   id: string
-  type: 'tool'
-  toolName: string
-  args: string
+  // text = 正文（过渡叙述与最终回复）；reasoning = 思维链；tool = 工具调用
+  type: 'text' | 'reasoning' | 'tool'
+  // text 正文 / reasoning 思维链全文
+  content?: string
+  // text/reasoning 是否仍在流式追加（open）；类型切换或回合结束时关闭
+  open?: boolean
+  // ---- 以下仅 tool 项 ----
+  toolName?: string
+  args?: string
   result?: string
   isRunning?: boolean
-  // 该轮的推理过程（思维链）
-  reasoning?: string
+  // ---- reasoning/tool 计时（ms，事件到达时刻），供「思考 · X秒」显示 ----
+  startTime?: number
+  endTime?: number
 }
 
-// 工作块：一次 agentic 循环的中间过程聚合
+// 工作块：一次 agentic 循环的轨迹聚合
 export interface WorkBlock {
   id: string
   // 用户输入
   userMessage: string
-  // 中间过程：工具步骤、思维链，按真实时序排列
-  steps: WorkStep[]
-  // 最终回复（独立显示在工作块外，循环结束时才有）
-  finalReply: string
-  finalReplyStreaming: boolean
+  // 轨迹时间线：正文、思考、工具调用按真实时序交错排列
+  timeline: TimelineItem[]
   // 状态：工作中 / 已工作（含正常结束和中断）
   status: 'running' | 'done'
   startTime: number
@@ -123,11 +129,9 @@ const sessionIdRef = { current: null as string | null }
 // 当前 SSE 连接的中止控制器：切换会话时仅断开连接（不取消后台任务）
 const sseAbortRef = { current: null as AbortController | null }
 const currentBlockId = { current: null as string | null }
-const finalReplyRef = { current: '' }
-const pendingReasoningRef = { current: '' }
-const hasToolStartedRef = { current: false }
-// 流式 content 节流缓冲：事件只累积，由定时器统一 flush
-const pendingContentRef = { current: '' }
+// 流式过程缓冲：正文与思考两类增量分别累积，由定时器统一 flush 入列；
+// 同一时刻只可能有一种类型在流出（模型先思考后正文），flush 按思考→正文顺序
+const pendingRef = { current: { text: '', reasoning: '' } }
 let flushTimer: number | null = null
 
 // 最近一次 SSE 活动时间：任意事件（含 heartbeat）都刷新，仅更新 ref 不触发重渲。
@@ -179,35 +183,64 @@ export const useChatStore = create<ChatState>((set, get) => {
     })
   }
 
-  // 立即 flush 缓冲中的流式文本：拼到 finalReply 并更新工作块。
+  // 关闭块末尾仍 open 的 text/reasoning 项（补 endTime）。不变则原样返回，
+  // 避免无谓的新对象引用触发重渲
+  const closeOpenIn = (b: WorkBlock): WorkBlock => {
+    const last = b.timeline[b.timeline.length - 1]
+    if (!last || !last.open) return b
+    return {
+      ...b,
+      timeline: [...b.timeline.slice(0, -1), { ...last, open: false, endTime: Date.now() }],
+    }
+  }
+
+  // 流式增量入列：追加到末尾同类型的 open 项；末尾不是（或已关闭）则先关闭
+  // 末尾 open 项、再新建该类型项——类型切换即时间线分段，保持真实时序
+  const appendStream = (blockId: string, kind: 'text' | 'reasoning', text: string) => {
+    updateBlock(blockId, b => {
+      const items = [...b.timeline]
+      const last = items[items.length - 1]
+      const now = Date.now()
+      if (last && last.open && last.type === kind) {
+        items[items.length - 1] = { ...last, content: (last.content || '') + text }
+      } else {
+        if (last && last.open) {
+          items[items.length - 1] = { ...last, open: false, endTime: now }
+        }
+        items.push({ id: genId(), type: kind, content: text, open: true, startTime: now })
+      }
+      return { ...b, timeline: items }
+    })
+  }
+
+  // 立即 flush 缓冲中的流式增量：按思考→正文顺序入列。
   // 快照当前值，避免批处理时闭包读到被后续事件改动的 ref
-  const flushContent = () => {
+  const flushPending = () => {
     if (flushTimer != null) {
       clearTimeout(flushTimer)
       flushTimer = null
     }
-    const pending = pendingContentRef.current
-    if (!pending) return
-    pendingContentRef.current = ''
+    const reasoning = pendingRef.current.reasoning
+    const text = pendingRef.current.text
+    pendingRef.current = { text: '', reasoning: '' }
     const blockId = currentBlockId.current
     if (!blockId) return
-    finalReplyRef.current += pending
-    const reply = finalReplyRef.current
-    updateBlock(blockId, b => ({ ...b, finalReply: reply, finalReplyStreaming: true }))
+    if (reasoning) appendStream(blockId, 'reasoning', reasoning)
+    if (text) appendStream(blockId, 'text', text)
   }
 
-  // 节流入口：content 事件只累积到缓冲，约 80ms 或超过 160 字符才 flush 一次
-  const onContent = (content: string) => {
-    pendingContentRef.current += content
+  // 节流入口：content/reasoning 事件只累积到对应缓冲，约 80ms 或合计超 160 字符才 flush
+  const onContent = (kind: 'text' | 'reasoning', content: string) => {
+    pendingRef.current[kind] += content
     if (flushTimer == null) {
       flushTimer = window.setTimeout(() => {
         flushTimer = null
-        flushContent()
+        flushPending()
       }, 80)
     }
     // 累积较多时立即 flush，避免单次延迟过大
-    if (pendingContentRef.current.length > 160) {
-      flushContent()
+    if (pendingRef.current.text.length + pendingRef.current.reasoning.length > 160) {
+      flushPending()
     }
   }
 
@@ -221,89 +254,124 @@ export const useChatStore = create<ChatState>((set, get) => {
     const blockId = currentBlockId.current
     if (!blockId) return
 
-    // 非纯文本事件（完成/工具调用/错误等）到来前先 flush，避免缓冲内容滞留丢失
-    if (!(evt.type === 'stream' && evt.event_type === 'content')) {
-      flushContent()
+    // 非流式文本事件（完成/工具调用/错误等）到来前先 flush，避免缓冲内容滞留丢失
+    const isStreamText =
+      evt.type === 'stream' && (evt.event_type === 'content' || evt.event_type === 'reasoning')
+    if (!isStreamText) {
+      flushPending()
     }
 
     if (evt.type === 'stream') {
       if (evt.event_type === 'content' && evt.content) {
-        // 累积到缓冲，由节流器统一 flush
-        onContent(evt.content)
+        // 正文增量（含工具轮之间的过渡叙述）：累积到缓冲，节流入列
+        onContent('text', evt.content)
       } else if (evt.event_type === 'reasoning' && evt.content) {
-        // 推理过程暂存，等工具步骤创建时绑定
-        pendingReasoningRef.current += evt.content
-      } else if (evt.event_type === 'tool_call_delta' && evt.tool_call_name) {
-        const toolName = evt.tool_call_name
-        const reasoning = pendingReasoningRef.current
-        pendingReasoningRef.current = ''
-        // 本轮首次出现工具调用：此前流式的 content 是「调工具前的过渡句」，
-        // 立即清空 finalReply，避免过渡文字先显示后消失的闪现
-        if (!hasToolStartedRef.current) {
-          finalReplyRef.current = ''
-          updateBlock(blockId, b => ({ ...b, finalReply: '', finalReplyStreaming: false }))
-        }
-        hasToolStartedRef.current = true
-        // 工具参数是流式分片（首个 delta 常只有 "{"），逐片拼接得到完整 JSON。
-        // 之前只取首片且后续被忽略，导致运行中的步骤 args 恒为空——子代理卡片
-        // 拿不到 description 就无法匹配正在运行的子代理，实时反馈随之失效
+        // 思考增量：独立成项入列（带计时），不再绑定到下一个工具步骤
+        onContent('reasoning', evt.content)
+      } else if (evt.event_type === 'tool_call_delta') {
+        // 注意分支条件不能要求 tool_call_name：OpenAI 兼容流里只有首个分片带 name，
+        // 后续分片只有 arguments——以 name 有无作条件会把参数分片全部丢弃，
+        // 事件行就永远拿不到命令/路径（历史恢复有文本、实时块空白的差异即源于此）
         const argsFragment = evt.tool_call_arguments || ''
-        updateBlock(blockId, b => {
-          const last = b.steps[b.steps.length - 1]
-          if (last && last.type === 'tool' && last.isRunning && last.toolName === toolName) {
-            return {
-              ...b,
-              steps: [...b.steps.slice(0, -1), { ...last, args: (last.args || '') + argsFragment }],
+        const toolName = evt.tool_call_name
+        if (toolName) {
+          // 工具调用开始：关闭 open 的正文/思考项（内容留在时间线，不再清空），
+          // 再建 tool 项；同名运行中项视为参数延续
+          updateBlock(blockId, b => {
+            const base = closeOpenIn(b)
+            const last = base.timeline[base.timeline.length - 1]
+            if (last && last.type === 'tool' && last.isRunning && last.toolName === toolName) {
+              return {
+                ...base,
+                timeline: [...base.timeline.slice(0, -1), { ...last, args: (last.args || '') + argsFragment }],
+              }
             }
-          }
-          return {
-            ...b,
-            steps: [
-              ...b.steps,
-              { id: genId(), type: 'tool', toolName, args: argsFragment, isRunning: true, reasoning: reasoning || undefined },
-            ],
-          }
-        })
+            return {
+              ...base,
+              timeline: [
+                ...base.timeline,
+                { id: genId(), type: 'tool', toolName, args: argsFragment, isRunning: true, startTime: Date.now() },
+              ],
+            }
+          })
+        } else {
+          // 无 name 的纯参数分片：追加到最后一个运行中步骤。
+          // OpenAI 流按 index 串行发完一个工具的分片再发下一个，尾部追加即正确归属
+          updateBlock(blockId, b => {
+            const last = b.timeline[b.timeline.length - 1]
+            if (last && last.type === 'tool' && last.isRunning) {
+              return {
+                ...b,
+                timeline: [...b.timeline.slice(0, -1), { ...last, args: (last.args || '') + argsFragment }],
+              }
+            }
+            return b
+          })
+        }
       } else if (evt.event_type === 'phase' && evt.content) {
         // 后端阶段事件：只存最近一次，文案由 WorkBlock 按优先级推导
         updateBlock(blockId, b => ({ ...b, phase: evt.content }))
       } else if (evt.event_type === 'error') {
-        updateBlock(blockId, b => ({
-          ...b,
-          steps: [...b.steps, { id: genId(), type: 'tool', toolName: 'error', args: '', result: `错误: ${evt.error || '未知错误'}` }],
-        }))
+        // 错误保留 tool 项形态：异常展开区首行的原因提取依赖 toolName==='error'
+        updateBlock(blockId, b => {
+          const base = closeOpenIn(b)
+          return {
+            ...base,
+            timeline: [
+              ...base.timeline,
+              { id: genId(), type: 'tool', toolName: 'error', args: '', result: `错误: ${evt.error || '未知错误'}` },
+            ],
+          }
+        })
       } else if (evt.event_type === 'done') {
-        // done 什么都不做，不清空 finalReply
-        updateBlock(blockId, b => ({ ...b, finalReplyStreaming: false }))
+        // 模型轮结束：关闭 open 的正文/思考项（流式光标随之消失）
+        updateBlock(blockId, b => closeOpenIn(b))
       }
     } else if (evt.type === 'message' && evt.message) {
       const msg = evt.message
       if (msg.role === 'tool') {
-        // 工具结果：填到最近的运行中步骤。
+        // 工具结果：填到最近的运行中 tool 项并补计时。
         // Agent 步骤是子代理报告（含 agent_id 头行与 usage 尾部），放宽到 3 万字符，
         // 其余工具保留 500 字符防界面卡顿
         updateBlock(blockId, b => {
-          const idx = [...b.steps].reverse().findIndex(s => s.type === 'tool' && s.isRunning)
+          const idx = [...b.timeline].reverse().findIndex(s => s.type === 'tool' && s.isRunning)
           if (idx === -1) return b
-          const realIdx = b.steps.length - 1 - idx
-          const toolName = b.steps[realIdx]?.toolName || ''
+          const realIdx = b.timeline.length - 1 - idx
+          const toolName = b.timeline[realIdx]?.toolName || ''
           const cap = toolName === 'Agent' || toolName === 'Task' ? 30000 : 500
-          const updated = [...b.steps]
-          updated[realIdx] = { ...updated[realIdx], result: (msg.content || '').slice(0, cap), isRunning: false }
-          return { ...b, steps: updated }
+          const updated = [...b.timeline]
+          updated[realIdx] = {
+            ...updated[realIdx],
+            result: (msg.content || '').slice(0, cap),
+            isRunning: false,
+            endTime: Date.now(),
+          }
+          return { ...b, timeline: updated }
         })
       } else if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
-        // 中间轮（含工具调用）：清空 finalReply，下一轮 content 自然填充
-        finalReplyRef.current = ''
-        updateBlock(blockId, b => ({ ...b, finalReply: '', finalReplyStreaming: false }))
+        // 中间轮（含工具调用）：过渡叙述已由流式 content 入列，这里只关闭 open 项。
+        // 直播路径忽略消息携带的 _reasoning（思考已由 reasoning 事件入列，避免重复）
+        updateBlock(blockId, b => closeOpenIn(b))
       } else if (msg.role === 'assistant') {
-        // 最终回复：覆盖 finalReply。
-        // 注意：message/done/loop_result 常在同一网络分片里连续到达，更新会被 React 批量排队；
-        // loop_result 处理时会立刻清空 finalReplyRef，若 updater 闭包读 ref 会拿到被清空的值，
-        // 导致最终回复在完成时消失。因此必须先快照成局部变量再传给 updater。
-        finalReplyRef.current = msg.content || finalReplyRef.current
-        const reply = finalReplyRef.current
-        updateBlock(blockId, b => ({ ...b, finalReply: reply, finalReplyStreaming: false }))
+        // 最终回复：用落库正文覆盖最后一个 text 项，保证与持久化内容一致
+        // （该项可能已被 done 关闭）；末尾不是 text 项则追加新 text 项
+        const content = msg.content || ''
+        updateBlock(blockId, b => {
+          const items = [...b.timeline]
+          const last = items[items.length - 1]
+          if (last && last.type === 'text') {
+            items[items.length - 1] = { ...last, content, open: false, endTime: last.endTime ?? Date.now() }
+          } else {
+            if (last && last.open) {
+              items[items.length - 1] = { ...last, open: false, endTime: Date.now() }
+            }
+            if (content) {
+              const now = Date.now()
+              items.push({ id: genId(), type: 'text', content, open: false, startTime: now, endTime: now })
+            }
+          }
+          return { ...b, timeline: items }
+        })
       }
     } else if (evt.type === 'heartbeat') {
       // 心跳，忽略
@@ -327,30 +395,34 @@ export const useChatStore = create<ChatState>((set, get) => {
         },
       })
     } else if (evt.type === 'error') {
-      // 引擎级错误：标记工作块为 done，保留已收到的 finalReply
-      updateBlock(blockId, b => ({
-        ...b,
-        status: 'done' as const,
-        endTime: Date.now(),
-        exitReason: 'error',
-        finalReplyStreaming: false,
-        steps: b.finalReply
-          ? b.steps
-          : [...b.steps, { id: genId(), type: 'tool', toolName: 'error', args: '', result: `错误: ${evt.error || '未知错误'}` }],
-      }))
+      // 引擎级错误：标记工作块为 done，保留已入列的正文；完全无正文时补一条
+      // error tool 项承载错误信息（形态不变，exitReasonLine 提取路径依赖它）
+      updateBlock(blockId, b => {
+        const base = closeOpenIn(b)
+        const hasText = base.timeline.some(s => s.type === 'text' && (s.content || '').trim())
+        return {
+          ...base,
+          status: 'done' as const,
+          endTime: Date.now(),
+          exitReason: 'error',
+          timeline: hasText
+            ? base.timeline
+            : [
+                ...base.timeline,
+                { id: genId(), type: 'tool', toolName: 'error', args: '', result: `错误: ${evt.error || '未知错误'}` },
+              ],
+        }
+      })
     } else if (evt.type === 'loop_result') {
-      // 循环结束：标记工作块为已工作
+      // 循环结束：关闭 open 项并标记工作块为已工作
       updateBlock(blockId, b => ({
-        ...b,
+        ...closeOpenIn(b),
         status: 'done' as const,
         endTime: Date.now(),
         exitReason: evt.reason || '',
-        finalReplyStreaming: false,
       }))
       currentBlockId.current = null
-      finalReplyRef.current = ''
-      pendingReasoningRef.current = ''
-      hasToolStartedRef.current = false
+      pendingRef.current = { text: '', reasoning: '' }
     }
   }
 
@@ -387,9 +459,7 @@ export const useChatStore = create<ChatState>((set, get) => {
   // 创建新工作块
   const createBlock = (prompt: string): string => {
     const id = genId()
-    finalReplyRef.current = ''
-    pendingReasoningRef.current = ''
-    hasToolStartedRef.current = false
+    pendingRef.current = { text: '', reasoning: '' }
     currentBlockId.current = id
     // 发送即视为活动起点：连接建立前的等待也从这里起算
     lastActivityAtRef.current = Date.now()
@@ -400,9 +470,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         [id]: {
           id,
           userMessage: prompt,
-          steps: [],
-          finalReply: '',
-          finalReplyStreaming: false,
+          timeline: [],
           status: 'running' as const,
           startTime: Date.now(),
         },
@@ -448,27 +516,38 @@ export const useChatStore = create<ChatState>((set, get) => {
     } catch (e) {
       const blockId = currentBlockId.current
       if (blockId) {
-        updateBlock(blockId, b => ({
-          ...b,
-          status: 'done' as const,
-          endTime: Date.now(),
-          exitReason: 'error',
-          finalReply: `请求失败: ${e instanceof Error ? e.message : String(e)}`,
-        }))
+        // 请求失败提示以 text 项形态入列
+        updateBlock(blockId, b => {
+          const base = closeOpenIn(b)
+          return {
+            ...base,
+            status: 'done' as const,
+            endTime: Date.now(),
+            exitReason: 'error',
+            timeline: [
+              ...base.timeline,
+              {
+                id: genId(),
+                type: 'text',
+                content: `请求失败: ${e instanceof Error ? e.message : String(e)}`,
+                open: false,
+              },
+            ],
+          }
+        })
       }
     } finally {
       set({ isStreaming: false })
-      // 兜底 flush：异常断开时把缓冲内容落盘，避免尾部文本丢失
-      flushContent()
+      // 兜底 flush：异常断开时把缓冲内容落进时间线，避免尾部文本丢失
+      flushPending()
       // 如果没有收到 loop_result（异常断开），强制标记为 done
       const blockId = currentBlockId.current
       if (blockId) {
         updateBlock(blockId, b => ({
-          ...b,
+          ...closeOpenIn(b),
           status: 'done' as const,
           endTime: Date.now(),
           exitReason: b.exitReason || 'aborted',
-          finalReplyStreaming: false,
         }))
         currentBlockId.current = null
       }
@@ -506,14 +585,16 @@ export const useChatStore = create<ChatState>((set, get) => {
           if (!chatResp.ok) throw new Error(`HTTP ${chatResp.status}`)
           await parseSSEStream(chatResp)
         } else {
-          // 普通命令：作为系统消息追加到最后一个工作块或新建
+          // 普通命令：输出作为 text 项入列，块直接标记完成
           const blockId = createBlock(prompt)
           updateBlock(blockId, b => ({
             ...b,
             status: 'done' as const,
             endTime: Date.now(),
             exitReason: 'command',
-            finalReply: data.output || '',
+            timeline: data.output
+              ? [{ id: genId(), type: 'text' as const, content: data.output, open: false }]
+              : [],
           }))
           currentBlockId.current = null
         }
@@ -525,7 +606,15 @@ export const useChatStore = create<ChatState>((set, get) => {
             status: 'done' as const,
             endTime: Date.now(),
             exitReason: 'error',
-            finalReply: `命令执行失败: ${e instanceof Error ? e.message : String(e)}`,
+            timeline: [
+              ...b.timeline,
+              {
+                id: genId(),
+                type: 'text',
+                content: `命令执行失败: ${e instanceof Error ? e.message : String(e)}`,
+                open: false,
+              },
+            ],
           }))
         }
       } finally {
@@ -649,20 +738,25 @@ export const useChatStore = create<ChatState>((set, get) => {
     const blockId = currentBlockId.current
     if (blockId) {
       // 先 flush 缓冲，避免已接收但未显示的文本丢失
-      flushContent()
-      updateBlock(blockId, b => ({
-        ...b,
-        status: 'done' as const,
-        endTime: Date.now(),
-        exitReason: 'aborted',
-        finalReplyStreaming: false,
-        // 占位阶段中止时既无步骤也无文本，兜底显示「已停止」，不留转圈残留
-        finalReply: b.finalReply || (b.steps.length === 0 ? '已停止' : ''),
-        // 运行中的工具步骤标记为已停止
-        steps: b.steps.map(s =>
-          s.isRunning ? { ...s, isRunning: false, result: s.result || '已停止' } : s
-        ),
-      }))
+      flushPending()
+      updateBlock(blockId, b => {
+        const base = closeOpenIn(b)
+        const hasText = base.timeline.some(s => s.type === 'text' && (s.content || '').trim())
+        // 占位阶段中止时既无事件也无文本，兜底一条「已停止」text 项，不留转圈残留
+        const timeline =
+          !hasText && base.timeline.length === 0
+            ? [{ id: genId(), type: 'text' as const, content: '已停止', open: false }]
+            : base.timeline.map(s =>
+                s.isRunning ? { ...s, isRunning: false, result: s.result || '已停止', endTime: Date.now() } : s,
+              )
+        return {
+          ...base,
+          status: 'done' as const,
+          endTime: Date.now(),
+          exitReason: 'aborted',
+          timeline,
+        }
+      })
       currentBlockId.current = null
     }
     set({ isStreaming: false })
@@ -689,7 +783,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     sseAbortRef.current?.abort()
     sseAbortRef.current = null
     currentBlockId.current = null
-    flushContent()
+    flushPending()
     set({ isStreaming: false })
   }
 
@@ -697,18 +791,16 @@ export const useChatStore = create<ChatState>((set, get) => {
   const clearMessages = () => {
     set({ blockIds: [], blocksById: {} })
     currentBlockId.current = null
-    finalReplyRef.current = ''
-    pendingReasoningRef.current = ''
-    hasToolStartedRef.current = false
-    pendingContentRef.current = ''
+    pendingRef.current = { text: '', reasoning: '' }
     if (flushTimer != null) {
       clearTimeout(flushTimer)
       flushTimer = null
     }
   }
 
-  // 从后端历史消息恢复：扁平消息列表 -> 工作块数组。
-  // 消息可携带内部时间戳 _ts（epoch 毫秒），用于还原回合真实耗时；旧数据无 _ts 时回退 Date.now()。
+  // 从后端历史消息恢复：扁平消息列表 -> 工作块时间线。
+  // assistant 消息携带的下划线内部字段（_ts/_reasoning/_reasoning_ms）用于
+  // 还原思考行与真实耗时；旧数据缺字段时自然降级（无思考行、耗时回退加载时刻）。
   // opts.runningStartedAt（毫秒）表示该会话有运行中任务，最后一块据此标记 running，
   // 恢复「工作中 X秒」逐秒计时与事件行运行中 spinner。
   const loadMessages = (rawMessages: Record<string, unknown>[], opts?: { runningStartedAt?: number }) => {
@@ -739,44 +831,65 @@ export const useChatStore = create<ChatState>((set, get) => {
           userMessage: parsed.text,
           // skill：渐进披露重写提示 → 「技能徽章 + 任务描述」展示
           skillName: parsed.kind === 'skill' ? parsed.skillName : undefined,
-          steps: [],
-          finalReply: '',
-          finalReplyStreaming: false,
+          timeline: [],
           status: 'done',
           startTime: start,
           endTime: start,
           exitReason: 'completed',
         }
       } else if (role === 'assistant') {
+        if (!currentBlock) continue
+        const ts = tsOf(raw)
+        // 入列时序：思考 → 正文（过渡叙述或最终回复）→ 工具调用
+        const reasoning = raw._reasoning
+        if (typeof reasoning === 'string' && reasoning) {
+          const ms = raw._reasoning_ms
+          // 非数字（旧数据/异常形态）时不做反推，起止同点显示「思考 · 0秒」
+          const rStart = typeof ms === 'number' ? ts - ms : ts
+          currentBlock.timeline.push({
+            id: genId(),
+            type: 'reasoning',
+            content: reasoning,
+            open: false,
+            startTime: rStart,
+            endTime: ts,
+          })
+        }
+        if (content) {
+          currentBlock.timeline.push({
+            id: genId(),
+            type: 'text',
+            content,
+            open: false,
+            startTime: ts,
+            endTime: ts,
+          })
+        }
         const toolCalls = raw.tool_calls as Array<{
           id: string
           function: { name: string; arguments: string }
         }> | undefined
         if (toolCalls && toolCalls.length > 0) {
-          // 工具调用 assistant 消息：作为中间步骤
-          if (currentBlock) {
-            for (const tc of toolCalls) {
-              currentBlock.steps.push({
-                id: genId(),
-                type: 'tool',
-                toolName: tc.function.name,
-                args: tc.function.arguments,
-                isRunning: false,
-              })
-            }
+          for (const tc of toolCalls) {
+            currentBlock.timeline.push({
+              id: genId(),
+              type: 'tool',
+              toolName: tc.function.name,
+              args: tc.function.arguments,
+              isRunning: false,
+              startTime: ts,
+            })
           }
-        } else if (currentBlock) {
-          // 纯文本：作为最终回复
-          currentBlock.finalReply = content
         }
-        if (currentBlock) currentBlock.endTime = tsOf(raw)
+        currentBlock.endTime = ts
       } else if (role === 'tool') {
-        // 工具结果：填到最近的未完成工具步骤（Agent/Task 步骤放宽到 3 万字符）
+        // 工具结果：填到最近的未完成工具项（Agent/Task 放宽到 3 万字符）
         if (currentBlock) {
-          const lastTool = [...currentBlock.steps].reverse().find(s => s.type === 'tool' && !s.result)
+          const lastTool = [...currentBlock.timeline].reverse().find(s => s.type === 'tool' && !s.result)
           if (lastTool) {
             const cap = lastTool.toolName === 'Agent' || lastTool.toolName === 'Task' ? 30000 : 500
             lastTool.result = content.slice(0, cap)
+            lastTool.endTime = tsOf(raw)
           }
           currentBlock.endTime = tsOf(raw)
         }
@@ -791,8 +904,25 @@ export const useChatStore = create<ChatState>((set, get) => {
       last.startTime = runningStartedAt
       last.endTime = undefined
       last.exitReason = undefined
-      const lastTool = [...last.steps].reverse().find(s => s.type === 'tool' && !s.result)
+      // 末尾是正文/思考项时重新打开（流式光标与「思考中」计时延续）
+      const lastItem = last.timeline[last.timeline.length - 1]
+      if (lastItem && (lastItem.type === 'text' || lastItem.type === 'reasoning')) {
+        lastItem.open = true
+        lastItem.endTime = undefined
+      }
+      const lastTool = [...last.timeline].reverse().find(s => s.type === 'tool' && !s.result)
       if (lastTool) lastTool.isRunning = true
+    }
+
+    // 中断回合兜底：最后一块时间线为空且无运行中任务，说明该轮在 assistant
+    // 消息落库前就被停止（abort 的直播兜底文案会被轮询历史重建抹掉），
+    // 按直播 abort 同款形态重建「已停止」text 项并标 aborted
+    if (newBlocks.length > 0 && typeof runningStartedAt !== 'number') {
+      const last = newBlocks[newBlocks.length - 1]
+      if (last.timeline.length === 0) {
+        last.exitReason = 'aborted'
+        last.timeline.push({ id: genId(), type: 'text', content: '已停止', open: false })
+      }
     }
 
     // 钳制 endTime >= startTime，避免新旧消息混合出现负耗时

@@ -751,7 +751,6 @@ function App() {
       {editorCollapsed && (
         <CapsuleCard
           onOpenTool={openTool}
-          isTaskRunning={runningSessionId !== null}
           sessionId={chatSessionId}
         />
       )}

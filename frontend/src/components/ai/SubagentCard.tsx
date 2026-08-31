@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { WorkStep } from '../../stores/useChatStore'
+import type { TimelineItem } from '../../stores/useChatStore'
 
 // 子代理状态卡片：Agent 工具调用的独立展示位。
 // - 运行中：轮询详情 + 输出，实时显示最近工具活动、已完成工具调用数与中间输出（防"像卡死"）
@@ -68,8 +68,9 @@ function formatDurationMs(ms?: number): string {
   return `${Math.floor(s / 60)}m${s % 60}s`
 }
 
-export default function SubagentCard({ step }: { step: WorkStep }) {
-  const { description, subagent_type: agentType } = useMemo(() => parseArgs(step.args), [step.args])
+export default function SubagentCard({ step }: { step: TimelineItem }) {
+  // TimelineItem 的 args 为可选字段（仅 tool 项有值），解析前非空兜底
+  const { description, subagent_type: agentType } = useMemo(() => parseArgs(step.args ?? ''), [step.args])
   const agentIdFromResult = useMemo(() => parseAgentId(step.result), [step.result])
   const [agentId, setAgentId] = useState<string | null>(agentIdFromResult)
   const [info, setInfo] = useState<SubagentInfo | null>(null)
