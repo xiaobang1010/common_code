@@ -8,8 +8,6 @@ import { useChatStore } from '../stores/useChatStore'
 interface CapsuleCardProps {
   // 点区块直达对应工具标签：展开面板并激活该标签
   onOpenTool: (id: ToolId) => void
-  // 当前任务是否在跑（会话运行中），驱动进展区块呼吸灯
-  isTaskRunning: boolean
   // 当前会话 id，供智能体轮询按会话过滤
   sessionId: string | null
 }
@@ -101,25 +99,6 @@ function sectionLabelStyle(dim: boolean): React.CSSProperties {
   }
 }
 
-// 状态点：复用标题栏呼吸灯语义（运行中蓝脉冲，就绪绿常亮）。
-// checksPassed（验收全勾）时强制绿常亮——绿色此时表达「验收通过」而非「就绪」
-function RunDot({ active, forceSuccess }: { active: boolean; forceSuccess?: boolean }) {
-  const green = forceSuccess || !active
-  return (
-    <span
-      style={{
-        width: '7px',
-        height: '7px',
-        borderRadius: '50%',
-        flexShrink: 0,
-        backgroundColor: green ? 'var(--success)' : 'var(--info)',
-        boxShadow: green ? 'var(--success-glow)' : 'var(--info-glow)',
-        animation: active && !forceSuccess ? 'breathe 1.4s ease-in-out infinite' : 'none',
-      }}
-    />
-  )
-}
-
 // 跳转消息流对应 SubagentCard：锚点命中即滚过去并短暂高亮；
 // 目标块因「运行中仅渲染最近 3 步骤」未含卡片时，回退滚到运行中的工作块
 function jumpToSubagent(agentId: string) {
@@ -139,7 +118,7 @@ function jumpToSubagent(agentId: string) {
 // 状态胶囊卡：收起态为活动摘要小胶囊（对齐 ZCode），
 // 点击展开为固定宽度完整卡：常驻「进展」「产物」区块、「智能体」未常驻区块、
 // 卡头 ··· 菜单与 ⤢ 收起钮。仍只在编辑区折叠时由 App 渲染（fixed 右上）。
-function CapsuleCard({ onOpenTool, isTaskRunning, sessionId }: CapsuleCardProps) {
+function CapsuleCard({ onOpenTool, sessionId }: CapsuleCardProps) {
   const git = useGitStatus()
   const { running: runningAgents } = useRunningSubagents(sessionId)
   // 进展精确到会话：传 sessionId 让后端按会话归属返回 spec，同工作区切会话各看各的
@@ -187,8 +166,8 @@ function CapsuleCard({ onOpenTool, isTaskRunning, sessionId }: CapsuleCardProps)
 
   // ---- 收起态：活动摘要小胶囊（对齐 ZCode 的「→ 当前活动」形态），点击展开 ----
   if (!expanded) {
-    // 进度与展开态进展头部对齐：默认展示任务清单进度（展开面板默认也是任务分组），
-    // 任务清单为空时回退验证清单；验收全勾仍显示「验收通过」终态
+    // 进度与展开态卡头对齐：默认展示任务清单进度（展开面板默认也是任务分组），
+    // 任务清单为空时回退验证清单；验收全勾时整体绿色
     const tasksList = specData?.tasks
     const progressSource =
       tasksList && tasksList.total > 0
@@ -220,7 +199,6 @@ function CapsuleCard({ onOpenTool, isTaskRunning, sessionId }: CapsuleCardProps)
           transition: 'all var(--transition-fast)',
         }}
       >
-        <RunDot active={isTaskRunning} forceSuccess={checksPassed} />
         <span
           style={{
             fontSize: '12px',
@@ -231,8 +209,7 @@ function CapsuleCard({ onOpenTool, isTaskRunning, sessionId }: CapsuleCardProps)
             textOverflow: 'ellipsis',
           }}
         >
-          → {checksPassed ? '验收通过' : isTaskRunning ? '运行中' : '就绪'}
-          {!checksPassed && spec ? specxy : ''}
+          进展{specxy}
         </span>
       </div>
     )
@@ -264,12 +241,32 @@ function CapsuleCard({ onOpenTool, isTaskRunning, sessionId }: CapsuleCardProps)
         userSelect: 'none',
       }}
     >
-      {/* 卡头：标题 + ⤢ 收起钮 + ··· 工具标签菜单 */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginBottom: '2px' }}>
-        <span style={sectionLabelStyle(true)}>进展</span>
+      {/* 卡头：「进展」+ 进度数字（对齐 ZCode 面板「进程 5/5」的标签+数字形态）
+          有 spec 点卡头展开 spec 清单，无 spec 点卡头跳概要 */}
+      <div
+        style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', padding: '5px 8px', margin: '0 -4px', marginBottom: '2px', cursor: 'pointer' }}
+        onClick={() => (spec ? setSpecOpen((v) => !v) : onOpenTool('summary'))}
+        title={spec ? '查看 spec 进展' : '查看概要'}
+      >
+        {spec ? (
+          <span style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+            <span style={sectionLabelStyle(false)}>进展</span>
+            <span style={{ ...sectionLabelStyle(true), color: checksPassed ? 'var(--success)' : undefined }}>
+              {activeGroup?.done ?? 0}/{activeGroup?.total ?? 0}
+            </span>
+          </span>
+        ) : (
+          <span style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+            <span style={sectionLabelStyle(false)}>进展</span>
+            <span style={sectionLabelStyle(true)}>{blockCount} 个工作块</span>
+          </span>
+        )}
         <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
           <button
-            onClick={() => setExpanded(false)}
+            onClick={(e) => {
+              e.stopPropagation()
+              setExpanded(false)
+            }}
             title="收起进展面板"
             style={{
               display: 'flex',
@@ -303,7 +300,10 @@ function CapsuleCard({ onOpenTool, isTaskRunning, sessionId }: CapsuleCardProps)
             </svg>
           </button>
           <div ref={menuRef} style={{ position: 'relative' }}>          <button
-            onClick={() => setMenuOpen((v) => !v)}
+            onClick={(e) => {
+              e.stopPropagation()
+              setMenuOpen((v) => !v)
+            }}
             title="打开工具面板"
             style={{
               display: 'flex',
@@ -381,33 +381,6 @@ function CapsuleCard({ onOpenTool, isTaskRunning, sessionId }: CapsuleCardProps)
           </div>
         </div>
       </div>
-
-      {/* 进展（常驻）：有 spec 显示清单完成度并可展开；无 spec 维持运行态+工作块数并跳概要 */}
-      {spec ? (
-        <div
-          style={sectionStyle()}
-          onClick={() => setSpecOpen((v) => !v)}
-          title="查看 spec 进展"
-        >
-          <RunDot active={isTaskRunning} forceSuccess={checksPassed} />
-          <span style={sectionLabelStyle(false)}>{isTaskRunning ? '运行中' : '就绪'}</span>
-          <span
-            style={{
-              ...sectionLabelStyle(checksPassed ? false : true),
-              marginLeft: 'auto',
-              color: checksPassed ? 'var(--success)' : undefined,
-            }}
-          >
-            {activeGroup?.done ?? 0}/{activeGroup?.total ?? 0}
-          </span>
-        </div>
-      ) : (
-        <div style={sectionStyle()} onClick={() => onOpenTool('summary')} title="查看概要">
-          <RunDot active={isTaskRunning} />
-          <span style={sectionLabelStyle(false)}>{isTaskRunning ? '运行中' : '就绪'}</span>
-          <span style={{ ...sectionLabelStyle(true), marginLeft: 'auto' }}>{blockCount} 个工作块</span>
-        </div>
-      )}
 
       {/* spec 清单展开区：任务|验证分组切换 + 三态行渲染 */}
       {spec && specOpen && (
@@ -495,6 +468,9 @@ function CapsuleCard({ onOpenTool, isTaskRunning, sessionId }: CapsuleCardProps)
         </div>
       )}
 
+      {/* 分组分隔线：进展组与产物组之间（对齐 ZCode 面板分组样式，左右与文字缘对齐） */}
+      <div style={{ height: '1px', backgroundColor: 'var(--border-subtle)', margin: '6px 4px', flexShrink: 0 }} />
+
       {/* 产物（常驻）：git 变更数，点击跳审查 */}
       <div style={sectionStyle()} onClick={() => onOpenTool('review')} title="查看审查详情">
         <span style={sectionLabelStyle(false)}>产物</span>
@@ -512,8 +488,8 @@ function CapsuleCard({ onOpenTool, isTaskRunning, sessionId }: CapsuleCardProps)
       {/* 智能体（未常驻）：仅运行中子代理存在时出现，点击条目跳消息流 */}
       {runningAgents.length > 0 && (
         <div>
+          <div style={{ height: '1px', backgroundColor: 'var(--border-subtle)', margin: '6px 4px', flexShrink: 0 }} />
           <div style={sectionStyle()} onClick={() => setAgentsOpen((v) => !v)} title="运行中的智能体">
-            <RunDot active />
             <span style={sectionLabelStyle(false)}>智能体</span>
             <span style={{ ...sectionLabelStyle(true), marginLeft: 'auto' }}>{runningAgents.length} 运行中</span>
           </div>
