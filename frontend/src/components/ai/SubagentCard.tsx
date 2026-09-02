@@ -13,10 +13,13 @@ interface SubagentInfo {
   description: string
   status: string
   mode: string
+  promoted?: boolean
+  child_session_id?: string
   created_at: number
   updated_at: number
   usage?: { total_tokens?: number; tool_uses?: number; duration_ms?: number }
   error?: string | null
+  budget?: { max_turns?: number | null; token_budget?: number | null }
 }
 
 interface SubagentOutput {
@@ -232,7 +235,11 @@ export default function SubagentCard({ step }: { step: TimelineItem }) {
         <span>耗时 {formatDurationMs(elapsedMs)}</span>
         <span>tokens {usage?.total_tokens ?? '-'}</span>
         <span>工具 {usage?.tool_uses ?? output?.tool_calls_done ?? '-'}</span>
-        {info?.mode === 'background' && <span>后台</span>}
+        {info?.mode === 'background' && (
+          <span>{info.promoted ? '已转后台' : '后台'}</span>
+        )}
+        {!!info?.budget?.max_turns && <span>轮次上限 {info.budget.max_turns}</span>}
+        {!!info?.budget?.token_budget && <span>预算 {info.budget.token_budget}</span>}
       </div>
 
       {info?.error && (

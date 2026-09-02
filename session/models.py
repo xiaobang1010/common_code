@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -11,7 +11,7 @@ class Session:
     """一次对话会话。
 
     Attributes:
-        id: 会话唯一标识（UUID）
+        id: 会话唯一标识（UUID；子会话为确定值 subagent_<agent_id>）
         workspace_path: 所属工作区路径
         title: 会话标题（自动取首条用户消息前 40 字符，可手动重命名）
         branch: 创建时的 git 分支名
@@ -22,6 +22,11 @@ class Session:
         pinned: 是否置顶（持久状态，列表排序 pinned 优先）
         group_id: 所属自定义任务分组 id（空串表示未分组；分组只是视图标签，
             不改变任务的 workspace_path 归属）
+        parent_session_id: 父会话 id（子代理派生的子会话指向主对话会话，
+            普通会话为 None）
+        origin: 会话来源："chat"（主对话）或 "subagent"（子代理子会话）
+        agent_meta: 子代理元数据（agent_id/agent_type/status/usage/
+            output_file/promoted/updated_at 七字段，普通会话为空 dict）
     """
 
     id: str
@@ -34,6 +39,9 @@ class Session:
     message_count: int = 0
     pinned: bool = False
     group_id: str = ""
+    parent_session_id: str | None = None
+    origin: str = "chat"
+    agent_meta: dict = field(default_factory=dict)
 
 
 @dataclass

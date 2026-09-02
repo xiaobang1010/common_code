@@ -57,6 +57,35 @@ def _get_result_path(agent_id: str) -> Path:
     return _get_agent_dir(agent_id) / "result.txt"
 
 
+def _get_task_output_path(agent_id: str) -> Path:
+    """获取增量输出文件路径（后台/提升代理每轮追加最终 assistant 文本）。"""
+    return _get_agent_dir(agent_id) / "task.output"
+
+
+def append_task_output(agent_id: str, text: str) -> None:
+    """向增量输出文件追加一段文本（失败仅日志，不阻断运行）。"""
+    if not text.strip():
+        return
+    try:
+        path = _get_task_output_path(agent_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(text.rstrip() + "\n\n")
+    except OSError as e:
+        logger.warning("增量输出写入失败 %s: %s", agent_id, e)
+
+
+def read_task_output(agent_id: str) -> str | None:
+    """读取增量输出文件内容，不存在返回 None。"""
+    path = _get_task_output_path(agent_id)
+    if not path.exists():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # write_agent_metadata — 写入元数据
 # ---------------------------------------------------------------------------

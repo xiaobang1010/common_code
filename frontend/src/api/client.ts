@@ -320,6 +320,22 @@ export const agentsApi = {
     }),
 }
 
+/** 子智能体执行底座配置（全局 subagents 段） */
+export interface SubagentsConfig {
+  modelOverrides: Record<string, string>
+  defaultModel: string
+  autoBackgroundMs: number
+  inactivityTimeoutMs: number
+  maxTurnsDefault: number
+  tokenBudgetDefault: number
+}
+
+export const subagentsConfigApi = {
+  get: () => apiGet<{ ok: boolean; subagents?: SubagentsConfig; error?: string }>('/api/config/subagents'),
+  set: (data: Partial<SubagentsConfig>) =>
+    apiPost<{ ok: boolean; subagents?: SubagentsConfig; error?: string }>('/api/config/subagents', data),
+}
+
 /** 技能管理 */
 export const skillsApi = {
   list: () => apiGet<{ skills: SkillInfo[] }>('/api/skills'),

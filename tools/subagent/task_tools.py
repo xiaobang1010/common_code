@@ -26,10 +26,14 @@ class GetSubagentOutputInput(BaseModel):
     Attributes:
         agent_id: 子代理 ID
         max_chars: 返回的最大字符数（默认 30000）
+        block: 是否阻塞等待终态（默认 False，行为与历史一致）
+        timeout_ms: block 模式的等待上限（毫秒，默认 30000）
     """
 
     agent_id: str
     max_chars: int = 30000
+    block: bool = False
+    timeout_ms: int = 30000
 
 
 GET_SUBAGENT_OUTPUT_PROMPT = """\
@@ -39,15 +43,25 @@ GET_SUBAGENT_OUTPUT_PROMPT = """\
 - agent_id 是 Agent 工具返回的子代理标识
 - 子代理运行中返回当前中间输出，已完成返回最终结果
 - 结果过长时可用 max_chars 截取（默认保留开头 30000 字符）
+- block=true 时阻塞等待任务结束（受 timeout_ms 限制），超时返回当前中间输出
 """
 
 
 async def _get_output(inp: GetSubagentOutputInput, _context: ToolUseContext) -> ToolResult:
-    """查看子代理输出：注册表最终文本优先，运行中取 transcript 中间输出。"""
+    """查看子代理输出：注册表最终文本优先，运行中取增量输出文件/中间输出。"""
     from tools.subagent.registry import get_subagent_registry
-    from tools.subagent.transcript import get_agent_transcript
+    from tools.subagent.transcript import get_agent_transcript, read_task_output
 
-    task = get_subagent_registry().get(inp.agent_id)
+    registry = get_subagent_registry()
+
+    # block 模式：等待终态（超时返回当前中间输出并标注 not_ready）
+    not_ready = False
+    if inp.block:
+        terminal = await registry.wait_for_terminal(inp.agent_id, inp.timeout_ms)
+        if not terminal:
+            not_ready = True
+
+    task = registry.get(inp.agent_id)
     if task is None:
         return ToolResult(
             content=f"Subagent not found: {inp.agent_id}",
@@ -58,13 +72,20 @@ async def _get_output(inp: GetSubagentOutputInput, _context: ToolUseContext) -> 
         output = task.final_text
         source = "final"
     else:
-        transcript = get_agent_transcript(inp.agent_id) or []
-        output = ""
-        for msg in reversed(transcript):
-            if msg.get("role") == "assistant" and msg.get("content"):
-                output = msg["content"]
-                break
-        source = "intermediate" if output else "empty"
+        # 运行中：优先读增量输出文件（后台/提升代理每轮追加），
+        # 无增量文件时退回 transcript 最后一条 assistant 消息
+        incremental = read_task_output(inp.agent_id)
+        if incremental:
+            output = incremental
+            source = "incremental"
+        else:
+            transcript = get_agent_transcript(inp.agent_id) or []
+            output = ""
+            for msg in reversed(transcript):
+                if msg.get("role") == "assistant" and msg.get("content"):
+                    output = msg["content"]
+                    break
+            source = "intermediate" if output else "empty"
 
     if not output:
         return ToolResult(
@@ -75,15 +96,17 @@ async def _get_output(inp: GetSubagentOutputInput, _context: ToolUseContext) -> 
     max_chars = max(1, inp.max_chars)
     truncated = len(output) > max_chars
     body = output[:max_chars] + ("\n...(truncated)" if truncated else "")
+    status_line = f"[Subagent {inp.agent_id} | status={task.status} | source={source}]"
+    if not_ready:
+        status_line += " | not_ready: still running after wait timeout"
     return ToolResult(
-        content=(
-            f"[Subagent {inp.agent_id} | status={task.status} | source={source}]\n{body}"
-        ),
+        content=f"{status_line}\n{body}",
         metadata={
             "agent_id": inp.agent_id,
             "status": task.status,
             "source": source,
             "truncated": truncated,
+            "not_ready": not_ready,
         },
     )
 
@@ -126,47 +149,26 @@ STOP_SUBAGENT_PROMPT = """\
 
 
 async def _stop_subagent(inp: StopSubagentInput, _context: ToolUseContext) -> ToolResult:
-    """停止单个子代理：后台取消任务句柄，前台置位 abort 事件。"""
-    from tools.subagent.registry import (
-        STATUS_STOPPED,
-        TERMINAL_STATUSES,
-        get_subagent_registry,
-    )
+    """停止单个子代理：走生命周期引擎统一停止入口（取消驱动任务秒级生效）。"""
+    from tools.subagent.lifecycle import stop_subagent as lifecycle_stop
+    from tools.subagent.registry import get_subagent_registry
 
-    registry = get_subagent_registry()
-    task = registry.get(inp.agent_id)
-    if task is None:
+    outcome = lifecycle_stop(inp.agent_id)
+    if outcome == "not_found":
         return ToolResult(
             content=f"Subagent not found: {inp.agent_id}",
             is_error=True,
         )
-
-    if task.status in TERMINAL_STATUSES:
+    if outcome == "already_finished":
+        task = get_subagent_registry().get(inp.agent_id)
+        status = task.status if task is not None else "unknown"
         return ToolResult(
-            content=f"Subagent {inp.agent_id} already finished (status={task.status}).",
-            metadata={"agent_id": inp.agent_id, "status": task.status},
+            content=f"Subagent {inp.agent_id} already finished (status={status}).",
+            metadata={"agent_id": inp.agent_id, "status": status},
         )
-
-    # 后台任务：cancel asyncio 句柄（_run_background 记 stopped）
-    if task.task is not None and not task.task.done():
-        task.task.cancel()
-        return ToolResult(
-            content=f"Stop requested for background subagent {inp.agent_id}.",
-            metadata={"agent_id": inp.agent_id, "status": "stopping"},
-        )
-
-    # 前台任务：置位 abort 事件（轮次边界优雅退出）
-    if task.ctx is not None and task.ctx.abort_event is not None:
-        task.ctx.abort_event.set()
-        return ToolResult(
-            content=f"Stop requested for subagent {inp.agent_id}.",
-            metadata={"agent_id": inp.agent_id, "status": "stopping"},
-        )
-
-    registry.mark_status(inp.agent_id, STATUS_STOPPED, error="stopped by request")
     return ToolResult(
-        content=f"Subagent {inp.agent_id} marked stopped.",
-        metadata={"agent_id": inp.agent_id, "status": STATUS_STOPPED},
+        content=f"Stop requested for subagent {inp.agent_id}.",
+        metadata={"agent_id": inp.agent_id, "status": outcome},
     )
 
 

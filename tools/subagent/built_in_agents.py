@@ -90,6 +90,8 @@ def _explore_agent() -> AgentDefinition:
         disallowed_tools=list(ALL_AGENT_DISALLOWED_TOOLS) + list(EXPLORE_DISALLOWED_TOOLS),
         model="inherit",
         system_prompt=_EXPLORE_PROMPT,
+        # Explore 是快速搜索代理，不注入工作区规范（保持轻快）
+        inject_agents_md=False,
         source="built-in",
     )
 
@@ -108,32 +110,32 @@ def get_built_in_agents() -> list[AgentDefinition]:
 
 
 def find_agent_by_type(agent_type: str) -> AgentDefinition | None:
-    """按 agent_type 查找代理定义。
+    """按 agent_type 查找代理定义（精确或唯一模糊命中）。
 
-    查找顺序：内置代理 -> 自定义代理（.md 加载，用户级覆盖项目级）。
+    查找顺序：内置代理 -> 插件代理 -> 自定义代理（.md 加载，用户级覆盖项目级）。
+    需要歧义/未命中结构化信息的调用方请直接用 resolver.resolve_agent_type。
     """
-    for agent in get_built_in_agents():
-        if agent.agent_type == agent_type:
-            return agent
+    from tools.subagent.resolver import resolve_agent_type
 
-    # 自定义代理（.md frontmatter 加载）
-    from tools.subagent.loader import find_custom_agent
-    return find_custom_agent(agent_type)
+    result = resolve_agent_type(agent_type)
+    return result.agent if result.kind == "matched" else None
 
 
 def get_agent_listing() -> list[dict[str, str]]:
-    """获取代理类型列表（内置 + 自定义），用于注入系统提示词。
+    """获取代理类型列表（内置 + 插件 + 自定义），用于注入系统提示词。
 
     返回 [{"type": ..., "when_to_use": ..., "tools": ...}, ...]
     """
     from tools.subagent.loader import load_custom_agents
+    from tools.subagent.plugin_agents import get_plugin_agent_definitions
 
     listing: list[dict[str, str]] = []
     custom_agents, _ = load_custom_agents()
+    plugin_agents = get_plugin_agent_definitions()
     seen: set[str] = set()
-    for agent in get_built_in_agents() + custom_agents:
+    for agent in get_built_in_agents() + plugin_agents + custom_agents:
         if agent.agent_type in seen:
-            continue  # 内置优先，跳过同名自定义
+            continue  # 内置优先，跳过同名代理
         seen.add(agent.agent_type)
         tools_desc = "all" if agent.has_wildcard_tools() else ", ".join(agent.tools or [])
         if agent.disallowed_tools:

@@ -23,17 +23,16 @@ from tools.subagent import notify
 @pytest.fixture
 def clean_registry(monkeypatch):
     """给注册表换新实例并打桩 transcript 落盘，隔离测试间状态。"""
+    # 生命周期引擎经模块间接访问注册表，打在 registry 模块上即全链路生效
     monkeypatch.setattr(
         "tools.subagent.registry.get_subagent_registry", lambda: _test_registry
     )
-    import tools.subagent.background as bg
-    # background 内部用 functools 未绑定，直接替换模块级引用
-    monkeypatch.setattr(bg, "get_subagent_registry", lambda: _test_registry)
 
     import tools.subagent.transcript as transcript
     monkeypatch.setattr(transcript, "record_sidechain_transcript", lambda *a, **k: None)
     monkeypatch.setattr(transcript, "write_agent_metadata", lambda **k: None)
     monkeypatch.setattr(transcript, "save_full_result", lambda *a, **k: "/tmp/fake.txt")
+    monkeypatch.setattr(transcript, "append_task_output", lambda *a, **k: None)
     yield _test_registry
 
 
@@ -132,9 +131,12 @@ async def test_background_stop_records_stopped(clean_registry, monkeypatch):
         ctx, [], "sys", parent_session_id="sess_bg3"
     )
     await started.wait()
-    task.task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task.task
+    # 走统一停止入口（记录停止原因后取消驱动任务）
+    from tools.subagent.lifecycle import stop_subagent
+
+    assert stop_subagent("agent_bg3") == "stopping"
+    # 驱动任务内部捕获 CancelledError 并记 stopped，不向外抛
+    await task.task
 
     record = clean_registry.get("agent_bg3")
     assert record.status == STATUS_STOPPED

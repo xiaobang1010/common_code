@@ -37,7 +37,7 @@ from startup.config.constants import (
     PROJECT_CONFIG_DIR,
     PROJECT_SETTINGS_FILENAME,
 )
-from startup.config.types import Permissions, PermissionRule, Settings
+from startup.config.types import Permissions, PermissionRule, Settings, SubagentsConfig
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +132,8 @@ class GlobalConfig:
     memory: dict[str, Any] = field(default_factory=dict)
     # 记忆功能总开关：默认关闭。关闭时启动不加载记忆插件与向量化模型
     memory_enabled: bool = False
+    # 子智能体执行底座配置（模型覆盖、自动转后台、活性超时、默认预算）
+    subagents: SubagentsConfig = field(default_factory=SubagentsConfig)
 
     def to_dict(self) -> dict[str, Any]:
         """转换为 JSON 友好的字典，使用 camelCase 键名。"""
@@ -161,6 +163,8 @@ class GlobalConfig:
         }
         for k, v in d.items():
             result[key_map.get(k, k)] = v
+        # subagents 段按自身 to_dict 输出（camelCase 键），覆盖 asdict 展平的蛇形键
+        result["subagents"] = self.subagents.to_dict()
         return result
 
     @classmethod
@@ -195,6 +199,7 @@ class GlobalConfig:
             active_model=data.get("active_model"),
             memory=data.get("memory", {}),
             memory_enabled=data.get("memoryEnabled", False),
+            subagents=SubagentsConfig.from_dict(data.get("subagents", {})),
         )
 
 

@@ -504,6 +504,21 @@ async def query_loop(
                 return
         loop_turns += 1
 
+        # ---- 0b. token 预算检查（与轮次上限同款优雅停止模式） ----
+        if engine_config.token_budget:
+            if engine.total_usage >= engine_config.token_budget:
+                yield {
+                    "role": "assistant",
+                    "content": (
+                        f"[已达到 token 预算上限（token_budget="
+                        f"{engine_config.token_budget}），本轮任务提前停止。]"
+                    ),
+                }
+                yield StreamEvent(type="done", finish_reason="stop")
+                await _mine_conversation_to_palace(engine)
+                yield LoopResult(reason="completed")
+                return
+
         # ---- 1. 压缩管线（内联四级）----
         if config.auto_compact_enabled and messages:
             try:
