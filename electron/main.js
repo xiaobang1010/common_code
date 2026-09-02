@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require('electron')
 const path = require('path')
 const pty = require('node-pty')
 
@@ -99,6 +99,16 @@ function createWindow(port) {
   // Linux：保持默认 frame（Wayland/X11 差异大，titleBarOverlay 行为需单独验证）
 
   win = new BrowserWindow(windowOptions)
+
+  // 外链一律交给系统默认浏览器：AI 回复里的外链带 target=_blank（streamdown
+  // rehype-harden 加固产物），不拦会在应用内开新的 Electron 窗口；
+  // 仅放行 http/https，其余协议（file: 等）直接拒绝，避免任意协议唤起
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) {
+      shell.openExternal(url)
+    }
+    return { action: 'deny' }
+  })
 
   // Windows/Linux 隐藏菜单栏（菜单仍在，快捷键不丢）
   if (!isMac) {

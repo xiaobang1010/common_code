@@ -574,7 +574,7 @@ def has_permissions_to_use_tool(
             reason=f"Read-only tool {tool_name} is allowed.",
         )
 
-    # 8. 文件编辑工具自动放行（对齐 ZCode edit 模式）
+    # 8. 文件编辑工具自动放行（编辑类常规操作，默认模式免二次确认）
     if tool_name in FILE_EDIT_TOOLS:
         return PermissionResult(
             decision=PermissionDecision.ALLOW,

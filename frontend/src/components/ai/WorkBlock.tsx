@@ -1,11 +1,7 @@
 import { useState, useEffect, memo, useCallback } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
-// @ts-ignore
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { useChatStore, formatDuration, lastActivityAtRef, type WorkBlock, type TimelineItem } from '../../stores/useChatStore'
 import SubagentCard from './SubagentCard'
+import Markdown from './Markdown'
 
 interface Props {
   // 只订阅自己的工作块：流式更新只触发本组件重渲
@@ -135,7 +131,7 @@ function truncateMiddle(text: string, max = 48): string {
   return `${text.slice(0, keep)}…${text.slice(-keep)}`
 }
 
-// 文件类工具：事件行按「文件名 + 目录 + 变更统计」排布（对齐 ZCode）
+// 文件类工具：事件行按「文件名 + 目录 + 变更统计」排布
 const FILE_TOOLS = new Set(['read', 'write', 'edit'])
 
 // 从 args 提取 file_path（文件类工具的路径参数名统一为 file_path）
@@ -416,20 +412,11 @@ const ReasoningRow = memo(function ReasoningRow({ item }: { item: TimelineItem }
   )
 })
 
-// 正文行：过渡叙述与最终回复同为一等事件，按 Markdown 渲染。
-// 流式中（open）用轻量渲染 + 行尾光标；结束后延迟 250ms 升级完整高亮，
-// 避免长回复完成瞬间从轻量渲染切到 Prism 高亮的可见跳变
+// 正文行：过渡叙述与最终回复同为一等事件，统一走 Markdown（streamdown）渲染。
+// 流式中（open）由 streamdown 修复未闭合语法并显示跟随末行的光标，完成后自然定格，
+// 无渲染管线切换
 const TextItemView = memo(function TextItemView({ item }: { item: TimelineItem }) {
   const streaming = !!item.open
-  const [highlightReady, setHighlightReady] = useState(!streaming)
-  useEffect(() => {
-    if (streaming) {
-      setHighlightReady(false)
-      return
-    }
-    const timer = window.setTimeout(() => setHighlightReady(true), 250)
-    return () => clearTimeout(timer)
-  }, [streaming])
 
   if (!item.content) return null
 
@@ -444,29 +431,7 @@ const TextItemView = memo(function TextItemView({ item }: { item: TimelineItem }
         wordBreak: 'break-word',
       }}
     >
-      {streaming || !highlightReady ? (
-        <ReactMarkdown remarkPlugins={[remarkGfm]} components={lightMarkdownComponents}>
-          {item.content}
-        </ReactMarkdown>
-      ) : (
-        <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-          {item.content}
-        </ReactMarkdown>
-      )}
-      {streaming && (
-        <span
-          style={{
-            display: 'inline-block',
-            width: '8px',
-            height: '14px',
-            backgroundColor: 'var(--text-primary)',
-            marginLeft: '2px',
-            verticalAlign: 'text-bottom',
-            animation: 'blink 1s step-end infinite',
-            borderRadius: '1px',
-          }}
-        />
-      )}
+      <Markdown content={item.content} streaming={streaming} />
     </div>
   )
 })
@@ -571,152 +536,11 @@ const StatusLine = memo(function StatusLine({ block, expanded, onToggle }: {
   )
 })
 
-// Markdown 渲染配置（对话区渲染与编辑区 .md 预览共用）
-export const markdownComponents = {
-  code({ className, children }: { className?: string; children?: React.ReactNode }) {
-    const match = /language-(\w+)/.exec(className || '')
-    const codeText = String(children).replace(/\n$/, '')
-    if (match) {
-      // 超长代码块不做 Prism 高亮：tokenize 会生成海量 span，页面容易卡死
-      if (codeText.split('\n').length > 300 || codeText.length > 20000) {
-        return (
-          <pre
-            style={{
-              background: 'var(--bg-base)',
-              borderRadius: 'var(--radius-md)',
-              border: '1px solid var(--border-subtle)',
-              fontSize: '12px',
-              margin: '8px 0',
-              padding: '12px',
-              overflow: 'auto',
-              fontFamily: 'var(--font-mono)',
-              color: 'var(--text-primary)',
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-            }}
-          >
-            {codeText}
-          </pre>
-        )
-      }
-      return (
-        <SyntaxHighlighter
-          language={match[1]}
-          style={vscDarkPlus}
-          PreTag="div"
-          customStyle={{
-            background: 'var(--bg-base)',
-            borderRadius: 'var(--radius-md)',
-            border: '1px solid var(--border-subtle)',
-            fontSize: '12px',
-            margin: '8px 0',
-          }}
-        >
-          {codeText}
-        </SyntaxHighlighter>
-      )
-    }
-    return (
-      <code
-        style={{
-          backgroundColor: 'var(--code-bg)',
-          border: '1px solid var(--code-border)',
-          padding: '1px 5px',
-          borderRadius: '4px',
-          fontFamily: 'var(--font-mono)',
-          fontSize: '12px',
-          color: 'var(--code-text)',
-        }}
-      >
-        {children}
-      </code>
-    )
-  },
-  a({ children, href }: { children?: React.ReactNode; href?: string }) {
-    return (
-      <a className="markdown-link" href={href}>
-        {children}
-      </a>
-    )
-  },
-  p({ children }: { children?: React.ReactNode }) {
-    return <p style={{ margin: '6px 0' }}>{children}</p>
-  },
-  ul({ children }: { children?: React.ReactNode }) {
-    return <ul style={{ margin: '6px 0', paddingLeft: '20px' }}>{children}</ul>
-  },
-  ol({ children }: { children?: React.ReactNode }) {
-    return <ol style={{ margin: '6px 0', paddingLeft: '20px' }}>{children}</ol>
-  },
-  // 表格可能很宽：外层包横向滚动容器，让宽表格在限宽列内部滚动而不撑破列边界
-  table({ children }: { children?: React.ReactNode }) {
-    return (
-      <div style={{ overflowX: 'auto' }}>
-        <table>{children}</table>
-      </div>
-    )
-  },
-  h1({ children }: { children?: React.ReactNode }) {
-    return <h1 style={{ fontSize: '17px', fontWeight: 600, margin: '12px 0 6px' }}>{children}</h1>
-  },
-  h2({ children }: { children?: React.ReactNode }) {
-    return <h2 style={{ fontSize: '15px', fontWeight: 600, margin: '10px 0 4px' }}>{children}</h2>
-  },
-  h3({ children }: { children?: React.ReactNode }) {
-    return <h3 style={{ fontSize: '14px', fontWeight: 600, margin: '8px 0 4px' }}>{children}</h3>
-  },
-}
-
-// 流式期间的轻量 Markdown 渲染配置：代码块不做 Prism 高亮。
-// 回复未完成时每帧全量 tokenize 会随内容变长越来越卡，等完成后切回完整高亮渲染
-const lightMarkdownComponents = {
-  ...markdownComponents,
-  code({ className, children }: { className?: string; children?: React.ReactNode }) {
-    const match = /language-(\w+)/.exec(className || '')
-    if (match) {
-      return (
-        <pre
-          style={{
-            background: 'var(--bg-base)',
-            borderRadius: 'var(--radius-md)',
-            border: '1px solid var(--border-subtle)',
-            fontSize: '12px',
-            margin: '8px 0',
-            padding: '12px',
-            overflow: 'auto',
-            fontFamily: 'var(--font-mono)',
-            color: 'var(--text-primary)',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-          }}
-        >
-          {String(children).replace(/\n$/, '')}
-        </pre>
-      )
-    }
-    return (
-      <code
-        style={{
-          backgroundColor: 'var(--code-bg)',
-          border: '1px solid var(--code-border)',
-          padding: '1px 5px',
-          borderRadius: '4px',
-          fontFamily: 'var(--font-mono)',
-          fontSize: '12px',
-          color: 'var(--code-text)',
-        }}
-      >
-        {children}
-      </code>
-    )
-  },
-}
-
 function WorkBlockView({ blockId }: Props) {
   // 局部订阅：只监听自己的工作块，其他 block 更新时不重渲
   const block = useChatStore(s => s.blocksById[blockId])
   // 展开语义：是否显示过程行（reasoning/tool）；正文行恒可见。
-  // 完成后默认平铺整个时间线（对齐 ZCode），点状态行可折叠过程行降噪
+  // 完成后默认平铺整个时间线，点状态行可折叠过程行降噪
   const [expanded, setExpanded] = useState(true)
   const isRunning = block?.status === 'running'
 
@@ -846,7 +670,7 @@ function WorkBlockView({ blockId }: Props) {
   return (
     // data-workblock-running：状态胶囊卡「智能体」跳转的回退锚点（目标卡片不在 DOM 时滚到运行中块）
     <div className="work-block" data-workblock-running={isRunning || undefined} style={{ display: 'flex', flexDirection: 'column', gap: '10px', animation: 'fade-in-up 280ms ease-out' }}>
-      {/* 用户消息：技能触发时首行显示「徽章 + 技能名」（对齐 ZCode 的 Spec 徽章样式）。
+      {/* 用户消息：技能触发时首行显示「徽章 + 技能名」。
           悬停显示操作组（复制/编辑，对齐 Claude.ai 交互）；运行中块与命令块不提供编辑。
           编辑态气泡替换为输入框：Ctrl+Enter 确认重发、Esc 取消 */}
       {editing ? (
@@ -932,7 +756,7 @@ function WorkBlockView({ blockId }: Props) {
           className="msg-bubble-wrap"
           style={{ alignSelf: 'flex-end', maxWidth: '80%', position: 'relative' }}
         >
-          {/* 悬停操作组：贴对话条下方右缘（对齐 ZCode 交互），裸图标无底板，仅已完成对话块显示编辑 */}
+          {/* 悬停操作组：贴对话条下方右缘，裸图标无底板，仅已完成对话块显示编辑 */}
           {!isRunning && block.exitReason !== 'command' && (
             <div
               className="msg-actions"
