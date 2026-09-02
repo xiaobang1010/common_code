@@ -1,7 +1,5 @@
 import { forwardRef, useImperativeHandle, useState, useRef, useCallback, useEffect } from 'react'
 import type { ReactNode } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import Tabs from './editor/Tabs'
 import Breadcrumb from './editor/Breadcrumb'
 import CodeEditor from './editor/CodeEditor'
@@ -11,7 +9,7 @@ import SearchPanel from './sidebar/SearchPanel'
 import SummaryCard from './inspector/cards/SummaryCard'
 import ReviewCard from './inspector/cards/ReviewCard'
 import QuickOpen from './editor/QuickOpen'
-import { markdownComponents } from './ai/WorkBlock'
+import Markdown from './ai/Markdown'
 import { useChatStore } from '../stores/useChatStore'
 import { TOOL_META, type ToolId } from './editor/toolMeta'
 import { filesApi, type FileWriteError } from '../api/client'
@@ -810,9 +808,7 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
         <div style={{ flex: 1, overflow: 'hidden' }}>
           {isMarkdown && previewMode ? (
             <div style={{ height: '100%', overflow: 'auto', padding: '4px 16px 16px', fontSize: '13px', color: 'var(--text-primary)' }}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                {activeTab.bufferContent}
-              </ReactMarkdown>
+              <Markdown content={activeTab.bufferContent} />
             </div>
           ) : (
             <CodeEditor

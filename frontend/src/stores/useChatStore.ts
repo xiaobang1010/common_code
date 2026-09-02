@@ -571,7 +571,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         const data = await resp.json()
         if (data.is_skill) {
           // skill 触发：创建工作块。用户气泡显示「技能徽章 + 去掉 /name 前缀的
-          // 原始描述」（对齐 ZCode），技能正文经 skill_prompt 发到 /api/chat
+          // 原始描述」，技能正文经 skill_prompt 发到 /api/chat
           const blockId = createBlock(`Launching skill: ${data.skill_name}`)
           const taskText = prompt.replace(/^\/\S+\s*/, '').trim() || prompt
           updateBlock(blockId, b => ({ ...b, userMessage: taskText, skillName: data.skill_name }))

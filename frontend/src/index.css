@@ -1,3 +1,59 @@
+/* 层顺序声明：base（全局重置）< utilities（Tailwind 工具类）。
+   未分层规则永远压过层内规则，故全局重置必须入 base 层，
+   否则 * 的 margin/padding 清零会压过 streamdown 的 my-4 等间距类 */
+@layer theme, base, utilities;
+
+/* ============================================================
+ * Tailwind v4 模块化导入（streamdown 渲染依赖）：
+ * 只导 theme + utilities，跳过 preflight —— 全局基线由下方 base 层重置承担，
+ * 避免 Tailwind preflight 覆盖现有内联样式体系；utilities 进 layer，
+ * 未分层的项目样式优先级天然更高
+ * ============================================================ */
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+/* streamdown 动画关键帧与 KaTeX 公式字体（katex 由 @streamdown/math 依赖提供） */
+@import "streamdown/styles.css";
+@import "katex/dist/katex.min.css";
+
+/* 应用深色-only：html 常驻 .dark，激活 dark: 变体
+   （streamdown 代码块的深色配色经 dark:bg-[var(--shiki-dark-bg)] 等类切换） */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* node_modules 被 gitignore，需显式扫描 streamdown 产物里的 Tailwind 类；
+   四个插件包 dist 为 headless 逻辑不含类名，无需扫描 */
+@source "../node_modules/streamdown/dist/*.js";
+
+/* streamdown 组件树使用 shadcn 风格语义 token，这里映射到项目设计变量。
+   inline 模式让 utilities 直接引用项目变量：sidebar-lifted 等运行时作用域
+   覆盖仍然生效；圆角不在此映射——项目 :root 的 --radius-sm/md/lg 与
+   Tailwind 同名，utilities 引用 var(--radius-*) 时自然取到项目值 */
+@theme inline {
+  --color-background: var(--bg-primary);
+  --color-foreground: var(--text-primary);
+  --color-card: var(--bg-elevated);
+  --color-card-foreground: var(--text-primary);
+  --color-muted: var(--bg-tertiary);
+  --color-muted-foreground: var(--text-secondary);
+  --color-border: var(--border-strong);
+  --color-input: var(--border);
+  --color-primary: var(--accent);
+  --color-primary-foreground: #ffffff;
+  --color-sidebar: var(--bg-secondary);
+  --font-sans: var(--font-ui);
+}
+
+/* streamdown 容器内的 button（代码块复制按钮等）自带类不含背景/边框重置，
+   无 preflight 时 Chromium 原生按钮样式会露出，统一压平；重置入 base 层，
+   其 hover:bg-* 等 utilities 才能生效 */
+@layer base {
+  [data-streamdown] button {
+    background: transparent;
+    border: none;
+    color: inherit;
+  }
+}
+
 /* ============================================================
  * Common Code 设计系统
  * 美学方向：现代深色 VSCode 风（Dark Modern），全应用统一深色
@@ -118,10 +174,13 @@
   --border-subtle: #2e2e2e;
 }
 
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+/* 全局重置入 base 层：保持原重置效果，同时让 utilities 层的间距类可以覆盖它 */
+@layer base {
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
 }
 
 html, body {
@@ -168,24 +227,7 @@ body {
   background: var(--selection-bg);
 }
 
-/* 内容区链接 - 中性浅色 + 下划线，hover 提亮；长 URL 允许在任意字符处换行，不撑破限宽列 */
-.markdown-link {
-  color: var(--text-primary);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  text-decoration-color: var(--border-strong);
-  overflow-wrap: anywhere;
-}
-.markdown-link:hover {
-  color: #ffffff;
-  text-decoration-color: currentColor;
-}
-
-/* 流式输出时的闪烁光标 */
-@keyframes blink {
-  0%, 50% { opacity: 1; }
-  51%, 100% { opacity: 0; }
-}
+/* 流式输出光标由 streamdown 的 caret prop 提供，不再需要自定义闪烁动画 */
 
 /* AI 面板顶部光晕动画 */
 @keyframes pulse-glow {
@@ -244,7 +286,7 @@ body {
   z-index: 6;
 }
 
-/* 操作按钮：裸图标无底板（对齐 ZCode），悬停时才显浅色高亮
+/* 操作按钮：裸图标无底板，悬停时才显浅色高亮
    （底色走 CSS，内联样式会赢过 CSS 规则） */
 .msg-action-btn {
   background: transparent;

@@ -17,7 +17,7 @@ interface CapsuleCardProps {
 const MENU_TOOL_IDS: ToolId[] = ['summary', 'terminal', 'review']
 
 // 折叠焦点窗：>6 条时以第一个未完成项为中心开 3 条（无未完成靠尾），
-// 两端折成「前面/后面 N 项」（对齐 ZCode 的窗口规则在两态勾选上的退化形式）
+// 两端折成「前面/后面 N 项」
 function focusWindow(items: SpecCheckItem[]): { preceding: number; focus: SpecCheckItem[]; following: number } {
   if (items.length <= 6) return { preceding: 0, focus: items, following: 0 }
   let center = items.findIndex((it) => !it.done)
@@ -115,7 +115,7 @@ function jumpToSubagent(agentId: string) {
   }, 1200)
 }
 
-// 状态胶囊卡：收起态为活动摘要小胶囊（对齐 ZCode），
+// 状态胶囊卡：收起态为活动摘要小胶囊，
 // 点击展开为固定宽度完整卡：常驻「进展」「产物」区块、「智能体」未常驻区块、
 // 卡头 ··· 菜单与 ⤢ 收起钮。仍只在编辑区折叠时由 App 渲染（fixed 右上）。
 function CapsuleCard({ onOpenTool, sessionId }: CapsuleCardProps) {
@@ -164,7 +164,7 @@ function CapsuleCard({ onOpenTool, sessionId }: CapsuleCardProps) {
   const checks = specData?.checks
   const checksPassed = !!checks && checks.total > 0 && checks.done === checks.total
 
-  // ---- 收起态：活动摘要小胶囊（对齐 ZCode 的「→ 当前活动」形态），点击展开 ----
+  // ---- 收起态：活动摘要小胶囊，点击展开 ----
   if (!expanded) {
     // 进度与展开态卡头对齐：与概要卡共用 deriveProgress 口径（优先任务、回退验证），
     // 无 spec 时回退工作块数（同展开态卡头）；验收全勾时整体绿色
@@ -226,7 +226,7 @@ function CapsuleCard({ onOpenTool, sessionId }: CapsuleCardProps) {
         flexDirection: 'column',
         gap: '2px',
         padding: '8px',
-        // 展开态固定宽度（对齐 ZCode 卡片的视觉比例），不随内容伸缩；spec 条目长文本由行内截断兜底
+        // 展开态固定宽度，不随内容伸缩；spec 条目长文本由行内截断兜底
         width: '320px',
         boxSizing: 'border-box',
         borderRadius: 'var(--radius-lg)',
@@ -237,7 +237,7 @@ function CapsuleCard({ onOpenTool, sessionId }: CapsuleCardProps) {
         userSelect: 'none',
       }}
     >
-      {/* 卡头：「进展」+ 进度数字（对齐 ZCode 面板「进程 5/5」的标签+数字形态）
+      {/* 卡头：「进展」+ 进度数字（标签+数字形态）
           有 spec 点卡头展开 spec 清单，无 spec 点卡头跳概要 */}
       <div
         style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', padding: '5px 8px', margin: '0 -4px', marginBottom: '2px', cursor: 'pointer' }}
@@ -464,7 +464,7 @@ function CapsuleCard({ onOpenTool, sessionId }: CapsuleCardProps) {
         </div>
       )}
 
-      {/* 分组分隔线：进展组与产物组之间（对齐 ZCode 面板分组样式，左右与文字缘对齐） */}
+      {/* 分组分隔线：进展组与产物组之间（左右与文字缘对齐） */}
       <div style={{ height: '1px', backgroundColor: 'var(--border-subtle)', margin: '6px 4px', flexShrink: 0 }} />
 
       {/* 产物（常驻）：git 变更数，点击跳审查 */}
