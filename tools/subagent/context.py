@@ -35,10 +35,13 @@ class SubagentContext:
         tool_use_context: 隔离的工具执行上下文
         model: 解析后的模型名
         max_turns: 最大循环轮数
+        token_budget: 累计 token 预算（0/None 表示不限）
         is_async: 是否异步执行（后台运行）
         initial_messages: 子代理的初始消息列表（仅含 prompt）
         abort_event: 中断事件——同步子代理共享父的，异步子代理独立
         pending_messages: 待投递的消息队列（SendMessage 续接时入队）
+        on_activity: 活动上报回调（活性看门狗用，每条消息调用一次）
+        stop_reason: 显式停止原因（看门狗超时/主动停止），空串表示非显式停止
     """
 
     agent_id: str
@@ -47,11 +50,51 @@ class SubagentContext:
     tool_use_context: ToolUseContext
     model: str
     max_turns: int | None = None
+    token_budget: int | None = None
     is_async: bool = False
     initial_messages: list[dict] = field(default_factory=list)
     abort_event: asyncio.Event | None = None
     pending_messages: list[str] = field(default_factory=list)
     usage: dict[str, int] = field(default_factory=dict)
+    # 子会话 id（会话化绑定结果；空串表示无子会话的降级模式）
+    child_session_id: str = ""
+    on_activity: Any = None
+    stop_reason: str = ""
+
+
+# ---------------------------------------------------------------------------
+# build_subagent_system_prompt — 系统提示词组装（含 AGENTS.md 注入）
+# ---------------------------------------------------------------------------
+
+
+def build_subagent_system_prompt(agent_def: AgentDefinition) -> str:
+    """组装子代理系统提示词：定义提示词 + 工作区 AGENTS.md（按开关注入）。
+
+    inject_agents_md 为 True 时读取工作区根目录的 AGENTS.md 追加为工作规范段；
+    读取失败或文件不存在时静默跳过，不阻断派生。
+    """
+    base = agent_def.resolve_system_prompt()
+    if not agent_def.inject_agents_md:
+        return base
+    agents_md = _read_workspace_agents_md()
+    if not agents_md:
+        return base
+    return f"{base}\n\n# 工作区规范（AGENTS.md）\n\n{agents_md}"
+
+
+def _read_workspace_agents_md() -> str:
+    """读取工作区根目录的 AGENTS.md 内容，失败返回空串。"""
+    try:
+        from pathlib import Path
+
+        from server.paths import effective_root
+
+        path = Path(effective_root()) / "AGENTS.md"
+        if path.exists():
+            return path.read_text(encoding="utf-8", errors="replace").strip()
+    except Exception:
+        pass  # 工作区指针未就绪等场景静默跳过
+    return ""
 
 
 # ---------------------------------------------------------------------------

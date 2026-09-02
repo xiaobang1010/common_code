@@ -75,6 +75,67 @@ class Permissions:
 
 
 @dataclass
+class SubagentsConfig:
+    """子智能体执行底座配置。
+
+    全局配置中的 `subagents` 段，控制子代理的生命周期与预算默认值：
+        model_overrides: 按代理类型覆盖模型（如 {"Explore": "..."}）
+        default_model: 所有子代理的默认模型（空串表示继承主循环模型）
+        auto_background_ms: 前台子代理自动转后台阈值（毫秒，0=关闭）
+        inactivity_timeout_ms: 活性看门狗超时（毫秒，0=关闭）
+        max_turns_default: profile 未指定轮次上限时的默认值
+        token_budget_default: profile 未指定预算时的默认 token 预算（0=不限）
+    """
+
+    model_overrides: dict[str, str] = field(default_factory=dict)
+    default_model: str = ""
+    auto_background_ms: int = 60000
+    inactivity_timeout_ms: int = 300000
+    max_turns_default: int = 50
+    token_budget_default: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "modelOverrides": self.model_overrides,
+            "defaultModel": self.default_model,
+            "autoBackgroundMs": self.auto_background_ms,
+            "inactivityTimeoutMs": self.inactivity_timeout_ms,
+            "maxTurnsDefault": self.max_turns_default,
+            "tokenBudgetDefault": self.token_budget_default,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SubagentsConfig:
+        # 数值字段容错：非法值（非整数/负数）落默认，不让坏配置炸掉启动
+        overrides = data.get("modelOverrides", {})
+        if not isinstance(overrides, dict):
+            overrides = {}
+        return cls(
+            model_overrides={
+                str(k): str(v) for k, v in overrides.items() if v
+            },
+            default_model=str(data.get("defaultModel", "") or ""),
+            auto_background_ms=_non_negative_int(data.get("autoBackgroundMs"), 60000),
+            inactivity_timeout_ms=_non_negative_int(
+                data.get("inactivityTimeoutMs"), 300000
+            ),
+            max_turns_default=_non_negative_int(data.get("maxTurnsDefault"), 50),
+            token_budget_default=_non_negative_int(
+                data.get("tokenBudgetDefault"), 0
+            ),
+        )
+
+
+def _non_negative_int(value: Any, default: int) -> int:
+    """把配置值规整为非负整数，非法值回退默认。"""
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return default
+    return result if result >= 0 else default
+
+
+@dataclass
 class Settings:
     """完整设置结构。
 

@@ -1,9 +1,10 @@
 """SendMessage 工具 — 向子代理发消息续接。
 
 三路径分发：
-- running：消息入队 pending_messages，下一轮 tool 边界投递
-- stopped：从 transcript resume，追加 prompt 继续运行
-- evicted：从磁盘 transcript 恢复，重新运行
+- running：消息入队，短窗口内等注入确认——确认返回 delivered，
+  未确认返回 queued（下个安全点仍会注入）
+- stopped：从 transcript 后台 resume，返回 resumed_background
+- evicted：从磁盘 transcript 恢复，同 resume 路径
 """
 
 from __future__ import annotations
@@ -16,6 +17,9 @@ from pydantic import BaseModel
 from tools.protocol import Tool, ToolResult, ToolUseContext, build_tool
 
 logger = logging.getLogger(__name__)
+
+# delivered 判定的短窗口：入队后等待 runner 注入确认的最长时间
+DELIVERY_ACK_WINDOW_S = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -49,8 +53,8 @@ SEND_MESSAGE_PROMPT = """\
 - to 是子代理的 agent_id
 - summary 是 3-5 词的简短摘要
 - message 是完整消息内容
-- 如果子代理正在运行，消息会入队并在下一轮 tool 边界投递
-- 如果子代理已停止，会从 transcript 恢复上下文继续运行
+- 如果子代理正在运行，消息会入队并在下个轮次边界注入（返回 delivered/queued）
+- 如果子代理已停止，会在后台从 transcript 恢复上下文继续运行（resumed_background）
 """
 
 
@@ -67,16 +71,26 @@ async def _execute(inp: SendMessageInput, context: ToolUseContext) -> ToolResult
     agent_id = inp.to
     registry = get_subagent_registry()
 
-    # 路径 1：子代理正在运行 -> 入队
+    # 路径 1：子代理正在运行 → 入队 + 短窗口等注入确认
     if registry.get_status(agent_id) == "running":
         ok = registry.queue_pending_message(agent_id, inp.message)
         if ok:
+            delivery = await _await_delivery_ack(registry, agent_id)
             return ToolResult(
-                content=f"Message queued for delivery to {agent_id} at its next tool round.",
+                content=(
+                    f"Message {'delivered to' if delivery == 'delivered' else 'queued for'} "
+                    f"{agent_id}"
+                    + (
+                        "."
+                        if delivery == "delivered"
+                        else " — will be injected at its next turn boundary."
+                    )
+                ),
+                metadata={"agent_id": agent_id, "delivery": delivery},
             )
-        # 入队失败，降级到 resume
+        # 入队失败（状态竞态），降级到 resume 路径
 
-    # 路径 2 & 3：已停止或不在内存 → 从 transcript resume
+    # 路径 2 & 3：已停止或不在内存 → 从 transcript 后台 resume
     try:
         result = await resume_agent_background(
             agent_id=agent_id,
@@ -85,7 +99,7 @@ async def _execute(inp: SendMessageInput, context: ToolUseContext) -> ToolResult
         )
         return ToolResult(
             content=result or f"Agent {agent_id} resumed with no output.",
-            metadata={"agent_id": agent_id, "status": "resumed"},
+            metadata={"agent_id": agent_id, "delivery": "resumed_background"},
         )
     except RuntimeError as e:
         # transcript 不存在
@@ -98,6 +112,22 @@ async def _execute(inp: SendMessageInput, context: ToolUseContext) -> ToolResult
             content=f"Failed to resume agent {agent_id}: {e}",
             is_error=True,
         )
+
+
+async def _await_delivery_ack(registry, agent_id: str) -> str:
+    """短窗口等待注入确认：队列被 runner 清空即 delivered，超时返回 queued。
+
+    注入由 runner 在轮次边界完成；无论返回哪个状态消息最终都会被注入，
+    两态只是把「是否已进对话」的确定性告知调用方。
+    """
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + DELIVERY_ACK_WINDOW_S
+    while loop.time() < deadline:
+        ctx = registry.get_ctx(agent_id)
+        if ctx is None or not ctx.pending_messages:
+            return "delivered"
+        await asyncio.sleep(0.05)
+    return "queued"
 
 
 # ---------------------------------------------------------------------------

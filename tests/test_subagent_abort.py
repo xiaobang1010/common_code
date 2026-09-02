@@ -118,7 +118,7 @@ async def test_agent_tool_result_includes_usage_tail(patched_pipeline):
 
 @pytest.mark.asyncio
 async def test_agent_tool_cancel_records_aborted(patched_pipeline):
-    """父任务 cancel（CancelledError）传导时，注册表记 aborted 且异常继续上抛。"""
+    """运行被取消（CancelledError）时驱动任务记 aborted，工具返回错误结果。"""
     from tools.subagent import agent_tool
     from tools.subagent.registry import STATUS_ABORTED, get_subagent_registry
 
@@ -133,10 +133,12 @@ async def test_agent_tool_cancel_records_aborted(patched_pipeline):
         "tools.subagent.runner.run_agent", fake_run_agent
     )
 
-    with pytest.raises(asyncio.CancelledError):
-        await agent_tool._execute(
-            agent_tool.AgentInput(description="测试", prompt="任务"), context
-        )
+    # 生命周期引擎内部捕获取消并记终态，工具收到 aborted 结果（不外抛）
+    result = await agent_tool._execute(
+        agent_tool.AgentInput(description="测试", prompt="任务"), context
+    )
+    assert result.is_error is True
+    assert result.metadata["status"] == "aborted"
 
     # 注册表里最新的前台任务状态为 aborted
     reg = get_subagent_registry()

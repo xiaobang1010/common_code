@@ -102,6 +102,59 @@ def set_config(body: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# GET/POST /api/config/subagents - 子智能体执行底座配置
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/config/subagents")
+def get_subagents_config() -> dict:
+    """读取全局配置 subagents 段（camelCase 键，与前端约定一致）。"""
+    try:
+        return {"ok": True, "subagents": get_global_config().subagents.to_dict()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.post("/api/config/subagents")
+def set_subagents_config(body: dict) -> dict:
+    """写入全局配置 subagents 段（部分更新，含数值校验）。
+
+    请求体键（均可选）：modelOverrides / defaultModel / autoBackgroundMs /
+    inactivityTimeoutMs / maxTurnsDefault / tokenBudgetDefault。
+    数值字段必须为非负整数，模型覆盖必须为字符串映射，否则 400。
+    """
+    from startup.config.types import SubagentsConfig
+
+    try:
+        config = get_global_config()
+        current = config.subagents.to_dict()
+        merged = {**current, **{k: v for k, v in body.items() if k in current}}
+
+        overrides = merged.get("modelOverrides", {})
+        if not isinstance(overrides, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in overrides.items()
+        ):
+            return {"ok": False, "error": "modelOverrides 必须是字符串到字符串的映射"}
+        for key in (
+            "autoBackgroundMs",
+            "inactivityTimeoutMs",
+            "maxTurnsDefault",
+            "tokenBudgetDefault",
+        ):
+            value = merged.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                return {"ok": False, "error": f"{key} 必须为非负整数"}
+        if not isinstance(merged.get("defaultModel", ""), str):
+            return {"ok": False, "error": "defaultModel 必须为字符串"}
+
+        config.subagents = SubagentsConfig.from_dict(merged)
+        save_global_config(config)
+        return {"ok": True, "subagents": config.subagents.to_dict()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
 # GET /api/llm-providers - 列出自定义 LLM 供应商
 # ---------------------------------------------------------------------------
 

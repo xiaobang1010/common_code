@@ -37,6 +37,7 @@ class QueryEngineConfig:
         tools: 可用工具列表
         system_prompt_sections: 系统提示词段落
         max_turns: 最大轮次（None 表示不限）
+        token_budget: 累计 token 预算（None 或 0 表示不限）；超限当轮优雅停止
         permission_check: 工具调用前的权限检查回调，None 表示跳过权限检查
         permission_prompt: 权限确认弹窗回调，当 permission_check 返回 ask 决策时调用。
             签名 (tool_name, tool_input, reason) -> "allow"|"deny"|"always_allow"，None 表示无弹窗
@@ -55,6 +56,7 @@ class QueryEngineConfig:
     tools: list[Any] = field(default_factory=get_tools)
     system_prompt_sections: list[Any] = field(default_factory=list)
     max_turns: int | None = None
+    token_budget: int | None = None
     permission_check: Callable | None = None
     permission_prompt: Callable | None = None
     question_prompt: Callable | None = None

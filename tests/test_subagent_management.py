@@ -297,4 +297,4 @@ async def test_send_message_stopped_subagent_resumes(registry, monkeypatch):
         ToolUseContext(),
     )
     assert result.content == "resumed:继续"
-    assert result.metadata["status"] == "resumed"
+    assert result.metadata["delivery"] == "resumed_background"
