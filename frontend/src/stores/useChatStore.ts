@@ -54,9 +54,16 @@ export interface TokenUsage {
   output_tokens: number
   cache_read_input_tokens: number
   cache_creation_input_tokens: number
+  // 累计实际发送的输入 token 总量（缓存命中率分母，协议无关口径）
+  total_input_tokens: number
   last_prompt_tokens: number
   last_cache_creation: number
 }
+
+// 上下文分类 token 估算：{分类名: token 数, total: 总数}，
+// 分类名为 system_tools / mcp_tools / skills / system_prompt / messages / other，
+// 由后端 context_metrics 生成，占比为 0 的分类不出现
+export type ContextBreakdown = Record<string, number>
 
 // 权限请求
 export interface PermissionRequest {
@@ -88,6 +95,8 @@ interface SSEEvent {
     prompt_tokens: number
     completion_tokens: number
   }
+  // 上下文分类估算（event_type === 'context_breakdown' 时）
+  breakdown?: Record<string, number>
   error?: string
   finish_reason?: string
   tool_call_id?: string
@@ -146,6 +155,8 @@ interface ChatState {
   isStreaming: boolean
   sessionId: string | null
   tokenUsage: TokenUsage
+  // 最近一次请求的上下文分类估算（null 表示尚未收到数据）
+  contextBreakdown: ContextBreakdown | null
   totalCost: number
   model: string
   permissionRequest: PermissionRequest | null
@@ -249,6 +260,12 @@ export const useChatStore = create<ChatState>((set, get) => {
     // 会话元信息（后端自动建会话回传）：更新会话 ID，不依赖 block 存在
     if (evt.type === 'session_meta' && evt.session_id) {
       setSessionId(evt.session_id)
+      return
+    }
+    // 上下文分类估算：直接刷新面板数据，同样不依赖 block 存在，
+    // 必须放在 blockId 早退守卫之前，否则无工作块场景下事件被静默丢弃
+    if (evt.type === 'stream' && evt.event_type === 'context_breakdown' && evt.breakdown) {
+      set({ contextBreakdown: evt.breakdown })
       return
     }
     const blockId = currentBlockId.current
@@ -485,6 +502,8 @@ export const useChatStore = create<ChatState>((set, get) => {
       const resp = await fetch('/api/state')
       const data = await resp.json()
       if (data.token_usage) set({ tokenUsage: data.token_usage })
+      // 上下文分类估算：重进会话时经 state 恢复面板数据
+      if (data.context_breakdown) set({ contextBreakdown: data.context_breakdown })
       if (typeof data.total_cost_usd === 'number') set({ totalCost: data.total_cost_usd })
       if (data.model) set({ model: data.model })
       if (data.permission_mode === 'default' || data.permission_mode === 'full_access') {
@@ -948,9 +967,11 @@ export const useChatStore = create<ChatState>((set, get) => {
       output_tokens: 0,
       cache_read_input_tokens: 0,
       cache_creation_input_tokens: 0,
+      total_input_tokens: 0,
       last_prompt_tokens: 0,
       last_cache_creation: 0,
     },
+    contextBreakdown: null,
     totalCost: 0,
     model: '',
     permissionRequest: null,

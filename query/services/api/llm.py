@@ -40,6 +40,7 @@ class StreamEvent:
             - "tool_call": 完整工具调用
             - "tool_call_delta": 工具调用增量
             - "usage": token 使用量
+            - "context_breakdown": 上下文分类 token 估算（query_loop 发出）
             - "error": 错误
             - "done": 流结束
         content: 文本内容（type="content" 或 type="reasoning" 时）
@@ -49,6 +50,9 @@ class StreamEvent:
         usage: token 使用量字典
         error: 错误对象
         finish_reason: 结束原因（type="done" 时）
+        breakdown: 上下文分类估算（type="context_breakdown" 时），
+            结构为 {分类名: token 数, "total": 总数}，
+            生成逻辑见 query/services/context_metrics.py
     """
 
     type: str
@@ -60,6 +64,7 @@ class StreamEvent:
     usage: dict | None = None
     error: Exception | None = None
     finish_reason: str | None = None
+    breakdown: dict | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +299,14 @@ def parse_stream_chunk(chunk: Any) -> list[StreamEvent]:
                 cache_miss = usage.get("prompt_cache_miss_tokens")
             if cache_miss and cache_miss > 0:
                 usage_dict["cache_creation_input_tokens"] = cache_miss
+
+        # 本次请求实际发送的输入 token 总量，供缓存命中率做分母。
+        # OpenAI 兼容协议（含 DeepSeek/阿里等）的 prompt_tokens 已包含命中/未命中的
+        # 缓存部分，缓存字段是其子集，故总输入直接取 prompt_tokens——不能再叠加，
+        # 否则分母翻倍、命中率显示成真实值的一半
+        prompt_tokens = usage_dict.get("prompt_tokens")
+        if prompt_tokens is not None:
+            usage_dict["total_input_tokens"] = prompt_tokens
 
         # 只在有真实数据时生成 usage 事件（过滤掉全 0 的占位 usage）
         if usage_dict and any(v > 0 for v in usage_dict.values() if isinstance(v, int)):

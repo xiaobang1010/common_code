@@ -59,11 +59,15 @@ async def get_state() -> dict:
             "output_tokens": usage.output_tokens,
             "cache_read_input_tokens": usage.cache_read_input_tokens,
             "cache_creation_input_tokens": usage.cache_creation_input_tokens,
+            # 累计实际发送的输入 token 总量（缓存命中率分母）
+            "total_input_tokens": usage.total_input_tokens,
             # 当前上下文大小（最近一次请求的 prompt_tokens，覆盖不累加）
             "last_prompt_tokens": usage.last_prompt_tokens,
             # 已缓存大小（最近一次请求的 cache_creation_input_tokens，覆盖不累加）
             "last_cache_creation": usage.last_cache_creation,
         },
+        # 最近一次请求的上下文分类 token 估算（覆盖不累加），供「上下文容量」面板
+        "context_breakdown": state.context_breakdown,
         "total_cost_usd": state.total_cost_usd,
         "permission_mode": get_permission_mode(),
     }
@@ -90,6 +94,9 @@ def serialize_event(event: Any) -> dict:
             result["content"] = event.content
         if event.usage is not None:
             result["usage"] = event.usage
+        # 上下文分类估算（event_type="context_breakdown"），前端面板实时刷新用
+        if event.breakdown is not None:
+            result["breakdown"] = event.breakdown
         if event.error is not None:
             result["error"] = str(event.error)
         if event.finish_reason is not None:
@@ -309,10 +316,18 @@ async def chat_event_stream(
                         state.token_usage.output_tokens += completion_tokens
                         state.token_usage.cache_read_input_tokens += cache_read
                         state.token_usage.cache_creation_input_tokens += cache_creation
+                        # 命中率分母用协议正确的总输入；缺字段时回退 prompt_tokens
+                        state.token_usage.total_input_tokens += ev.usage.get(
+                            "total_input_tokens", prompt_tokens
+                        )
                         state.token_usage.last_prompt_tokens = prompt_tokens
                         state.token_usage.last_cache_creation = cache_creation
                         cost = calculate_cost(state.model or "", ev.usage)
                         state.total_cost_usd += cost
+                    # 拦截上下文分类估算事件，写入 AppState（覆盖不累加，
+                    # 与 last_prompt_tokens 同口径：反映最近一次请求的上下文构成）
+                    elif isinstance(ev, StreamEvent) and ev.type == "context_breakdown" and ev.breakdown:
+                        app_state.get_state().context_breakdown = ev.breakdown
                     dispatch(ev)
             finally:
                 server.state.workspace_var.reset(token)

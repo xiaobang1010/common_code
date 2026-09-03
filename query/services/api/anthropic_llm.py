@@ -29,6 +29,12 @@ _ANTHROPIC_VERSION = "2023-06-01"
 # 默认最大输出 token 数（Anthropic 要求必须指定 max_tokens）
 _DEFAULT_MAX_TOKENS = 32768
 
+# 单请求 cache_control 断点上限（Anthropic 协议限制，超出会被服务端拒绝）
+_MAX_CACHE_BREAKPOINTS = 4
+
+# ephemeral 缓存断点标记（默认 5 分钟 TTL，1 小时扩展 TTL 不在本次范围）
+_EPHEMERAL_BREAKPOINT: dict[str, str] = {"type": "ephemeral"}
+
 # OpenAI 特有的参数，不传给 Anthropic
 _OPENAI_ONLY_KEYS = frozenset({
     "stream_options",
@@ -98,7 +104,7 @@ async def query_model_with_streaming_anthropic(
 
     # 2. 构建消息（先转成 OpenAI dict，再转成 Anthropic 格式）
     openai_messages = _build_openai_messages(messages)
-    system_prompt, anthropic_messages = _to_anthropic_messages(openai_messages)
+    system_blocks, anthropic_messages = _to_anthropic_messages(openai_messages)
 
     # 3. 构建请求体
     max_tokens = kwargs.pop("max_tokens", _DEFAULT_MAX_TOKENS)
@@ -108,8 +114,8 @@ async def query_model_with_streaming_anthropic(
         "messages": anthropic_messages,
         "stream": True,
     }
-    if system_prompt:
-        payload["system"] = system_prompt
+    if system_blocks:
+        payload["system"] = system_blocks
 
     # 4. 构建工具列表
     if tools:
@@ -120,6 +126,11 @@ async def query_model_with_streaming_anthropic(
 
     # 5. 合并其他参数（过滤 OpenAI 特有的）
     _merge_kwargs(payload, kwargs)
+
+    # 5.5 挂提示词缓存断点（在最终请求体上计算，与实发内容一致；
+    #     压缩/截断导致的消息变化不会让断点漂移）
+    from startup.config import get_global_config
+    _attach_cache_breakpoints(payload, get_global_config().prompt_cache_enabled)
 
     # 6. 构建请求头和 URL
     headers = _build_headers(api_key)
@@ -260,19 +271,21 @@ def _build_openai_messages(messages: list[Any]) -> list[dict[str, Any]]:
 
 def _to_anthropic_messages(
     openai_messages: list[dict[str, Any]],
-) -> tuple[str | None, list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]]]:
     """将 OpenAI 格式消息转换为 Anthropic 格式。
 
     Anthropic 和 OpenAI 的消息格式主要差异：
-    - system 消息在 Anthropic 中单独放在 system 字段，不在 messages 数组里
+    - system 消息在 Anthropic 中单独放在 system 字段，不在 messages 数组里；
+      这里逐条映射为 content block 数组（保留段边界），供缓存断点标记定位——
+      不再合并成纯字符串，否则静态/动态段的区分信息在序列化时丢失
     - 工具调用在 Anthropic 中是 content block（tool_use），不是顶层字段
     - 工具结果在 Anthropic 中是 user 消息里的 tool_result content block
     - 连续多条 tool 结果消息要合并到一个 user 消息里
 
     Returns:
-        (system_prompt, anthropic_messages)
+        (system_blocks, anthropic_messages)，system_blocks 为 None 表示无 system 内容
     """
-    system_parts: list[str] = []
+    system_blocks: list[dict[str, Any]] = []
     anthropic_messages: list[dict[str, Any]] = []
 
     i = 0
@@ -282,9 +295,11 @@ def _to_anthropic_messages(
         content = msg.get("content")
 
         if role == "system":
-            # system 消息提取出来，拼到 system 字段
+            # system 消息逐条转为 text block。约定：第一条 block 即静态合并段
+            # （build_system_messages 把 cache_scope 为 static/global 的段合并后放最前）。
+            # 子代理请求的段全部是动态段，此时第一条仍是其稳定提示词，断点依旧有效
             if content:
-                system_parts.append(str(content))
+                system_blocks.append({"type": "text", "text": str(content)})
             i += 1
 
         elif role == "user":
@@ -346,8 +361,87 @@ def _to_anthropic_messages(
             # 未知角色，跳过
             i += 1
 
-    system = "\n\n".join(system_parts) if system_parts else None
-    return system, anthropic_messages
+    return (system_blocks or None), anthropic_messages
+
+
+# ---------------------------------------------------------------------------
+# 提示词缓存断点
+# ---------------------------------------------------------------------------
+
+
+def _count_existing_breakpoints(payload: dict[str, Any]) -> int:
+    """统计请求体中已存在的 cache_control 断点数（system blocks + messages blocks）。"""
+    count = 0
+    system = payload.get("system")
+    if isinstance(system, list):
+        count += sum(1 for b in system if isinstance(b, dict) and "cache_control" in b)
+    messages = payload.get("messages")
+    if isinstance(messages, list):
+        for msg in messages:
+            content = msg.get("content") if isinstance(msg, dict) else None
+            if isinstance(content, list):
+                count += sum(
+                    1 for b in content if isinstance(b, dict) and "cache_control" in b
+                )
+    return count
+
+
+def _attach_cache_breakpoints(payload: dict[str, Any], enabled: bool) -> int:
+    """在最终请求体上挂 cache_control 断点，返回挂完后请求体内的断点总数。
+
+    断点策略（共 2 个，覆盖主流客户端做法）：
+    1. system 第一条 block（静态合并段）挂断点：缓存 tools+静态前缀。
+       Anthropic 缓存顺序为 tools -> system -> messages，
+       故 tools 不单独挂断点，system 段断点已隐式覆盖 tools。
+    2. messages 最后一条消息的最后一个 content block 挂滚动断点：
+       缓存到本轮为止的全部前缀（tools+system+历史），下一轮直接命中。
+
+    断点总数超过 _MAX_CACHE_BREAKPOINTS 时跳过后续并记 warning；
+    enabled=False（prompt_cache_enabled 关闭）时不挂任何标记，行为回退原样。
+    """
+    if not enabled:
+        logger.debug("prompt_cache_enabled 关闭，本次请求不挂 cache_control 断点")
+        return 0
+
+    # 已有断点也计入预算（防御未来在 tools 等处单独挂断点的扩展）
+    count = _count_existing_breakpoints(payload)
+
+    # 断点 1：system 静态段（第一条 block）
+    system = payload.get("system")
+    if isinstance(system, list) and system:
+        if count >= _MAX_CACHE_BREAKPOINTS:
+            logger.warning("cache 断点数已达上限 %d，system 静态段断点被跳过", _MAX_CACHE_BREAKPOINTS)
+        else:
+            system[0]["cache_control"] = dict(_EPHEMERAL_BREAKPOINT)
+            count += 1
+
+    # 断点 2：最后一条消息的最后一个 content block
+    messages = payload.get("messages")
+    if isinstance(messages, list) and messages:
+        last = messages[-1]
+        content = last.get("content")
+        blocks: list[dict[str, Any]] | None = None
+        converted = False
+        if isinstance(content, str) and content:
+            blocks = [{"type": "text", "text": content}]
+            converted = True
+        elif isinstance(content, list) and content:
+            blocks = content
+        if blocks:
+            if count >= _MAX_CACHE_BREAKPOINTS:
+                logger.warning(
+                    "cache 断点数已达上限 %d，消息尾部滚动断点被跳过",
+                    _MAX_CACHE_BREAKPOINTS,
+                )
+            else:
+                # 字符串 content 转 block 数组仅在确定要挂断点时改写
+                if converted:
+                    last["content"] = blocks
+                blocks[-1]["cache_control"] = dict(_EPHEMERAL_BREAKPOINT)
+                count += 1
+
+    logger.debug("prompt cache 断点组装完成：enabled=True，请求内断点总数=%d", count)
+    return count
 
 
 # ---------------------------------------------------------------------------
@@ -636,6 +730,14 @@ def _convert_anthropic_usage(usage: dict[str, Any]) -> dict[str, Any]:
     cache_creation = usage.get("cache_creation_input_tokens")
     if cache_creation and cache_creation > 0:
         result["cache_creation_input_tokens"] = cache_creation
+
+    # 本次请求实际发送的输入 token 总量，供缓存命中率做分母。
+    # Anthropic 的 input_tokens 不含缓存部分，需把 read/creation 加回来
+    result["total_input_tokens"] = (
+        (input_tokens or 0)
+        + (cache_read or 0)
+        + (cache_creation or 0)
+    )
 
     return result
 
