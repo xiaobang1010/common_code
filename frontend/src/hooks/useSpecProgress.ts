@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { subscribeFileEventsDebounced } from '../api/fileEvents'
 import { useWorkspaceSignal } from '../stores/useWorkspaceSignal'
 
 // 单条清单项：tasks.md / checklist.md 里的一行勾选项
@@ -68,17 +69,11 @@ export function useSpecProgress(sessionId: string | null): { data: SpecProgressD
     // 切换会话/工作区先清数据：重取完成前不显示上一个会话的进展
     setData(null)
     void refresh(sessionId)
-    const es = new EventSource('/api/files/events')
-    es.onopen = () => void refresh(sessionId)
-    es.onmessage = (e) => {
-      try {
-        const evt = JSON.parse(e.data)
-        if (evt.type === 'file_changed') void refresh(sessionId)
-      } catch {
-        // 忽略无法解析的事件
-      }
-    }
-    return () => es.close()
+    // 文件变更事件到达时即时重取（防抖合并连续写盘）；断线重连成功时兜底刷新一次
+    const unsubscribe = subscribeFileEventsDebounced(() => void refresh(sessionId), {
+      onOpen: () => void refresh(sessionId),
+    })
+    return () => unsubscribe()
   }, [refresh, sessionId, workspacePath])
 
   return { data }

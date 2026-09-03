@@ -1,5 +1,6 @@
 import { forwardRef, useImperativeHandle, useState, useRef, useCallback, useEffect } from 'react'
 import type { ReactNode } from 'react'
+import { subscribeFileEvents } from '../api/fileEvents'
 import Tabs from './editor/Tabs'
 import Breadcrumb from './editor/Breadcrumb'
 import CodeEditor from './editor/CodeEditor'
@@ -681,22 +682,16 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
       return () => window.removeEventListener('keydown', handler)
     }, [])
 
-    // 订阅文件变更事件：AI 写盘后把打开的对应 tab 标记为过期
-    useEffect(() => {
-      const es = new EventSource('/api/files/events')
-      es.onmessage = (e) => {
-        try {
-          const data = JSON.parse(e.data)
-          if (data.type === 'file_changed') {
-            const path = data.path as string
-            updateTabs((prev) => prev.map((t) => (t.path === path ? { ...t, stale: true } : t)))
-          }
-        } catch {
-          // 忽略无法解析的事件
-        }
-      }
-      return () => es.close()
-    }, [updateTabs])
+    // 订阅文件变更事件：AI 写盘后把打开的对应 tab 标记为过期。
+    // 必须逐条精确匹配 path，不做防抖——连续改动同一文件时每条都要标到
+    useEffect(
+      () =>
+        subscribeFileEvents((evt) => {
+          if (evt.type !== 'file_changed') return
+          updateTabs((prev) => prev.map((t) => (t.path === evt.path ? { ...t, stale: true } : t)))
+        }),
+      [updateTabs],
+    )
 
     const activeTab = openTabs.find((t) => t.path === activePath)
     const pendingCloseName = pendingClose ? openTabs.find((t) => t.path === pendingClose)?.name : ''

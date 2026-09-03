@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { filesApi } from '../../api/client'
+import { subscribeFileEventsDebounced } from '../../api/fileEvents'
+import { useWorkspaceSignal } from '../../stores/useWorkspaceSignal'
 import { dedupeChanges, useGitStatus } from '../inspector/useGitStatus'
 
 // 文件列表接口返回的单项
@@ -333,20 +335,30 @@ function FileTree({ onFileOpen, activePath, onPinFile, workspaceName }: FileTree
     }
   }, [filter, showChangedOnly, changedPaths, refreshTick])
 
+  // 请求代号：每次发起递增，响应回来对不上号说明已发出更新的请求（如事件风暴
+  // 期间叠加工作区快速切换），过期响应直接丢弃，避免旧数据覆盖新数据
+  const genRef = useRef(0)
+
   const loadRoot = useCallback(async () => {
+    const gen = ++genRef.current
     setRefreshing(true)
     try {
       const res = await fetch('/api/files/list?path=.')
       const data = await res.json()
+      if (gen !== genRef.current) return
       setRootItems(data.items || [])
       setError('')
     } catch (e) {
       // 刷新失败保留上次数据，仅记录错误供轻量提示；首开失败才显示全量错误块
+      if (gen !== genRef.current) return
       setError('加载失败')
       console.error(e)
     } finally {
-      setLoading(false)
-      setRefreshing(false)
+      // 只有最新一次请求有权收尾，避免旧请求把新请求的 refreshing 提前掐灭
+      if (gen === genRef.current) {
+        setLoading(false)
+        setRefreshing(false)
+      }
     }
   }, [])
 
@@ -357,25 +369,25 @@ function FileTree({ onFileOpen, activePath, onPinFile, workspaceName }: FileTree
     void loadRoot()
   }, [loadRoot])
 
-  useEffect(() => {
-    loadRoot()
-  }, [loadRoot])
+  // 当前工作区路径信号：首次挂载与切换工作区共用一条重取链路。切换时先清数据，
+  // 重取完成前不闪现上一个工作区的树（对齐 useGitStatus 的先清后取模式）
+  const workspacePath = useWorkspaceSignal((s) => s.currentPath)
 
-  // 订阅文件变更事件：AI 写盘后刷新文件树；断线重连时也刷新一次兜底
   useEffect(() => {
-    const es = new EventSource('/api/files/events')
-    const refresh = () => void loadRoot()
-    es.onopen = refresh
-    es.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data)
-        if (data.type === 'file_changed') refresh()
-      } catch {
-        // 忽略无法解析的事件
-      }
-    }
-    return () => es.close()
-  }, [loadRoot])
+    setRootItems([])
+    setLoading(true)
+    void loadRoot()
+  }, [loadRoot, workspacePath])
+
+  // 订阅文件变更事件：AI 写盘后刷新文件树（防抖合并连续写盘的风暴）；
+  // 断线重连成功时也立即刷新一次兜底
+  useEffect(
+    () =>
+      subscribeFileEventsDebounced(() => void loadRoot(), {
+        onOpen: () => void loadRoot(),
+      }),
+    [loadRoot],
+  )
 
   // 新建文件/目录：弹出内联输入框
   const startCreate = (type: 'file' | 'dir') => {

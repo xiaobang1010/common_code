@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { subscribeFileEventsDebounced } from '../../api/fileEvents'
 import { useWorkspaceSignal } from '../../stores/useWorkspaceSignal'
 
 // git 变更项（含行数统计，由 /api/git/status 返回）
@@ -63,20 +64,12 @@ export function useGitStatus(): { data: GitStatusData | null; refresh: () => voi
     void refresh()
     const timer = setInterval(() => void refresh(), 10000)
 
-    // 文件变更事件到达时即时刷新 git 状态，不必被动等 10 秒轮询
-    const es = new EventSource('/api/files/events')
-    es.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data)
-        if (data.type === 'file_changed') void refresh()
-      } catch {
-        // 忽略无法解析的事件
-      }
-    }
+    // 文件变更事件到达时即时刷新 git 状态（防抖合并连续写盘），不必被动等 10 秒轮询
+    const unsubscribe = subscribeFileEventsDebounced(() => void refresh())
 
     return () => {
       clearInterval(timer)
-      es.close()
+      unsubscribe()
     }
   }, [refresh, workspacePath])
 
