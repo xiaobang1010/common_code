@@ -103,7 +103,16 @@ function FileRow({
   const dir = change.path.includes('/') ? change.path.slice(0, change.path.lastIndexOf('/') + 1) : ''
 
   return (
-    <div>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        flexShrink: 0,
+        // 展开时吃掉列表剩余高度，让差异区铺满面板；收起时保持行高
+        flexGrow: expanded ? 1 : 0,
+        minHeight: 0,
+      }}
+    >
       <div
         onClick={onToggle}
         data-testid="review-file-row"
@@ -157,9 +166,9 @@ function FileRow({
         <Chevron expanded={expanded} />
       </div>
 
-      {/* 行内展开的差异区：一次只挂载当前展开的文件 */}
+      {/* 行内展开的差异区：一次只挂载当前展开的文件；包装层透传 flex 让 DiffView 撑满剩余高度 */}
       {expanded && (
-        <div data-testid="review-inline-diff-wrap">
+        <div data-testid="review-inline-diff-wrap" style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
           <DiffView path={change.path} sideBySide={sideBySide} />
         </div>
       )}
@@ -260,8 +269,8 @@ function ReviewCard() {
         </button>
       </div>
 
-      {/* 变更文件列表 */}
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '4px 0' }}>
+      {/* 变更文件列表：flex 纵向布局，让展开行的差异区能吃掉剩余高度 */}
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '4px 0', display: 'flex', flexDirection: 'column' }}>
         {changes.length === 0 ? (
           <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', padding: '4px 12px' }}>
             暂无待审查变更

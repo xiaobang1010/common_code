@@ -78,7 +78,14 @@ function DiffView({ path, sideBySide }: DiffViewProps) {
   return (
     <div
       data-testid="review-inline-diff"
-      style={{ display: 'flex', flexDirection: 'column', height: '380px', borderTop: '1px solid var(--border)' }}
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        // 弹性填充：吃掉面板剩余高度；列表很长需要滚动时收缩到 240px 下限
+        flex: 1,
+        minHeight: '240px',
+        borderTop: '1px solid var(--border)',
+      }}
     >
       {/* 内容区：加载中 / 占位提示 / 对比编辑器 */}
       {!result && !loadError ? (
@@ -107,7 +114,8 @@ function DiffView({ path, sideBySide }: DiffViewProps) {
             fontSize: 13,
             scrollBeyondLastLine: false,
             automaticLayout: true,
-            renderOverviewRuler: false,
+            // 右侧差异定位轨道：绿=新增 红=删除 蓝灰=修改，点击可跳转到对应差异
+            renderOverviewRuler: true,
             diffWordWrap: 'off',
           }}
         />
