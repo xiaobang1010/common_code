@@ -6,10 +6,14 @@
 
 from __future__ import annotations
 
-import json
 import os
 import time
 from dataclasses import dataclass, field
+
+# 粗略 token 估算统一收口到 query.utils.tokens，原私有名保留别名
+from query.utils.tokens import estimate_tokens_for_messages
+
+_estimate_tokens_for_messages = estimate_tokens_for_messages
 
 
 # ---------------------------------------------------------------------------
@@ -21,9 +25,6 @@ MAX_CONSECUTIVE_FAILURES = 3
 
 # 缓冲 token 数：在 context_window 基础上预留的空间
 AUTOCOMPACT_BUFFER_TOKENS = 13_000
-
-# 粗略 token 估算参数
-BYTES_PER_TOKEN = 4
 
 
 # ---------------------------------------------------------------------------
@@ -61,19 +62,6 @@ class CompactTracking:
     consecutive_failures: int = 0
     total_failures: int = 0
     last_compact_time: float | None = None
-
-
-# ---------------------------------------------------------------------------
-# Token 估算
-# ---------------------------------------------------------------------------
-
-
-def _estimate_tokens_for_messages(messages: list[dict]) -> int:
-    """粗略估算消息列表的 token 数。"""
-    total_chars = 0
-    for msg in messages:
-        total_chars += len(json.dumps(msg, ensure_ascii=False))
-    return max(1, total_chars // BYTES_PER_TOKEN)
 
 
 # ---------------------------------------------------------------------------

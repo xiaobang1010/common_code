@@ -6,27 +6,11 @@
 
 from __future__ import annotations
 
-import json
+# 粗略 token 估算统一收口到 query.utils.tokens，原私有名保留别名
+from query.utils.tokens import estimate_tokens, estimate_tokens_for_messages
 
-
-# ---------------------------------------------------------------------------
-# 粗略 token 估算
-# ---------------------------------------------------------------------------
-
-BYTES_PER_TOKEN = 4
-
-
-def _estimate_tokens(text: str) -> int:
-    """粗略估算文本的 token 数。"""
-    return max(1, len(text) // BYTES_PER_TOKEN)
-
-
-def _estimate_tokens_for_messages(messages: list[dict]) -> int:
-    """粗略估算消息列表的 token 数。"""
-    total_chars = 0
-    for msg in messages:
-        total_chars += len(json.dumps(msg, ensure_ascii=False))
-    return max(1, total_chars // BYTES_PER_TOKEN)
+_estimate_tokens = estimate_tokens
+_estimate_tokens_for_messages = estimate_tokens_for_messages
 
 
 # ---------------------------------------------------------------------------

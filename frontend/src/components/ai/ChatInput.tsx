@@ -27,6 +27,24 @@ interface Props {
   currentTaskSessionId: string | null
 }
 
+// 「上下文容量」面板的分类中文名与色点颜色。
+// 行顺序按 token 数降序动态排，这里只定义展示名与配色
+const CONTEXT_CATEGORY_META: Record<string, { label: string; color: string }> = {
+  mcp_tools: { label: 'MCP 工具', color: '#5b9dff' },
+  system_tools: { label: '系统工具', color: '#4585e6' },
+  skills: { label: '技能', color: '#3a6fc4' },
+  system_prompt: { label: '系统提示词', color: '#315da6' },
+  other: { label: '其他', color: '#2a4d8a' },
+  messages: { label: '消息', color: '#233f70' },
+}
+
+// 数字按万单位格式化：33000 -> 「3.3万」，1000000 -> 「100万」，不足万保持原值
+function formatWan(n: number): string {
+  if (n < 10000) return String(n)
+  const wan = n / 10000
+  return `${wan >= 100 ? Math.round(wan) : Math.round(wan * 10) / 10}万`
+}
+
 // 内置斜杠命令列表
 const BUILTIN_COMMANDS = [
   { name: '/help', desc: '显示帮助' },
@@ -67,6 +85,12 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
   const [showModelMenu, setShowModelMenu] = useState(false)
   const [switching, setSwitching] = useState(false)
   const modelMenuRef = useRef<HTMLDivElement>(null)
+  // 「上下文容量」面板：悬停进度圈即显示，移开延迟 150ms 收起
+  // （延迟是给「按钮 → 面板」之间的 8px 空隙留的过渡，避免抖动）
+  const [showContextPanel, setShowContextPanel] = useState(false)
+  const contextPanelHideTimer = useRef<number | undefined>(undefined)
+  // 上下文分类估算（后端 context_metrics 产出，运行中经 SSE 事件实时刷新）
+  const contextBreakdown = useChatStore(s => s.contextBreakdown)
 
   // 点击下拉外部时关闭权限模式菜单
   useEffect(() => {
@@ -232,6 +256,22 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
     ?.models.find(m => m.model_id === activeModel)?.context_window || 200000
   // 上下文占比：当前 prompt tokens / 窗口大小，超过 80% 进度圈变红
   const contextPercent = Math.min(100, (tokenUsage.last_prompt_tokens / contextWindow) * 100)
+
+  // ---- 「上下文容量」面板数据推导 ----
+  // 分类行：去掉 total、按 token 降序，占比为 0 的分类不显示
+  const breakdownRows = contextBreakdown
+    ? Object.entries(contextBreakdown)
+        .filter(([key, v]) => key !== 'total' && v > 0)
+        .sort((a, b) => b[1] - a[1])
+    : []
+  const breakdownTotal = contextBreakdown?.total || 0
+  // 平均缓存命中率 = 累计缓存命中 / 累计实际发送的输入总量（协议无关口径）。
+  // 分母由后端按协议折算：OpenAI 兼容的 prompt_tokens 已含缓存、Anthropic 的不含，
+  // 若前端自行相加会把 OpenAI 兼容的分母算成两倍、命中率显示成真实值的一半
+  const cacheHitRate =
+    tokenUsage.total_input_tokens > 0
+      ? (tokenUsage.cache_read_input_tokens / tokenUsage.total_input_tokens) * 100
+      : null
 
   return (
     <div style={{ position: 'relative' }}>
@@ -666,26 +706,181 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
           </div>
           {/* 右侧组：进度圈 + 模型 + 发送/停止（整组靠右，圈在组首） */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', pointerEvents: 'auto' }}>
-            {/* 上下文用量进度圈：弧长即占比、起点 12 点，>80% 变红；悬停看具体数字 */}
-            <span
-              title={`上下文 ${tokenUsage.last_prompt_tokens.toLocaleString()} / ${contextWindow.toLocaleString()}（${contextPercent.toFixed(1)}%）`}
-              style={{ display: 'inline-flex', alignItems: 'center', flexShrink: 0 }}
+            {/* 上下文用量：悬停进度圈即显示「上下文容量」面板（右缘锚定，防溢出窗口） */}
+            <div
+              style={{ position: 'relative', display: 'flex', alignItems: 'center' }}
+              onMouseEnter={() => {
+                if (contextPanelHideTimer.current) {
+                  window.clearTimeout(contextPanelHideTimer.current)
+                  contextPanelHideTimer.current = undefined
+                }
+                setShowContextPanel(true)
+              }}
+              onMouseLeave={() => {
+                if (contextPanelHideTimer.current) window.clearTimeout(contextPanelHideTimer.current)
+                contextPanelHideTimer.current = window.setTimeout(() => {
+                  setShowContextPanel(false)
+                  contextPanelHideTimer.current = undefined
+                }, 150)
+              }}
             >
-              <svg width="14" height="14" viewBox="0 0 14 14" style={{ transform: 'rotate(-90deg)' }}>
-                <circle cx="7" cy="7" r="5.5" fill="none" stroke="var(--border)" strokeWidth="2.5" />
-                <circle
-                  cx="7"
-                  cy="7"
-                  r="5.5"
-                  fill="none"
-                  stroke={contextPercent > 80 ? 'var(--error)' : 'var(--text-tertiary)'}
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  strokeDasharray={`${(contextPercent / 100) * 2 * Math.PI * 5.5} ${2 * Math.PI * 5.5}`}
-                  style={{ transition: 'stroke-dasharray 0.3s' }}
-                />
-              </svg>
-            </span>
+              <button
+                aria-label={`上下文 ${tokenUsage.last_prompt_tokens.toLocaleString()} / ${contextWindow.toLocaleString()}（${contextPercent.toFixed(1)}%）`}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  padding: '2px',
+                  border: 'none',
+                  borderRadius: '50%',
+                  background: showContextPanel ? 'var(--hover-bg)' : 'transparent',
+                  cursor: 'default',
+                  flexShrink: 0,
+                  transition: 'background var(--transition-fast)',
+                }}
+              >
+                {/* 弧长即占比、起点 12 点，>80% 变红 */}
+                <svg width="14" height="14" viewBox="0 0 14 14" style={{ transform: 'rotate(-90deg)' }}>
+                  <circle cx="7" cy="7" r="5.5" fill="none" stroke="var(--border)" strokeWidth="2.5" />
+                  <circle
+                    cx="7"
+                    cy="7"
+                    r="5.5"
+                    fill="none"
+                    stroke={contextPercent > 80 ? 'var(--error)' : 'var(--text-tertiary)'}
+                    strokeWidth="2.5"
+                    strokeLinecap="round"
+                    strokeDasharray={`${(contextPercent / 100) * 2 * Math.PI * 5.5} ${2 * Math.PI * 5.5}`}
+                    style={{ transition: 'stroke-dasharray 0.3s' }}
+                  />
+                </svg>
+              </button>
+              {/* 「上下文容量」面板：进度条 + 分类占比 + 平均缓存命中率 + 压缩入口 */}
+              {showContextPanel && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    bottom: '100%',
+                    right: 0,
+                    marginBottom: '8px',
+                    width: '300px',
+                    padding: '14px',
+                    backgroundColor: 'var(--bg-elevated)',
+                    border: '1px solid var(--border-strong)',
+                    borderRadius: 'var(--radius-lg)',
+                    boxShadow: 'var(--shadow-md)',
+                    backdropFilter: 'blur(8px)',
+                    zIndex: 20,
+                    fontFamily: 'var(--font-ui)',
+                  }}
+                >
+                  {/* 标题行：已用/窗口（真实 usage 口径）+ 百分比 */}
+                  <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '10px' }}>
+                    <span style={{ color: 'var(--text-primary)', fontSize: '14px', fontWeight: 600 }}>
+                      上下文容量
+                    </span>
+                    <span style={{ color: 'var(--text-secondary)', fontSize: '12px', fontFamily: 'var(--font-mono)' }}>
+                      {formatWan(tokenUsage.last_prompt_tokens)} / {formatWan(contextWindow)}（{contextPercent.toFixed(1)}%）
+                    </span>
+                  </div>
+                  {/* 横向进度条（>80% 变红） */}
+                  <div style={{ height: '6px', borderRadius: '3px', background: 'var(--border)', overflow: 'hidden', marginBottom: '12px' }}>
+                    <div
+                      style={{
+                        height: '100%',
+                        width: `${Math.max(contextPercent, 1)}%`,
+                        borderRadius: '3px',
+                        background: contextPercent > 80 ? 'var(--error)' : '#5b9dff',
+                        transition: 'width 0.3s',
+                      }}
+                    />
+                  </div>
+                  {/* 分类占比行：色点 + 名称 + 占比（估算口径，按 token 降序） */}
+                  {breakdownRows.length > 0 ? (
+                    breakdownRows.map(([key, value]) => {
+                      const meta = CONTEXT_CATEGORY_META[key] || { label: key, color: 'var(--text-tertiary)' }
+                      const pct = breakdownTotal > 0 ? (value / breakdownTotal) * 100 : 0
+                      return (
+                        <div
+                          key={key}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            padding: '4px 0',
+                          }}
+                        >
+                          <span style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)', fontSize: '12px' }}>
+                            <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: meta.color, flexShrink: 0 }} />
+                            {meta.label}
+                          </span>
+                          <span style={{ color: 'var(--text-primary)', fontSize: '12px', fontFamily: 'var(--font-mono)' }}>
+                            {pct.toFixed(1)}%
+                          </span>
+                        </div>
+                      )
+                    })
+                  ) : (
+                    <div style={{ color: 'var(--text-tertiary)', fontSize: '12px', padding: '4px 0' }}>
+                      暂无分类数据，发起一轮对话后显示
+                    </div>
+                  )}
+                  {/* 平均缓存命中率 */}
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '4px 0',
+                      marginTop: '4px',
+                      borderTop: '1px solid var(--border-subtle)',
+                    }}
+                  >
+                    <span style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>平均缓存命中率</span>
+                    <span style={{ color: 'var(--text-primary)', fontSize: '12px', fontFamily: 'var(--font-mono)' }}>
+                      {cacheHitRate !== null ? `${cacheHitRate.toFixed(1)}%` : '—'}
+                    </span>
+                  </div>
+                  {/* 压缩入口：复用 /compact 斜杠命令链路 */}
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '10px' }}>
+                    <button
+                      onClick={() => {
+                        setShowContextPanel(false)
+                        onSend('/compact')
+                      }}
+                      disabled={taskActive}
+                      title={taskActive ? '任务运行中，无法压缩' : '压缩当前对话上下文'}
+                      style={{
+                        padding: '4px 12px',
+                        border: '1px solid var(--border-strong)',
+                        borderRadius: 'var(--radius-sm)',
+                        background: 'transparent',
+                        color: taskActive ? 'var(--text-tertiary)' : 'var(--text-secondary)',
+                        fontSize: '11px',
+                        fontFamily: 'var(--font-ui)',
+                        fontWeight: 500,
+                        cursor: taskActive ? 'default' : 'pointer',
+                        opacity: taskActive ? 0.6 : 1,
+                        transition: 'all var(--transition-fast)',
+                      }}
+                      onMouseEnter={(e) => {
+                        if (!taskActive) {
+                          e.currentTarget.style.backgroundColor = 'var(--hover-bg)'
+                          e.currentTarget.style.color = 'var(--text-primary)'
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        if (!taskActive) {
+                          e.currentTarget.style.backgroundColor = 'transparent'
+                          e.currentTarget.style.color = 'var(--text-secondary)'
+                        }
+                      }}
+                    >
+                      压缩
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
             {/* 模型快速切换控件 */}
             <div ref={modelMenuRef} style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
               <button

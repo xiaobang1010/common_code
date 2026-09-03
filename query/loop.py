@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import time
 from dataclasses import asdict, dataclass, field, replace
@@ -33,7 +34,14 @@ from tools.executor import (
     tool_result_to_openai_message,
 )
 from tools import get_tools
-from query.utils.api import build_api_request, prepend_user_context, append_system_context
+from query.utils.api import (
+    build_api_request,
+    inject_context_before_last_user,
+    insert_message_before_last_user,
+    append_system_context,
+)
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from query.engine import QueryEngine
@@ -603,12 +611,18 @@ async def query_loop(
         if system_context:
             system_messages = append_system_context(system_messages, system_context)
 
-        # 用户上下文仅临时拼入 api_messages，不污染 messages（messages 会被写回引擎）
+        # 用户上下文仅临时拼入 api_messages，不污染 messages（messages 会被写回引擎）。
+        # 落点用稳定规则（最后一条 user 之前 / 工具续写轮末尾），不再头部插入，
+        # 保证自动前缀缓存供应商的历史前缀不被每轮变化的内容击穿
         api_messages = messages
+        recall_text: str | None = None
         if mid_context:
-            api_messages = prepend_user_context(api_messages, mid_context)
+            api_messages = inject_context_before_last_user(api_messages, mid_context)
+            # 分类估算用：与 inject_context_before_last_user 内同样的分段拼接口径
+            recall_text = "\n".join(f"# {k}\n{v}" for k, v in mid_context.items())
 
         # skill 列表增量注入（临时，不写回引擎）
+        skill_listing_text: str | None = None
         try:
             from tools.skills.bundled import get_model_invocable_skills
             from tools.skills.listing import get_skill_listing_attachment
@@ -621,7 +635,13 @@ async def query_loop(
                     invocable_skills, sent_skills, context_window,
                 )
                 if skill_listing is not None:
-                    api_messages = [skill_listing, *api_messages]
+                    # 与记忆召回同一落点规则：易变清单不进头部，保住历史前缀
+                    api_messages = insert_message_before_last_user(
+                        api_messages, skill_listing,
+                    )
+                    content = skill_listing.get("content")
+                    if isinstance(content, str):
+                        skill_listing_text = content
         except ImportError:
             pass
 
@@ -633,6 +653,23 @@ async def query_loop(
             max_tokens=engine_config.max_tokens,
             temperature=engine_config.temperature,
         )
+
+        # ---- 3.5 上下文容量分类估算 ----
+        # 供前端「上下文容量」面板展示分类占比；估算失败不中断对话
+        try:
+            from query.services.context_metrics import build_context_breakdown
+            yield StreamEvent(
+                type="context_breakdown",
+                breakdown=build_context_breakdown(
+                    sections=sections,
+                    tools=engine_config.tools,
+                    history_messages=messages,
+                    skill_listing_text=skill_listing_text,
+                    recall_text=recall_text,
+                ),
+            )
+        except Exception:
+            logger.debug("context breakdown 估算失败，跳过本次上报", exc_info=True)
 
         # 创建流式工具执行器
         from tools.protocol import ToolUseContext

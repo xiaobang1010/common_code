@@ -13,15 +13,53 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
-# prepend_user_context
+# 易变上下文注入（保前缀缓存的稳定落点）
 # ---------------------------------------------------------------------------
 
-def prepend_user_context(messages: list[dict], context: dict[str, str] | None) -> list[dict]:
-    """在消息列表前插入 userContext（CLAUDE.md + 日期等）。
+def insert_message_before_last_user(messages: list[dict], message: dict) -> list[dict]:
+    """把一条易变注入消息放到「最新消息区」的稳定落点，保护历史前缀缓存。
+
+    落点规则（三分支）：
+    1. 最后一条 user 消息之后不存在 tool 结果或带 tool_calls 的 assistant
+       消息（本轮尚未进入工具续写）：插入到该 user 消息之前——提醒紧贴
+       用户问题，且不拆散已缓存的历史前缀；
+    2. 处于工具续写轮（末尾是本轮刚产生的工具流量）：追加到列表末尾——
+       若插进历史中段的 user 消息前，会把本轮工具流量排除在稳定前缀外、
+       每轮重算；
+    3. 无 user 消息：兜底追加到末尾。
+
+    自动前缀缓存的服务端（OpenAI 兼容协议）按「从头逐 token 匹配」命中，
+    每轮都变的注入内容放在头部会击穿全部历史，移到上述落点后历史前缀稳定。
+    """
+    last_user_idx: int | None = None
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "user":
+            last_user_idx = i
+            break
+
+    if last_user_idx is None:
+        # 分支 3：无 user 消息，兜底追加末尾
+        return [*messages, message]
+
+    # 分支 2：最后一条 user 之后已有本轮工具流量，追加末尾
+    for m in messages[last_user_idx + 1:]:
+        if m.get("role") == "tool" or (
+            m.get("role") == "assistant" and m.get("tool_calls")
+        ):
+            return [*messages, message]
+
+    # 分支 1：插到最后一条 user 消息之前
+    return [*messages[:last_user_idx], message, *messages[last_user_idx:]]
+
+
+def inject_context_before_last_user(
+    messages: list[dict], context: dict[str, str] | None
+) -> list[dict]:
+    """注入 userContext（记忆召回等易变内容）到稳定落点。
 
     接受字典形式的上下文，每个键值对转换为 `# {key}\\n{value}` 分段，
     多段之间用换行连接，再包装为 system-reminder 格式的 user 消息，
-    插入到消息列表最前。
+    按 `insert_message_before_last_user` 的落点规则插入。
     """
     # 空字典或 None 时直接返回原消息列表，不做处理
     if not context:
@@ -42,7 +80,7 @@ def prepend_user_context(messages: list[dict], context: dict[str, str] | None) -
             "</system-reminder>\n"
         ),
     }
-    return [context_message, *messages]
+    return insert_message_before_last_user(messages, context_message)
 
 
 # ---------------------------------------------------------------------------

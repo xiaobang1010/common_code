@@ -113,6 +113,9 @@ class GlobalConfig:
     terminal_progress_bar_enabled: bool = True
     respect_gitignore: bool = True
     copy_full_response: bool = False
+    # 提示词缓存总开关：Anthropic 协议请求是否发出 cache_control 断点。
+    # 默认开启；遇到不识别该字段的兼容网关时可关闭回退
+    prompt_cache_enabled: bool = True
     env: dict[str, str] = field(default_factory=dict)
     projects: dict[str, dict[str, Any]] = field(default_factory=dict)
     mcp_servers: dict[str, Any] = field(default_factory=dict)
@@ -152,6 +155,7 @@ class GlobalConfig:
             "terminal_progress_bar_enabled": "terminalProgressBarEnabled",
             "respect_gitignore": "respectGitignore",
             "copy_full_response": "copyFullResponse",
+            "prompt_cache_enabled": "promptCacheEnabled",
             "has_completed_onboarding": "hasCompletedOnboarding",
             "llm_base_url": "llm_base_url",
             "llm_api_key": "llm_api_key",
@@ -187,6 +191,7 @@ class GlobalConfig:
             ),
             respect_gitignore=data.get("respectGitignore", True),
             copy_full_response=data.get("copyFullResponse", False),
+            prompt_cache_enabled=data.get("promptCacheEnabled", True),
             env=data.get("env", {}),
             projects=data.get("projects", {}),
             mcp_servers=data.get("mcpServers", {}),

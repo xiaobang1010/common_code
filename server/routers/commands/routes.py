@@ -6,27 +6,85 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter
 
+from query.utils.messages import sanitize_dangling_tool_calls
 from server import state as server_state
 from server.paths import project_root
 from tools.commands.commands import find_command, try_resolve_skill
 from tools.commands.commands_context import CommandContext
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 
-def _build_context(args: str) -> CommandContext:
-    """为命令 handler 构造最小可用上下文：HTTP 侧无 REPL/消息历史。"""
+def _resolve_view_engine_messages() -> list:
+    """当前查看会话的引擎消息列表（真实引用）。
+
+    与 /api/state 同口径：查看会话有运行中的后台任务时优先取任务引擎，
+    否则取全局查看视图引擎。返回的是引擎内部列表引用，
+    命令对其原地修改（clear/extend）会直接反映到会话。
+    """
+    engine = server_state.engine
+    view_session = server_state.engine_session_id
+    run = server_state.running_runs.get(view_session) if view_session else None
+    if run is not None and not run.finished.is_set():
+        engine = run.engine
+    return engine.mutable_messages if engine is not None else []
+
+
+def _build_context(args: str, *, for_compact: bool = False) -> CommandContext:
+    """为命令 handler 构造上下文。
+
+    默认最小可用上下文（HTTP 侧无 REPL/消息历史），保持各命令既有行为。
+    仅 compact 命令注入真实消息引用与压缩函数，让 /compact 在 HTTP 链路
+    上真实执行（cmd_compact 对 messages 原地 clear/extend，直接作用于引擎）；
+    其余命令（含 /clear）不注入，避免连带改变其行为。
+    """
+    messages: list = []
+    compact_fn = None
+    if for_compact:
+        messages = _resolve_view_engine_messages()
+        from query.services.compact.auto_compact import compact_conversation
+
+        compact_fn = compact_conversation
+
     return CommandContext(
-        messages=[],
+        messages=messages,
         app_state=getattr(server_state, "app_state", None),
         config=None,
-        compact_fn=None,
+        compact_fn=compact_fn,
         repl=None,
         project_root=project_root(),
         args=args,
     )
+
+
+def _persist_compacted_messages() -> None:
+    """compact 成功后把压缩结果写回会话存储。
+
+    引擎消息被原地压缩后若不落库，下一轮 /api/chat 的历史前缀取自 DB，
+    会把未压缩历史整体回灌，压缩白做。运行中任务的引擎由其收尾统一落库
+    （收尾保存的就是被原地压缩后的列表），此处只处理空闲查看引擎的场景。
+    """
+    view_session = server_state.engine_session_id
+    run = server_state.running_runs.get(view_session) if view_session else None
+    if run is not None and not run.finished.is_set():
+        return
+    store = getattr(server_state, "session_store", None)
+    engine = server_state.engine
+    if store is None or engine is None or not view_session:
+        return
+    try:
+        # 与 chat 链路收尾同口径：入库前清洗悬空 tool_calls
+        store.save_messages(
+            view_session, sanitize_dangling_tool_calls(engine.mutable_messages)
+        )
+    except Exception:
+        logger.warning("compact 结果落库失败（内存视图已压缩，重启后回退 DB 旧历史）", exc_info=True)
 
 
 @router.post("/api/command")
@@ -45,10 +103,15 @@ async def run_command(body: dict) -> dict:
 
     cmd = find_command(name)
     if cmd is not None:
+        # 仅 compact 注入引擎真实消息与压缩函数，其余命令维持最小上下文
+        for_compact = name == "compact"
         try:
-            output = await cmd.handler(_build_context(args))
+            output = await cmd.handler(_build_context(args, for_compact=for_compact))
         except Exception as exc:  # handler 异常不炸端点，降级为文本输出
             output = f"命令执行失败：{exc}"
+        # 压缩成功即落库，防止下一轮从 DB 回灌未压缩历史
+        if for_compact and output.startswith("Conversation compacted"):
+            _persist_compacted_messages()
         return {"output": output}
 
     skill_msg = try_resolve_skill(name, args)
