@@ -6,7 +6,7 @@
 // 逻辑迁移自 hooks/useChat.ts
 
 import { create } from 'zustand'
-import { permissionsApi, questionApi, type PermissionMode } from '../api/client'
+import { permissionsApi, questionApi, type PermissionMode, type TurnExitInfo } from '../api/client'
 import { parseUserMessage } from '../utils/skillParse'
 
 // 时间线事件：任务轨迹的三类一等事件，按 SSE 到达的真实时序入列
@@ -167,7 +167,7 @@ interface ChatState {
   // 编辑历史用户消息并从该处重发：截断后续块与 DB 历史，用新文本重建该轮
   editAndResend: (blockId: string, newText: string) => Promise<boolean>
   abort: () => Promise<void>
-  loadMessages: (rawMessages: Record<string, unknown>[], opts?: { runningStartedAt?: number }) => void
+  loadMessages: (rawMessages: Record<string, unknown>[], opts?: { runningStartedAt?: number; lastTurn?: TurnExitInfo }) => void
   clearMessages: () => void
   resolvePermission: (decision: 'allow' | 'deny' | 'always_allow') => Promise<void>
   answerQuestion: (answer: string) => Promise<void>
@@ -559,14 +559,17 @@ export const useChatStore = create<ChatState>((set, get) => {
       set({ isStreaming: false })
       // 兜底 flush：异常断开时把缓冲内容落进时间线，避免尾部文本丢失
       flushPending()
-      // 如果没有收到 loop_result（异常断开），强制标记为 done
+      // 如果没有收到 loop_result（流干净断开），强制标记为 done 并标 stream_lost。
+      // 注意：真实停止由 abort() 先行写入 aborted（且已把 currentBlockId 置空，
+      // 这里整段跳过），所以此兜底只命中「未收到结果流就断了」的异常形态，
+      // 不再复用 aborted——「用户主动停止」的标签只留给真实停止操作
       const blockId = currentBlockId.current
       if (blockId) {
         updateBlock(blockId, b => ({
           ...closeOpenIn(b),
           status: 'done' as const,
           endTime: Date.now(),
-          exitReason: b.exitReason || 'aborted',
+          exitReason: b.exitReason || 'stream_lost',
         }))
         currentBlockId.current = null
       }
@@ -822,7 +825,8 @@ export const useChatStore = create<ChatState>((set, get) => {
   // 还原思考行与真实耗时；旧数据缺字段时自然降级（无思考行、耗时回退加载时刻）。
   // opts.runningStartedAt（毫秒）表示该会话有运行中任务，最后一块据此标记 running，
   // 恢复「工作中 X秒」逐秒计时与事件行运行中 spinner。
-  const loadMessages = (rawMessages: Record<string, unknown>[], opts?: { runningStartedAt?: number }) => {
+  // opts.lastTurn：后端透出的最近一回合退出信息，重建时恢复真实退出原因与结束时间。
+  const loadMessages = (rawMessages: Record<string, unknown>[], opts?: { runningStartedAt?: number; lastTurn?: TurnExitInfo }) => {
     const newBlocks: WorkBlock[] = []
     let currentBlock: WorkBlock | null = null
     let userMsgIndex = 0
@@ -933,14 +937,38 @@ export const useChatStore = create<ChatState>((set, get) => {
       if (lastTool) lastTool.isRunning = true
     }
 
-    // 中断回合兜底：最后一块时间线为空且无运行中任务，说明该轮在 assistant
-    // 消息落库前就被停止（abort 的直播兜底文案会被轮询历史重建抹掉），
-    // 按直播 abort 同款形态重建「已停止」text 项并标 aborted
+    // 异常回合兜底：最后一块时间线为空且无运行中任务，说明该轮在 assistant
+    // 消息落库前就结束。先按 lastTurn 恢复真实退出原因与结束时间：仅当
+    // user_ts 与最后一块 startTime 精确相等（后端从落库列表同源取值并做过
+    // 归属确认）才可信；缺失/不匹配（旧数据、残留值、进程被强杀未落库）一律
+    // 中性 no_output——不再复用 aborted，「用户主动停止」只可能来自真实停止。
+    // 范围限定：时间线非空的最后一块不被 lastTurn 改写（与改造前一致）
     if (newBlocks.length > 0 && typeof runningStartedAt !== 'number') {
       const last = newBlocks[newBlocks.length - 1]
+      const lastTurn = opts?.lastTurn
+      const attributable =
+        !!lastTurn && typeof lastTurn.user_ts === 'number' && lastTurn.user_ts === last.startTime
+      if (lastTurn && attributable) {
+        if (lastTurn.reason && lastTurn.reason !== 'completed') {
+          last.exitReason = lastTurn.reason
+        }
+        // 真实结束时刻修掉重建恒 0 秒的假耗时（负值由下方统一钳制兜住）
+        if (typeof lastTurn.finished_at === 'number') {
+          last.endTime = lastTurn.finished_at
+        }
+      }
       if (last.timeline.length === 0) {
-        last.exitReason = 'aborted'
-        last.timeline.push({ id: genId(), type: 'text', content: '已停止', open: false })
+        const reason = lastTurn && attributable ? lastTurn.reason : ''
+        if (reason === 'aborted') {
+          // 真实停止：与直播 abort() 同款「已停止」形态
+          last.timeline.push({ id: genId(), type: 'text', content: '已停止', open: false })
+        } else {
+          // 无可用原因、或 completed 却无落库产出的异常形态 → 中性 no_output
+          if (!attributable || reason === 'completed') {
+            last.exitReason = 'no_output'
+          }
+          last.timeline.push({ id: genId(), type: 'text', content: '本回合无输出', open: false })
+        }
       }
     }
 

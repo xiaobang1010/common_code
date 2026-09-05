@@ -201,6 +201,12 @@ async def query_model_with_streaming_anthropic(
                 delay,
                 api_error.message,
             )
+            # 逐次重试反馈走 phase 事件（与 OpenAI 路径的 _on_retry 同形态），
+            # 长退避等待期间前端工作块可见「正在重试 n/total」，不再静默
+            yield StreamEvent(
+                type="phase",
+                content=f"模型响应异常（{type(error).__name__}），正在重试 {attempt + 1}/{retry_config.max_retries}…",
+            )
             await asyncio.sleep(delay)
             continue
 

@@ -200,6 +200,8 @@ def get_session(session_id: str) -> dict:
             "created_at": session.created_at,
             "updated_at": session.updated_at,
             "message_count": session.message_count,
+            # 最近一回合退出信息：前端重建历史时恢复真实退出原因
+            "last_turn": session.last_turn,
         },
         "messages": session.messages,
     }
@@ -293,4 +295,6 @@ def switch_session(session_id: str) -> dict:
         "ok": True,
         "messages": session.messages,
         "workspace_path": session.workspace_path,
+        # 最近一回合退出信息：冷启动/切换/刷新经 switch 重建时也能带出原因
+        "last_turn": session.last_turn,
     }
