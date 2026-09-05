@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
+import { useWorkspaceSignal } from '../../stores/useWorkspaceSignal'
 
 // 终端 IPC 接口类型
 interface ElectronTerminalAPI {
@@ -75,7 +76,8 @@ function Terminal({ instanceId, onReady }: TerminalProps) {
     let cleanupOutput: (() => void) | undefined
     let ptyId: string | undefined
 
-    api.create().then((res) => {
+    // 新建终端落在当前工作区目录下；工作区尚未加载时不传，由主进程兜底
+    api.create(useWorkspaceSignal.getState().currentPath ?? undefined).then((res) => {
       if (disposed) {
         api.dispose(res.id)
         return
