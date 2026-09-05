@@ -371,6 +371,25 @@ export const questionApi = {
 // 会话 / 工作区 / Git 分支
 // ---------------------------------------------------------------------------
 
+/** 最近一回合退出信息（后端 last_turn 列透出，供历史重建恢复真实退出原因） */
+export interface TurnExitInfo {
+  /** completed / model_error / prompt_too_long / max_output_tokens_exhausted / aborted / error */
+  reason: string
+  /** 错误类原因的摘要（截断 500 字符），仅供排查，前端展示暂不消费 */
+  error?: string
+  /** 回合结束时刻（毫秒） */
+  finished_at?: number
+  /** 本回合落库 user 消息的 _ts（毫秒），与重建块 startTime 精确相等才可信；缺失即不可用 */
+  user_ts?: number
+}
+
+/** /api/state 响应（App.tsx 两处 raw fetch 消费；fetchState 不读 last_turn 不在本类型范围） */
+export interface StateResponse {
+  messages?: Record<string, unknown>[]
+  started_at?: number | null
+  last_turn?: TurnExitInfo
+}
+
 /** 会话信息 */
 export interface SessionInfo {
   id: string
@@ -383,6 +402,8 @@ export interface SessionInfo {
   pinned: boolean
   /** 所属自定义任务分组 id，空串表示未分组 */
   group_id: string
+  /** 最近一回合退出信息：详情接口返回；列表接口手拼 dict 不返回，故可选 */
+  last_turn?: TurnExitInfo
 }
 
 /** 会话详情（含消息） */
@@ -433,7 +454,7 @@ export const sessionsApi = {
   setGroup: (session_id: string, group_id: string) =>
     apiPatch<{ ok: boolean }>(`/api/sessions/${session_id}`, { group_id }),
   switch: (session_id: string) =>
-    apiPost<{ ok: boolean; messages: Record<string, unknown>[]; workspace_path: string }>(`/api/sessions/${session_id}/switch`),
+    apiPost<{ ok: boolean; messages: Record<string, unknown>[]; workspace_path: string; last_turn?: TurnExitInfo }>(`/api/sessions/${session_id}/switch`),
   grouped: () =>
     apiGet<{ groups: SessionGroup[]; task_groups: TaskGroupInfo[]; current_tasks: Array<{ session_id: string; state: string }> }>('/api/sessions/grouped'),
 }

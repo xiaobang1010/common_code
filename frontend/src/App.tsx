@@ -12,7 +12,7 @@ import { useChatStore, lastActivityAtRef } from './stores/useChatStore'
 import { useSettingsStore } from './stores/useSettingsStore'
 import { useSessions } from './hooks/useSessions'
 import { TOOL_META, type ToolId } from './components/editor/toolMeta'
-import { gitApi, sessionsApi } from './api/client'
+import { gitApi, sessionsApi, type StateResponse, type TurnExitInfo } from './api/client'
 
 // 布局宽度预算：对话区是主角，有最小宽度保护；编辑区宽度设上下限
 const SIDEBAR_MIN = 180
@@ -157,9 +157,9 @@ function App() {
     if (!sessions.currentSessionId) return
     initialSessionLoaded.current = true
     const id = sessions.currentSessionId
-    sessions.switchSession(id).then(messages => {
+    sessions.switchSession(id).then(result => {
       setSessionId(id)
-      if (messages) loadMessages(messages)
+      if (result?.messages) loadMessages(result.messages, { lastTurn: result.lastTurn })
     }).catch(e => {
       // 初始加载失败：提示用户，本地状态不动（引擎未覆盖，不会串数据）
       alert(`加载会话失败：${e instanceof Error ? e.message : '未知错误'}`)
@@ -298,7 +298,8 @@ function App() {
         lastMsgCountRef.current = 0
         if (chatSessionId) {
           sessionsApi.get(chatSessionId)
-            .then(detail => loadMessages(detail.messages))
+            // 详情接口带 last_turn：任务刚结束的回合重建时恢复真实退出原因
+            .then(detail => loadMessages(detail.messages, { lastTurn: detail.session.last_turn }))
             .catch(() => {})
         }
       }
@@ -313,13 +314,13 @@ function App() {
       // 拉取任务引擎实时消息（消息数变化才重建视图，避免闪烁）
       try {
         const resp = await fetch('/api/state')
-        const data = await resp.json()
+        const data = (await resp.json()) as StateResponse
         // 轮询成功说明后端存活：刷新活动时间，避免状态行误报「连接异常」
         lastActivityAtRef.current = Date.now()
         if (Array.isArray(data.messages) && data.messages.length !== lastMsgCountRef.current) {
           lastMsgCountRef.current = data.messages.length
           const runningStartedAt = typeof data.started_at === 'number' ? data.started_at * 1000 : undefined
-          loadMessages(data.messages, { runningStartedAt })
+          loadMessages(data.messages, { runningStartedAt, lastTurn: data.last_turn })
         }
       } catch {
         // 忽略瞬时失败
@@ -400,20 +401,25 @@ function App() {
   }, [])
 
   // 统一以 /api/state 为准加载当前会话消息：响应含 started_at 表示目标会话有运行中任务，
-  // 据此标记「工作中」；snapshot 为 switchSession 等返回的 DB 快照，作为 /api/state 失败时的回退。
-  const loadMessagesWithRunningState = useCallback(async (snapshot?: Record<string, unknown>[] | null) => {
+  // 据此标记「工作中」；snapshot 为 switchSession 等返回的 DB 快照，作为 /api/state 失败时的回退；
+  // lastTurn 为 switch 带回的最近回合退出信息——成功路径优先用 state 的（更新），
+  // 回退路径用入参，不丢源
+  const loadMessagesWithRunningState = useCallback(async (
+    snapshot?: Record<string, unknown>[] | null,
+    lastTurn?: TurnExitInfo,
+  ) => {
     lastMsgCountRef.current = 0
     try {
       const resp = await fetch('/api/state')
-      const data = await resp.json()
+      const data = (await resp.json()) as StateResponse
       // 后端已响应：刷新活动时间，避免切回后台任务时状态行误报「连接异常」
       lastActivityAtRef.current = Date.now()
-      const messages = Array.isArray(data.messages) ? (data.messages as Record<string, unknown>[]) : snapshot
+      const messages = Array.isArray(data.messages) ? data.messages : snapshot
       const runningStartedAt = typeof data.started_at === 'number' ? data.started_at * 1000 : undefined
-      if (messages) loadMessages(messages, { runningStartedAt })
+      if (messages) loadMessages(messages, { runningStartedAt, lastTurn: data.last_turn ?? lastTurn })
       else clearMessages()
     } catch {
-      if (snapshot) loadMessages(snapshot)
+      if (snapshot) loadMessages(snapshot, { lastTurn })
       else clearMessages()
     }
   }, [loadMessages, clearMessages])
@@ -426,9 +432,9 @@ function App() {
     // 断开当前 SSE 连接：任务在后台继续跑，本地恢复可发送状态
     disconnectStream()
     try {
-      const snapshot = await sessions.switchSession(sessionId)
+      const snap = await sessions.switchSession(sessionId)
       setSessionId(sessionId)
-      await loadMessagesWithRunningState(snapshot)
+      await loadMessagesWithRunningState(snap.messages, snap.lastTurn)
     } catch (e) {
       alert(`切换会话失败：${e instanceof Error ? e.message : '未知错误'}`)
     }
@@ -447,8 +453,8 @@ function App() {
       if (newSessionId) {
         // 加载新当前会话的消息
         try {
-          const messages = await sessions.switchSession(newSessionId)
-          if (messages) loadMessages(messages)
+          const snap = await sessions.switchSession(newSessionId)
+          if (snap?.messages) loadMessages(snap.messages, { lastTurn: snap.lastTurn })
           else clearMessages()
         } catch (e) {
           clearMessages()
@@ -468,7 +474,7 @@ function App() {
       const result = await sessions.switchToSessionInWorkspace(sessionId, workspacePath)
       if (result) {
         setSessionId(sessionId)
-        await loadMessagesWithRunningState(result.messages)
+        await loadMessagesWithRunningState(result.messages, result.lastTurn)
         // 更新分支信息
         if (result.branch !== undefined) {
           setCurrentBranch(result.branch)
@@ -498,9 +504,9 @@ function App() {
       // 加载新当前会话的消息
       if (result.sessionId) {
         try {
-          const snapshot = await sessions.switchSession(result.sessionId)
+          const snap = await sessions.switchSession(result.sessionId)
           setSessionId(result.sessionId)
-          await loadMessagesWithRunningState(snapshot)
+          await loadMessagesWithRunningState(snap.messages, snap.lastTurn)
         } catch (e) {
           alert(`切换会话失败：${e instanceof Error ? e.message : '未知错误'}`)
         }

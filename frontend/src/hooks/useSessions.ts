@@ -106,14 +106,15 @@ export function useSessions() {
     }
   }, [loadSessions, loadAllSessions, updateCurrentSessionId])
 
-  // 切换会话，返回消息列表供 useChat 使用。
+  // 切换会话，返回消息列表与最近回合退出信息供 useChat 使用
+  // （lastTurn 透传给历史重建，恢复真实退出原因）。
   // 失败时错误冒泡给调用方：切换失败必须让调用方知道，否则调用方
   // 误以为成功、更新本地状态，会导致前后端脱钩（界面显示已切换、
   // 后端引擎仍是旧会话），下次发消息把旧会话历史写进目标会话
   const switchSession = useCallback(async (sessionId: string) => {
     const result = await sessionsApi.switch(sessionId)
     updateCurrentSessionId(sessionId)
-    return result.messages
+    return { messages: result.messages, lastTurn: result.last_turn }
   }, [updateCurrentSessionId])
 
   // 删除会话，刷新列表，如果删的是当前会话则切换到下一个
@@ -315,7 +316,7 @@ export function useSessions() {
     const result = await sessionsApi.switch(sessionId)
     updateCurrentSessionId(sessionId)
     await loadAllSessions()
-    return { messages: result.messages, branch }
+    return { messages: result.messages, lastTurn: result.last_turn, branch }
   }, [loadAllSessions, updateCurrentSessionId])
 
   // 初始化：加载工作区列表，没有工作区就不自动添加，让用户手动打开

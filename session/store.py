@@ -67,7 +67,8 @@ class SessionStore:
                     spec_name TEXT DEFAULT '',
                     parent_session_id TEXT,
                     origin TEXT DEFAULT 'chat',
-                    agent_meta TEXT DEFAULT '{}'
+                    agent_meta TEXT DEFAULT '{}',
+                    last_turn TEXT DEFAULT '{}'
                 )
                 """
             )
@@ -134,6 +135,9 @@ class SessionStore:
             conn.execute("ALTER TABLE sessions ADD COLUMN origin TEXT DEFAULT 'chat'")
         if "agent_meta" not in session_cols:
             conn.execute("ALTER TABLE sessions ADD COLUMN agent_meta TEXT DEFAULT '{}'")
+        # 回合退出原因持久化：最近一回合的退出信息（reason/error/finished_at/user_ts）
+        if "last_turn" not in session_cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN last_turn TEXT DEFAULT '{}'")
 
     # ------------------------------------------------------------------
     # 行转换辅助
@@ -171,6 +175,16 @@ class SessionStore:
             except (json.JSONDecodeError, TypeError):
                 agent_meta = {}
 
+        # last_turn 列存最近回合退出信息 JSON，坏值容错为空 dict
+        last_turn: dict = {}
+        if "last_turn" in row.keys() and row["last_turn"]:
+            try:
+                parsed_turn = json.loads(row["last_turn"])
+                if isinstance(parsed_turn, dict):
+                    last_turn = parsed_turn
+            except (json.JSONDecodeError, TypeError):
+                last_turn = {}
+
         return Session(
             id=row["id"],
             workspace_path=row["workspace_path"],
@@ -194,6 +208,7 @@ class SessionStore:
                 else "chat"
             ),
             agent_meta=agent_meta,
+            last_turn=last_turn,
         )
 
     @staticmethod
@@ -560,6 +575,56 @@ class SessionStore:
             if row is None:
                 return None
             return row["spec_name"] or None
+        finally:
+            conn.close()
+
+    def set_session_last_turn(self, session_id: str, meta: dict) -> bool:
+        """记录最近一回合的退出信息（JSON 整段覆盖），同时刷新 updated_at。
+
+        Args:
+            session_id: 会话 ID
+            meta: 退出信息字典（reason/error/finished_at/user_ts，
+                user_ts 可为缺失——归属确认未通过时不写该键）
+
+        Returns:
+            True 更新成功，False 表示会话不存在
+        """
+        now = datetime.now().isoformat()
+        meta_json = json.dumps(meta, ensure_ascii=False, default=str)
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    """
+                    UPDATE sessions SET last_turn = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (meta_json, now, session_id),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    def get_session_last_turn(self, session_id: str | None) -> dict:
+        """单列读取会话的最近回合退出信息（不反序列化 messages 大字段）。
+
+        会话不存在、未装载查看会话（session_id 为 None）或坏值均返回 {}。
+        """
+        if not session_id:
+            return {}
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT last_turn FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if row is None or not row["last_turn"]:
+                return {}
+            try:
+                parsed = json.loads(row["last_turn"])
+                return parsed if isinstance(parsed, dict) else {}
+            except (json.JSONDecodeError, TypeError):
+                return {}
         finally:
             conn.close()
 

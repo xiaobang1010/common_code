@@ -136,10 +136,11 @@ async def query_model_with_streaming(
                 yield event
 
     # 用 with_retry_stream 包装，对建立阶段的可重试错误（rate_limit、server_error、
-    # 首包看护超时）做指数退避重试。流式场景收紧重试次数：首包挂起多为
-    # 供应商/代理问题，3 次重试（叠加 120 秒首包看护）已给足自愈窗口，
-    # 避免坏链路上静默重试过久
-    retry_config = RetryConfig(max_retries=3, base_delay=1.0, max_delay=8.0)
+    # 首包看护超时）做指数退避重试。次数与退避参数统一取 RetryConfig 默认值
+    # （对齐主流客户端实践：10 次重试、2s 基础退避倍增、封顶 60s）——
+    # 连接类错误快速失败，退避总预算约 6 分钟（不含抖动），可覆盖代理重启等
+    # 自愈窗口；每次重试经 _on_retry 的 phase 事件透出进度，界面不静默
+    retry_config = RetryConfig()
 
     async def _on_retry(n: int, total: int, error: Exception) -> StreamEvent:
         # 重试反馈走 phase 事件（前端工作块直接显示），避免重试全程静默

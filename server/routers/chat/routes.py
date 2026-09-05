@@ -50,9 +50,15 @@ async def get_state() -> dict:
         messages = run.engine.mutable_messages
         started_at = run.started_at
 
+    # 最近一回合退出信息：单列 SELECT（不反序列化 messages），供前端历史重建
+    # 恢复真实退出原因；查看会话未装载（view_session 为 None）自然返回 {}
+    session_store = server.state.session_store
+    last_turn = session_store.get_session_last_turn(view_session) if session_store is not None else {}
+
     return {
         "messages": messages,
         "started_at": started_at,
+        "last_turn": last_turn,
         "model": state.model,
         "token_usage": {
             "input_tokens": usage.input_tokens,
@@ -294,6 +300,10 @@ async def chat_event_stream(
         for queue in list(run.subscribers):
             queue.put_nowait(ev)
 
+    # 回合退出信息捕获袋（run_engine 内按 dict 引用写入，收尾落库 last_turn；
+    # 用可变容器避免嵌套函数 nonlocal 声明）
+    turn_capture: dict = {"loop_result": None, "crashed": None}
+
     async def run_engine() -> None:
         """后台任务体：跑引擎循环，收尾统一走清理路径。"""
         try:
@@ -328,20 +338,27 @@ async def chat_event_stream(
                     # 与 last_prompt_tokens 同口径：反映最近一次请求的上下文构成）
                     elif isinstance(ev, StreamEvent) and ev.type == "context_breakdown" and ev.breakdown:
                         app_state.get_state().context_breakdown = ev.breakdown
+                    # 拦截循环退出结果：真实退出原因供收尾落库 last_turn（事件照常转发）
+                    elif isinstance(ev, LoopResult):
+                        turn_capture["loop_result"] = {
+                            "reason": ev.reason,
+                            "error": str(ev.error) if ev.error is not None else None,
+                        }
                     dispatch(ev)
             finally:
                 server.state.workspace_var.reset(token)
                 server.state.session_var.reset(session_token)
         except Exception as e:
+            turn_capture["crashed"] = str(e)
             dispatch(e)
         finally:
-            # ---- 收尾统一清理路径：保存 -> 回写视图 -> 移出注册表 -> 按来源清桥 -> 置位 ----
+            # ---- 收尾统一清理路径：保存 -> 落退出原因 -> 回写视图 -> 移出注册表 -> 按来源清桥 -> 置位 ----
             try:
                 # 入库前清洗：中断/输出超限恢复留下的悬空 tool_calls 就地补合成结果，
-                # 保证 DB 里的历史序列始终合法
-                session_store.save_messages(
-                    run_session_id, sanitize_dangling_tool_calls(task_engine.mutable_messages)
-                )
+                # 保证 DB 里的历史序列始终合法；清洗后的列表同时用于提取 last_turn
+                # 的 user_ts（与前端重建块的 startTime 同源，才能精确相等比对）
+                sanitized_messages = sanitize_dangling_tool_calls(task_engine.mutable_messages)
+                session_store.save_messages(run_session_id, sanitized_messages)
                 final_session = session_store.get_session(run_session_id)
                 if final_session and not final_session.title:
                     for msg in task_engine.mutable_messages:
@@ -350,6 +367,37 @@ async def chat_event_stream(
                             if isinstance(content, str) and content.strip():
                                 session_store.update_session_title(run_session_id, _extract_session_title(content))
                                 break
+                # ---- 回合退出原因落库：前端历史重建据此恢复真实退出原因，
+                # 不再把异常回合误标为「用户主动停止」。与 save_messages 同 try：
+                # 消息都没存上时重建本身失真，last_turn 失去意义，一并跳过 ----
+                turn_meta: dict = {"finished_at": time.time() * 1000}
+                # user_ts 归属确认：取落库列表最后一条可见 user 消息的 _ts，
+                # 且必须不早于本回合启动时刻（引擎在本回合内追加，天然晚于
+                # started_at）；hook 拦截使本回合 user 未进列表时，取到的是
+                # 上一回合消息 → 校验不过 → 不写 user_ts 键，前端按不可用处理，
+                # 防止把本回合退出原因错套到上一回合的块上
+                visible = _visible_user_indexes(sanitized_messages)
+                if visible:
+                    last_user = sanitized_messages[visible[-1]]
+                    ts = last_user.get("_ts")
+                    if isinstance(ts, (int, float)) and ts >= run.started_at * 1000:
+                        turn_meta["user_ts"] = ts
+                captured = turn_capture["loop_result"]
+                if captured is not None:
+                    turn_meta["reason"] = captured["reason"]
+                    if captured["error"]:
+                        turn_meta["error"] = captured["error"][:500]
+                elif run_abort_event.is_set():
+                    # 用户点停止：/api/abort 先置位事件再 cancel，含 cancel 强杀形态
+                    turn_meta["reason"] = "aborted"
+                elif turn_capture["crashed"] is not None:
+                    turn_meta["reason"] = "error"
+                    turn_meta["error"] = str(turn_capture["crashed"])[:500]
+                else:
+                    # 不置位事件的强杀（如删除会话走 stop_session_run）等无结果形态
+                    turn_meta["reason"] = "error"
+                    turn_meta["error"] = "回合未产出结果即结束"
+                session_store.set_session_last_turn(run_session_id, turn_meta)
             except Exception:
                 pass
             # 回写查看视图：查看会话未被切换（含切走又切回）时同步视图，

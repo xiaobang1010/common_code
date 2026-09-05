@@ -33,18 +33,24 @@ const VERB_BY_TOOL: Record<string, string> = {
 const NORMAL_EXITS = new Set(['', 'completed', 'command'])
 
 // 异常退出原因 → 行尾弱提示 / 展开首行原因（error 的展开首行附带错误步骤摘要，见 exitReasonLine）
+// 约定：aborted 仅由真实停止操作写入（前端 abort() 与后端 abort_event 判定两处），
+// 异常断流/无输出兜底走 stream_lost / no_output，不再冒用「用户主动停止」
 const EXIT_HINT: Record<string, string> = {
   aborted: '已中断',
   error: '出错',
   model_error: '模型出错',
   prompt_too_long: '输入过长',
   max_output_tokens_exhausted: '输出超限',
+  stream_lost: '连接中断',
+  no_output: '无输出',
 }
 const EXIT_REASON: Record<string, string> = {
   aborted: '已中断：用户主动停止',
   model_error: '模型出错',
   prompt_too_long: '输入过长',
   max_output_tokens_exhausted: '输出超限',
+  stream_lost: '已中断：连接断开，未收到回合结果',
+  no_output: '已中断：本回合无输出（历史数据无退出原因）',
 }
 
 // 展开区首行原因：error 附错误步骤的 result 摘要；未知原因原样展示
@@ -473,6 +479,8 @@ const StatusLine = memo(function StatusLine({ block, expanded, onToggle }: {
     if (runningStep) return `正在执行工具 ${runningStep.toolName}`
     const lastItem = block.timeline[block.timeline.length - 1]
     if (lastItem?.type === 'text' && lastItem.open) return '正在生成回复'
+    // 逐次重试反馈：两条协议路径的重试 phase 事件都带「正在重试 n/total」，原样透出
+    if (block.phase?.includes('正在重试')) return block.phase
     if (block.phase === 'model_requested') return '正在调用模型'
     if (block.phase === 'memory_ready') return '已加载上下文'
     return '等待模型响应'

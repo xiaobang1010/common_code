@@ -27,6 +27,8 @@ class Session:
         origin: 会话来源："chat"（主对话）或 "subagent"（子代理子会话）
         agent_meta: 子代理元数据（agent_id/agent_type/status/usage/
             output_file/promoted/updated_at 七字段，普通会话为空 dict）
+        last_turn: 最近一回合的退出信息（reason/error/finished_at/user_ts，
+            回合收尾时写入，供前端历史重建恢复真实退出原因；空 dict 表示无记录）
     """
 
     id: str
@@ -42,6 +44,7 @@ class Session:
     parent_session_id: str | None = None
     origin: str = "chat"
     agent_meta: dict = field(default_factory=dict)
+    last_turn: dict = field(default_factory=dict)
 
 
 @dataclass
