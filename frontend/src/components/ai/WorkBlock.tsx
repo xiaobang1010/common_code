@@ -431,8 +431,9 @@ const TextItemView = memo(function TextItemView({ item }: { item: TimelineItem }
       style={{
         alignSelf: 'flex-start',
         maxWidth: '92%',
-        fontSize: '14px',
-        lineHeight: 1.6,
+        // 15px/1.7：正文比界面其他文字大一档、行距放宽，长回复阅读更省力
+        fontSize: '15px',
+        lineHeight: 1.7,
         color: 'var(--text-primary)',
         wordBreak: 'break-word',
       }}
