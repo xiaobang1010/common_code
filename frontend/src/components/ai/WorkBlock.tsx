@@ -432,9 +432,10 @@ const TextItemView = memo(function TextItemView({ item }: { item: TimelineItem }
         // 通栏铺满：fit-content 会让代码块/表格跟着文字宽度收缩，
         // 参考效果里卡片始终撑满可读列
         alignSelf: 'stretch',
-        // 15px/1.7：正文比界面其他文字大一档、行距放宽，长回复阅读更省力
-        fontSize: '15px',
-        lineHeight: 1.7,
+        // 14px/1.6：与主流客户端正文实测对齐；中文回落到雅黑渲染，
+        // 字面本就偏大，再放大字号会明显抢版面
+        fontSize: '14px',
+        lineHeight: 1.6,
         color: 'var(--text-primary)',
         wordBreak: 'break-word',
       }}

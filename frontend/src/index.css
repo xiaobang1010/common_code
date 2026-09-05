@@ -336,12 +336,12 @@ body {
 
 /* 行内代码：比正文小一档的灰底 chip，不再与正文同字号抢注意力 */
 .md-body [data-streamdown="inline-code"] {
-  padding: 1px 6px;
+  padding: 1px 5px;
   border-radius: 5px;
   border: 1px solid var(--code-border);
   background: var(--code-bg);
   color: var(--code-text);
-  font-size: 13px;
+  font-size: 12.5px;
 }
 
 /* 列表：行距收紧，列表符号弱化为三级灰 */
@@ -431,4 +431,4 @@ body {
   font-weight: 500;
   color: var(--text-secondary);
 }
-.md-body [data-streamdown="table-cell"] { padding: 11px 14px; font-size: 14px; }
+.md-body [data-streamdown="table-cell"] { padding: 10px 14px; font-size: 13.5px; }
