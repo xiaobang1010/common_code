@@ -1,5 +1,6 @@
 const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require('electron')
 const path = require('path')
+const fs = require('fs')
 const pty = require('node-pty')
 
 // 主窗口引用
@@ -149,6 +150,8 @@ function createWindow(port) {
 // 创建一个伪终端，返回 { id, shell }：shell 名供前端终端标签标题展示
 function createTerminal(cwd) {
   const id = `term-${++terminalIdCounter}`
+  // 工作区目录可能已被删除，此时回退到项目根，避免 pty 启动直接抛错
+  const workDir = cwd && fs.existsSync(cwd) ? cwd : projectRoot
   // Windows 优先 PowerShell 7，未安装则回退到 Windows PowerShell 5
   // 其他平台默认 bash
   let shell
@@ -169,7 +172,7 @@ function createTerminal(cwd) {
     name: 'xterm-color',
     cols: 80,
     rows: 24,
-    cwd: cwd || projectRoot,
+    cwd: workDir,
     env: process.env
   })
   // pty 输出转发给渲染进程
