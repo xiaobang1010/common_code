@@ -360,32 +360,49 @@ body {
 /* 代码块：拍平「外卡+内框」双层描边——外层单卡承载背景与圆角，
    语言标签行与右上操作钮同处一栏，代码直接铺在卡上（行号已在组件层关闭） */
 .md-body [data-streamdown="code-block"] {
+  position: relative;
   margin: 14px 0;
   padding: 0;
   gap: 0;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--bg-tertiary);
 }
 .md-body [data-streamdown="code-block-header"] {
-  height: 34px;
-  padding: 0 12px;
+  height: 38px;
+  padding: 0 14px;
   color: var(--text-secondary);
   font-size: 12px;
 }
+/* 无语言标注的代码块（如命令输出）不保留空标签行，避免卡片顶部一段死空白 */
+.md-body [data-streamdown="code-block-header"]:has(> span:empty) { display: none; }
 /* 内层 body 去框去底：描边与背景统一收敛到外层单卡 */
 .md-body [data-streamdown="code-block-body"] {
-  padding: 0 14px 12px;
+  padding: 2px 16px 14px;
   border: none;
   border-radius: 0;
   background: transparent;
   font-size: 13px;
   line-height: 1.65;
 }
+/* 标签行隐藏时补一点顶距，让首行代码与悬浮的操作钮行垂直居中对齐 */
+.md-body [data-streamdown="code-block"]:not(:has([data-streamdown="code-block-header"] > span:not(:empty))) [data-streamdown="code-block-body"] {
+  padding-top: 10px;
+}
 /* shiki 主题自带的 pre 底色与外层卡冲突，压平为透明让代码铺在卡背景上 */
 .md-body [data-streamdown="code-block-body"] pre { background: transparent; }
+/* 操作钮容器：streamdown 用 sticky + 负边距把它拉进标签行，负值按默认 32px 头高写死，
+   改头高后会拽出卡片边界；这里改为绝对定位钉在卡内右上角，与标签行同高 */
+.md-body [data-streamdown="code-block"] > div:has([data-streamdown="code-block-actions"]) {
+  position: absolute;
+  top: 0;
+  right: 14px;
+  height: 38px;
+  margin-top: 0;
+}
 /* 操作钮去底板描边：与参考效果一致，裸图标贴右上角 */
 .md-body [data-streamdown="code-block-actions"] {
+  gap: 12px;
   padding: 0;
   border: none;
   background: transparent;
