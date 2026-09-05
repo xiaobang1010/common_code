@@ -28,18 +28,25 @@ interface Props {
 // streamdown 按块记忆化渲染：流式期间只有末块重算，长回复不随内容变长变卡
 function Markdown({ content, streaming = false }: Props) {
   return (
-    <Streamdown
-      mode={streaming ? 'streaming' : 'static'}
-      plugins={plugins}
-      // caret 无默认值且仅在 isAnimating 为 true 时渲染，两个 prop 必须成对显式传
-      caret="block"
-      isAnimating={streaming}
-      // 关闭内置的链接确认弹层：外链保持真实 <a>（target=_blank + rel 加固），
-      // 点击由 Electron 主进程 setWindowOpenHandler 统一转交系统浏览器
-      linkSafety={{ enabled: false }}
-    >
-      {content}
-    </Streamdown>
+    // md-body 是排版覆盖的作用域钩子：streamdown 默认样式偏通用文档风
+    //（标题过大、代码块双层框、表格带底色表头），对话区需要更紧凑克制的排印，
+    // 具体覆盖见 index.css 的 .md-body 规则块
+    <div className="md-body">
+      <Streamdown
+        mode={streaming ? 'streaming' : 'static'}
+        plugins={plugins}
+        // caret 无默认值且仅在 isAnimating 为 true 时渲染，两个 prop 必须成对显式传
+        caret="block"
+        isAnimating={streaming}
+        // 关闭内置的链接确认弹层：外链保持真实 <a>（target=_blank + rel 加固），
+        // 点击由 Electron 主进程 setWindowOpenHandler 统一转交系统浏览器
+        linkSafety={{ enabled: false }}
+        // 代码块不显示行号：聊天场景下行号是噪音，参考主流客户端均为无行号的平铺代码卡
+        lineNumbers={false}
+      >
+        {content}
+      </Streamdown>
+    </div>
   )
 }
 

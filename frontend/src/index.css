@@ -303,3 +303,132 @@ body {
     animation: none !important;
   }
 }
+
+/* ============================================================
+ * 对话区 Markdown 排版覆盖（.md-body 作用域，见 Markdown.tsx）
+ * streamdown 默认类是通用文档风：标题 30/24/20px 过大、块间距 16px 松散、
+ * 代码块「外卡+内框」双层描边、表格带底色表头，聊天场景阅读体验差。
+ * 本块为未分层规则，天然压过 utilities 层里的 streamdown 类，
+ * 按 data-streamdown 语义节点逐项收敛到紧凑克制的对话排印
+ * ============================================================ */
+
+/* 块间距：默认 space-y-4（16px）收紧到 12px，段落/列表更连贯 */
+.md-body > div > * + * {
+  margin-top: 12px;
+}
+/* 首块贴顶：标题自带 margin-top 会压过 streamdown 的 first-child 清零（同为未分层，靠顺序取胜） */
+.md-body [data-streamdown]:first-child {
+  margin-top: 0;
+}
+
+/* 标题：字号阶梯压缩到 18/16/15/14px，层级靠字重与上下留白表达，不再靠放大 */
+.md-body [data-streamdown="heading-1"] { margin: 24px 0 8px; font-size: 18px; line-height: 1.4; }
+.md-body [data-streamdown="heading-2"] { margin: 20px 0 8px; font-size: 16px; line-height: 1.4; }
+.md-body [data-streamdown="heading-3"] { margin: 16px 0 6px; font-size: 15px; line-height: 1.5; }
+.md-body [data-streamdown="heading-4"] { margin: 14px 0 4px; font-size: 14px; line-height: 1.5; }
+.md-body [data-streamdown="heading-5"],
+.md-body [data-streamdown="heading-6"] {
+  margin: 12px 0 4px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+/* 行内代码：比正文小一档的灰底 chip，不再与正文同字号抢注意力 */
+.md-body [data-streamdown="inline-code"] {
+  padding: 1px 5px;
+  border-radius: 5px;
+  border: 1px solid var(--code-border);
+  background: var(--code-bg);
+  color: var(--code-text);
+  font-size: 12.5px;
+}
+
+/* 列表：行距收紧，列表符号弱化为三级灰 */
+.md-body [data-streamdown="list-item"] { padding: 2px 0; }
+.md-body [data-streamdown="list-item"]::marker { color: var(--text-tertiary); }
+
+/* 分隔线与引用块：细线、弱色，只做段落分组不抢版面 */
+.md-body [data-streamdown="horizontal-rule"] { margin: 20px 0; border-color: var(--border); }
+.md-body [data-streamdown="blockquote"] {
+  margin: 12px 0;
+  padding-left: 12px;
+  border-color: var(--border-strong);
+  color: var(--text-secondary);
+}
+
+/* 代码块：拍平「外卡+内框」双层描边——外层单卡承载背景与圆角，
+   语言标签行与右上操作钮同处一栏，代码直接铺在卡上（行号已在组件层关闭） */
+.md-body [data-streamdown="code-block"] {
+  position: relative;
+  margin: 14px 0;
+  padding: 0;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-tertiary);
+}
+.md-body [data-streamdown="code-block-header"] {
+  height: 38px;
+  padding: 0 14px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+/* 无语言标注的代码块（如命令输出）不保留空标签行，避免卡片顶部一段死空白 */
+.md-body [data-streamdown="code-block-header"]:has(> span:empty) { display: none; }
+/* 内层 body 去框去底：描边与背景统一收敛到外层单卡 */
+.md-body [data-streamdown="code-block-body"] {
+  padding: 2px 16px 14px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  font-size: 13px;
+  line-height: 1.65;
+}
+/* 标签行隐藏时补一点顶距，让首行代码与悬浮的操作钮行垂直居中对齐 */
+.md-body [data-streamdown="code-block"]:not(:has([data-streamdown="code-block-header"] > span:not(:empty))) [data-streamdown="code-block-body"] {
+  padding-top: 10px;
+}
+/* shiki 主题自带的 pre 底色与外层卡冲突，压平为透明让代码铺在卡背景上 */
+.md-body [data-streamdown="code-block-body"] pre { background: transparent; }
+/* 操作钮容器：streamdown 用 sticky + 负边距把它拉进标签行，负值按默认 32px 头高写死，
+   改头高后会拽出卡片边界；这里改为绝对定位钉在卡内右上角，与标签行同高 */
+.md-body [data-streamdown="code-block"] > div:has([data-streamdown="code-block-actions"]) {
+  position: absolute;
+  top: 0;
+  right: 14px;
+  height: 38px;
+  margin-top: 0;
+}
+/* 操作钮去底板描边：与参考效果一致，裸图标贴右上角 */
+.md-body [data-streamdown="code-block-actions"] {
+  gap: 12px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  backdrop-filter: none;
+}
+
+/* 表格：去外层卡与表头底色填充，只保留细行分隔线；
+   内层滚动框无 data 属性，经 :has 定位其直系容器 */
+.md-body [data-streamdown="table-wrapper"] {
+  margin: 14px 0;
+  padding: 0;
+  gap: 8px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+.md-body [data-streamdown="table-wrapper"] > div:has(> [data-streamdown="table"]) {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: transparent;
+}
+.md-body [data-streamdown="table-header"] { background: transparent; }
+.md-body [data-streamdown="table-header-cell"] {
+  padding: 9px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.md-body [data-streamdown="table-cell"] { padding: 10px 14px; font-size: 13.5px; }

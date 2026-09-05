@@ -429,8 +429,11 @@ const TextItemView = memo(function TextItemView({ item }: { item: TimelineItem }
   return (
     <div
       style={{
-        alignSelf: 'flex-start',
-        maxWidth: '92%',
+        // 通栏铺满：fit-content 会让代码块/表格跟着文字宽度收缩，
+        // 参考效果里卡片始终撑满可读列
+        alignSelf: 'stretch',
+        // 14px/1.6：与主流客户端正文实测对齐；中文回落到雅黑渲染，
+        // 字面本就偏大，再放大字号会明显抢版面
         fontSize: '14px',
         lineHeight: 1.6,
         color: 'var(--text-primary)',
