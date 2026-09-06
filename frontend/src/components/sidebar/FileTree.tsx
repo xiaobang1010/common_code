@@ -1,13 +1,36 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { filesApi } from '../../api/client'
 import { subscribeFileEventsDebounced } from '../../api/fileEvents'
 import { useWorkspaceSignal } from '../../stores/useWorkspaceSignal'
 import { dedupeChanges, useGitStatus } from '../inspector/useGitStatus'
+import FileTreeContextMenu from './FileTreeContextMenu'
+import { CHAT_INSERT_REF_EVENT } from '../ai/ChatInput'
 
 // 文件列表接口返回的单项
 interface FileItem {
   name: string
   type: 'dir' | 'file'
+  path: string
+}
+
+// 工作区相对路径（正斜杠口径）拼成当前平台的绝对路径。
+// 工作区路径本身来自主进程，已是原生分隔符口径；Windows 下统一转反斜杠
+const toAbsolutePath = (workspacePath: string, relPath: string): string => {
+  const isWin = navigator.userAgent.includes('Windows')
+  const base = workspacePath.replace(/[\\/]+$/, '')
+  return isWin ? `${base}\\${relPath.split('/').join('\\')}` : `${base}/${relPath}`
+}
+
+// 在系统文件管理器中定位路径：走 Electron 桥接，浏览器开发模式下静默跳过
+const revealInFolder = (fullPath: string) => {
+  const w = window as unknown as { electronAPI?: { revealInFolder?: (p: string) => Promise<void> } }
+  void w.electronAPI?.revealInFolder?.(fullPath)
+}
+
+// 右键菜单锚点：节点屏幕坐标 + 目标文件相对路径
+interface NodeMenuState {
+  x: number
+  y: number
   path: string
 }
 
@@ -130,9 +153,11 @@ interface FileTreeNodeProps {
   onFileOpen: (path: string) => void
   activePath?: string
   onPinFile?: (path: string) => void
+  // 文件节点右键：弹出操作菜单（目录不响应）
+  onNodeContextMenu: (e: ReactMouseEvent, item: FileItem) => void
 }
 
-function FileTreeNode({ item, depth, onFileOpen, activePath, onPinFile }: FileTreeNodeProps) {
+function FileTreeNode({ item, depth, onFileOpen, activePath, onPinFile, onNodeContextMenu }: FileTreeNodeProps) {
   const [expanded, setExpanded] = useState(false)
   const [children, setChildren] = useState<FileItem[]>([])
   const [loaded, setLoaded] = useState(false)
@@ -175,6 +200,9 @@ function FileTreeNode({ item, depth, onFileOpen, activePath, onPinFile }: FileTr
         }}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
+        onContextMenu={(e) => {
+          if (!isDir) onNodeContextMenu(e, item)
+        }}
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -202,7 +230,7 @@ function FileTreeNode({ item, depth, onFileOpen, activePath, onPinFile }: FileTr
       {isDir && expanded && loaded && (
         <div>
           {children.map((child) => (
-            <FileTreeNode key={child.path} item={child} depth={depth + 1} onFileOpen={onFileOpen} activePath={activePath} onPinFile={onPinFile} />
+            <FileTreeNode key={child.path} item={child} depth={depth + 1} onFileOpen={onFileOpen} activePath={activePath} onPinFile={onPinFile} onNodeContextMenu={onNodeContextMenu} />
           ))}
         </div>
       )}
@@ -211,13 +239,14 @@ function FileTreeNode({ item, depth, onFileOpen, activePath, onPinFile }: FileTr
 }
 
 // 过滤结果树节点：全部展开、命中高亮，点击文件打开
-function FilteredTreeNode({ node, depth, q, onFileOpen, activePath, onPinFile }: {
+function FilteredTreeNode({ node, depth, q, onFileOpen, activePath, onPinFile, onNodeContextMenu }: {
   node: FullTreeNode
   depth: number
   q: string
   onFileOpen: (path: string) => void
   activePath?: string
   onPinFile?: (path: string) => void
+  onNodeContextMenu: (e: ReactMouseEvent, item: FileItem) => void
 }) {
   const [hovered, setHovered] = useState(false)
   const isDir = node.item.type === 'dir'
@@ -234,6 +263,9 @@ function FilteredTreeNode({ node, depth, q, onFileOpen, activePath, onPinFile }:
         }}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
+        onContextMenu={(e) => {
+          if (!isDir) onNodeContextMenu(e, node.item)
+        }}
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -261,7 +293,7 @@ function FilteredTreeNode({ node, depth, q, onFileOpen, activePath, onPinFile }:
         </span>
       </div>
       {node.children.map((c) => (
-        <FilteredTreeNode key={c.item.path} node={c} depth={depth + 1} q={q} onFileOpen={onFileOpen} activePath={activePath} onPinFile={onPinFile} />
+        <FilteredTreeNode key={c.item.path} node={c} depth={depth + 1} q={q} onFileOpen={onFileOpen} activePath={activePath} onPinFile={onPinFile} onNodeContextMenu={onNodeContextMenu} />
       ))}
     </div>
   )
@@ -372,6 +404,37 @@ function FileTree({ onFileOpen, activePath, onPinFile, workspaceName }: FileTree
   // 当前工作区路径信号：首次挂载与切换工作区共用一条重取链路。切换时先清数据，
   // 重取完成前不闪现上一个工作区的树（对齐 useGitStatus 的先清后取模式）
   const workspacePath = useWorkspaceSignal((s) => s.currentPath)
+
+  // ---- 文件节点右键菜单 ----
+  const [nodeMenu, setNodeMenu] = useState<NodeMenuState | null>(null)
+
+  const handleNodeContextMenu = useCallback((e: ReactMouseEvent, item: FileItem) => {
+    e.preventDefault()
+    // 阻止冒泡到树容器，避免同一事件里外层再处理一次
+    e.stopPropagation()
+    setNodeMenu({ x: e.clientX, y: e.clientY, path: item.path })
+  }, [])
+
+  const handleReveal = useCallback(() => {
+    if (!nodeMenu || !workspacePath) return
+    revealInFolder(toAbsolutePath(workspacePath, nodeMenu.path))
+  }, [nodeMenu, workspacePath])
+
+  const handleCopyAbsolute = useCallback(() => {
+    if (!nodeMenu || !workspacePath) return
+    void navigator.clipboard.writeText(toAbsolutePath(workspacePath, nodeMenu.path))
+  }, [nodeMenu, workspacePath])
+
+  const handleCopyRelative = useCallback(() => {
+    if (!nodeMenu) return
+    void navigator.clipboard.writeText(nodeMenu.path)
+  }, [nodeMenu])
+
+  const handleAddToChat = useCallback(() => {
+    if (!nodeMenu) return
+    // 通知对话输入框在光标处（或末尾）插入内联文件引用 chip
+    window.dispatchEvent(new CustomEvent(CHAT_INSERT_REF_EVENT, { detail: nodeMenu.path }))
+  }, [nodeMenu])
 
   useEffect(() => {
     setRootItems([])
@@ -668,7 +731,7 @@ function FileTree({ onFileOpen, activePath, onPinFile, workspaceName }: FileTree
       {/* 文件树列表：过滤激活时展示全局过滤结果（懒加载树保持挂载，展开态不丢） */}
       <div key={treeVersion} style={{ flex: 1, overflow: 'auto', padding: '6px 0', display: filterTree !== null ? 'none' : 'block' }}>
         {rootItems.map((item) => (
-          <FileTreeNode key={item.path} item={item} depth={0} onFileOpen={onFileOpen} activePath={activePath} onPinFile={onPinFile} />
+          <FileTreeNode key={item.path} item={item} depth={0} onFileOpen={onFileOpen} activePath={activePath} onPinFile={onPinFile} onNodeContextMenu={handleNodeContextMenu} />
         ))}
       </div>
       {filterTree !== null && (
@@ -681,10 +744,23 @@ function FileTree({ onFileOpen, activePath, onPinFile, workspaceName }: FileTree
             </div>
           ) : (
             filterTree.map((n) => (
-              <FilteredTreeNode key={n.item.path} node={n} depth={0} q={filter.trim().toLowerCase()} onFileOpen={onFileOpen} activePath={activePath} onPinFile={onPinFile} />
+              <FilteredTreeNode key={n.item.path} node={n} depth={0} q={filter.trim().toLowerCase()} onFileOpen={onFileOpen} activePath={activePath} onPinFile={onPinFile} onNodeContextMenu={handleNodeContextMenu} />
             ))
           )}
         </div>
+      )}
+
+      {/* 文件节点右键菜单浮层 */}
+      {nodeMenu && (
+        <FileTreeContextMenu
+          x={nodeMenu.x}
+          y={nodeMenu.y}
+          onClose={() => setNodeMenu(null)}
+          onReveal={handleReveal}
+          onCopyAbsolute={handleCopyAbsolute}
+          onCopyRelative={handleCopyRelative}
+          onAddToChat={handleAddToChat}
+        />
       )}
     </div>
   )

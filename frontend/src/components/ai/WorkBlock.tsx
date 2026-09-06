@@ -1,7 +1,37 @@
-import { useState, useEffect, memo, useCallback } from 'react'
+import { useState, useEffect, memo, useCallback, type ReactNode } from 'react'
 import { useChatStore, formatDuration, lastActivityAtRef, type WorkBlock, type TimelineItem } from '../../stores/useChatStore'
 import SubagentCard from './SubagentCard'
 import Markdown from './Markdown'
+
+// ---------- 用户消息中的文件引用渲染 ----------
+// 输入框发送时把内联 chip 序列化为 [文件名](./工作区相对路径) 的 Markdown
+// 链接，气泡里再还原成文件 chip。仅当链接 URL 以 ./ 开头才认定为文件引用，
+// 外链等普通 Markdown 链接不受影响
+const FILE_REF_RE = /\[([^\]]+)\]\((\.\/[^)]+)\)/g
+
+function renderUserMessage(text: string): ReactNode[] {
+  const nodes: ReactNode[] = []
+  let last = 0
+  let m: RegExpExecArray | null
+  FILE_REF_RE.lastIndex = 0
+  while ((m = FILE_REF_RE.exec(text))) {
+    const [, label, url] = m
+    const path = url.slice(2)
+    if (m.index > last) nodes.push(text.slice(last, m.index))
+    nodes.push(
+      <span key={`ref-${m.index}`} className="chat-ref-chip" title={path}>
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <path d="M14 2v6h6" />
+        </svg>
+        <span>{label}</span>
+      </span>,
+    )
+    last = m.index + m[0].length
+  }
+  if (last < text.length) nodes.push(text.slice(last))
+  return nodes
+}
 
 interface Props {
   // 只订阅自己的工作块：流式更新只触发本组件重渲
@@ -867,7 +897,7 @@ function WorkBlockView({ blockId }: Props) {
                 {block.skillName.charAt(0).toUpperCase() + block.skillName.slice(1)}
               </span>
             )}
-            {block.userMessage}
+            {renderUserMessage(block.userMessage)}
           </div>
         </div>
       )}

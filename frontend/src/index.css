@@ -432,3 +432,73 @@ body {
   color: var(--text-secondary);
 }
 .md-body [data-streamdown="table-cell"] { padding: 10px 14px; font-size: 13.5px; }
+
+/* ---- 对话输入框（富文本 contentEditable + 内联文件引用 chip） ---- */
+
+/* 编辑器本体：高度与原两行 textarea 相当，内容过高时内部滚动；
+   白空格保留策略与 textarea 对齐（连续空格/换行可见） */
+.chat-rich-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 66px;
+  max-height: 200px;
+  overflow-y: auto;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-lg);
+  padding: 12px 14px 32px;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-family: var(--font-ui);
+  line-height: 1.5;
+  outline: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* 占位符：编辑区为空时显示（残留空节点在 onInput 里清掉保证 :empty 命中） */
+.chat-rich-input:empty::before {
+  content: attr(data-placeholder);
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+/* 文件引用 chip：文字流中的不可编辑元素 */
+.chat-ref-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 240px;
+  margin: 0 3px;
+  padding: 1px 4px 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  vertical-align: middle;
+  user-select: none;
+}
+.chat-ref-chip > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-ref-chip-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0;
+}
+.chat-ref-chip-close:hover {
+  color: var(--text-primary);
+}

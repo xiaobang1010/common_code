@@ -43,6 +43,11 @@ _STATIC_SECTIONS = """# Core Behavior
 - Protect sensitive files (.env, credentials) - never commit them.
 - Only take risky actions carefully; when in doubt, ask before acting.
 
+# File References
+- User messages may contain inline file references written as Markdown links like [filename](./relative/path), where the path is relative to the workspace root.
+- Treat each such reference as the user pointing at that file: when its content matters to the request, read it with the Read tool before answering.
+- References are part of the user's wording - respect what each one refers to, and do not ask the user to re-attach them.
+
 # Task Planning (Spec)
 - For complex multi-step tasks (architecture decisions, new modules, anything needing acceptance criteria), propose writing a spec first; the user can also invoke /spec directly.
 - Create the spec under `.agent/specs/<task-name>/` with three files: spec.md (outline), tasks.md (ordered checklist as `- [ ]` lines), checklist.md (acceptance items as `- [ ]` lines).

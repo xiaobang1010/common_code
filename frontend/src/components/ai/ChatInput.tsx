@@ -1,9 +1,14 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type { PermissionRequest, QuestionRequest } from '../../stores/useChatStore'
 import { useChatStore } from '../../stores/useChatStore'
 import { llmApi, type PermissionMode, type CustomLLMProviderInfo } from '../../api/client'
 import { useSettingsStore } from '../../stores/useSettingsStore'
 import QuestionCard from './QuestionCard'
+import RichChatInput, { type RichChatInputHandle } from './RichChatInput'
+
+// 文件树右键「添加到对话」的事件名：detail 为工作区相对路径，
+// ChatInput 监听后在输入框内插入内联引用 chip
+export const CHAT_INSERT_REF_EVENT = 'chat-insert-ref'
 
 interface Props {
   onSend: (prompt: string) => boolean | Promise<boolean>
@@ -57,14 +62,15 @@ const BUILTIN_COMMANDS = [
 ]
 
 function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, questionRequest, onAnswer, permissionMode, onPermissionModeChange, currentTaskSessionId }: Props) {
-  const [value, setValue] = useState('')
+  // 输入框序列化文本（chip 已还原为 @路径），供补全过滤与发送按钮状态用
+  const [text, setText] = useState('')
   // 用户手动关闭补全后置 true，阻止自动弹出，直到下次输入变化
   const [commandsDismissed, setCommandsDismissed] = useState(false)
   const [selectedIdx, setSelectedIdx] = useState(0)
   const [isFocused, setIsFocused] = useState(false)
   const [commands, setCommands] = useState(BUILTIN_COMMANDS)
   const [showPermMenu, setShowPermMenu] = useState(false)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const richInputRef = useRef<RichChatInputHandle>(null)
   const permMenuRef = useRef<HTMLDivElement>(null)
   // 当前会话 id：区分"本会话在跑"与"其他会话在跑"
   const currentSessionId = useChatStore(s => s.sessionId)
@@ -148,67 +154,73 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
       })
   }, [])
 
-  const filteredCommands = commands.filter(c => c.name.startsWith(value))
+  const filteredCommands = commands.filter(c => c.name.startsWith(text))
 
   // 补全列表是否展示：直接从输入值派生，不用 effect 回写状态。
   // 旧实现用 useEffect 监听 value 并回写 showCommands，且依赖里缺少 filteredCommands，
   // 会在发送清空输入与自动回写之间形成反馈环，触发 Maximum update depth exceeded。
-  const showCommands = value.startsWith('/') && filteredCommands.length > 0 && !commandsDismissed
+  const showCommands = text.startsWith('/') && filteredCommands.length > 0 && !commandsDismissed
 
   // 输入变化时重置选中项和手动关闭标记（新的一轮输入视为重新打开补全）
   useEffect(() => {
     setSelectedIdx(0)
     setCommandsDismissed(false)
-  }, [value])
+  }, [text])
+
+  // 文件树「添加到对话」：在输入框光标处（或末尾）插入内联引用 chip
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const path = (e as CustomEvent<string>).detail
+      if (typeof path === 'string' && path) richInputRef.current?.insertRef(path)
+    }
+    window.addEventListener(CHAT_INSERT_REF_EVENT, handler)
+    return () => window.removeEventListener(CHAT_INSERT_REF_EVENT, handler)
+  }, [])
 
   // 任务运行中发送被拒收的提示：transient 显示，超时自动消失
   const [rejectHint, setRejectHint] = useState(false)
   const rejectTimerRef = useRef<number | undefined>(undefined)
 
   const handleSend = () => {
-    const trimmed = value.trim()
+    const trimmed = text.trim()
     if (!trimmed || taskActive) return
     const showHint = () => {
       setRejectHint(true)
       if (rejectTimerRef.current) window.clearTimeout(rejectTimerRef.current)
       rejectTimerRef.current = window.setTimeout(() => setRejectHint(false), 3000)
     }
+    // 序列化文本已含内联 [文件名](./路径) 引用，直接发送
     Promise.resolve(onSend(trimmed)).then(sent => {
-      if (sent) setValue('')
+      if (sent) richInputRef.current?.clear()
       else showHint()
     })
   }
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (showCommands) {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault()
-        setSelectedIdx(prev => (prev + 1) % filteredCommands.length)
-        return
-      }
-      if (e.key === 'ArrowUp') {
-        e.preventDefault()
-        setSelectedIdx(prev => (prev - 1 + filteredCommands.length) % filteredCommands.length)
-        return
-      }
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        setCommandsDismissed(true)
-        return
-      }
-      if (e.key === 'Enter') {
-        e.preventDefault()
-        setValue(filteredCommands[selectedIdx].name + ' ')
-        textareaRef.current?.focus()
-        return
-      }
-    } else {
-      // Enter 发送，Shift+Enter 换行，Ctrl/Cmd+Enter 也发送
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault()
-        handleSend()
-      }
+  // 补全导航按键：消费后返回 true，未命中补全态交回输入框自身处理
+  const handleKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>): boolean => {
+    if (!showCommands) return false
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      setSelectedIdx(prev => (prev + 1) % filteredCommands.length)
+      return true
     }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setSelectedIdx(prev => (prev - 1 + filteredCommands.length) % filteredCommands.length)
+      return true
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      setCommandsDismissed(true)
+      return true
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      richInputRef.current?.setText(filteredCommands[selectedIdx].name + ' ')
+      richInputRef.current?.focus()
+      return true
+    }
+    return false
   }
 
   // 切换模型：调用激活接口 -> 刷新本地状态 -> 广播变更触发 fetchState 更新
@@ -496,8 +508,8 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
             <div
               key={cmd.name}
               onClick={() => {
-                setValue(cmd.name + ' ')
-                textareaRef.current?.focus()
+                richInputRef.current?.setText(cmd.name + ' ')
+                richInputRef.current?.focus()
               }}
               style={{
                 padding: '8px 14px',
@@ -535,12 +547,13 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
           transition: 'all var(--transition)',
         }}
       >
-        <textarea
-          ref={textareaRef}
-          value={value}
-          onChange={e => setValue(e.target.value)}
-          onKeyDown={handleKeyDown}
+        {/* 富文本输入：文件引用以 chip 内联在文字流中，随文本一起序列化发送 */}
+        <RichChatInput
+          ref={richInputRef}
           disabled={taskActive}
+          onTextChange={setText}
+          onSubmit={handleSend}
+          onKeyDown={handleKeyDown}
           onFocus={() => setIsFocused(true)}
           onBlur={() => setIsFocused(false)}
           placeholder={
@@ -550,21 +563,6 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
                 ? '当前有任务运行中，可继续输入草稿'
                 : '描述你想做什么，或输入 / 命令'
           }
-          rows={2}
-          style={{
-            width: '100%',
-            resize: 'none',
-            background: 'transparent',
-            border: 'none',
-            borderRadius: 'var(--radius-lg)',
-            padding: '12px 14px 32px',
-            color: 'var(--text-primary)',
-            fontSize: '14px',
-            fontFamily: 'var(--font-ui)',
-            lineHeight: 1.5,
-            outline: 'none',
-            opacity: taskActive ? 0.6 : 1,
-          }}
         />
 
         {/* 底部工具栏 - 发送按钮和提示 */}
@@ -691,7 +689,7 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
               </div>
             )}
             {/* 斜杠输入时的命令补全提示 */}
-            {value.startsWith('/') && (
+            {text.startsWith('/') && (
               <span
                 style={{
                   fontSize: '9px',
@@ -1049,30 +1047,30 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
             // 非流式：显示发送按钮
             <button
               onClick={handleSend}
-              disabled={!value.trim()}
+              disabled={!text.trim()}
               style={{
                 pointerEvents: 'auto',
                 padding: '4px 10px',
                 border: 'none',
                 borderRadius: 'var(--radius-sm)',
-                background: value.trim()
+                background: text.trim()
                   ? 'var(--button-primary-bg)'
                   : 'var(--bg-elevated)',
-                color: value.trim() ? 'var(--button-primary-text)' : 'var(--text-tertiary)',
+                color: text.trim() ? 'var(--button-primary-text)' : 'var(--text-tertiary)',
                 fontSize: '11px',
                 fontFamily: 'var(--font-ui)',
                 fontWeight: 600,
-                cursor: value.trim() ? 'pointer' : 'default',
+                cursor: text.trim() ? 'pointer' : 'default',
                 transition: 'all var(--transition-fast)',
                 display: 'flex',
                 alignItems: 'center',
                 gap: '4px',
               }}
               onMouseEnter={(e) => {
-                if (value.trim()) e.currentTarget.style.background = 'var(--button-primary-bg-hover)'
+                if (text.trim()) e.currentTarget.style.background = 'var(--button-primary-bg-hover)'
               }}
               onMouseLeave={(e) => {
-                if (value.trim()) e.currentTarget.style.background = 'var(--button-primary-bg)'
+                if (text.trim()) e.currentTarget.style.background = 'var(--button-primary-bg)'
               }}
             >
               发送
