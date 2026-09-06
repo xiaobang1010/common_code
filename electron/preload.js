@@ -15,5 +15,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
   // 选择目录对话框，返回选中的目录路径或 null
-  selectDirectory: () => ipcRenderer.invoke('dialog:selectDirectory')
+  selectDirectory: () => ipcRenderer.invoke('dialog:selectDirectory'),
+  // 在系统文件管理器中定位指定路径（文件树右键菜单使用）
+  revealInFolder: (fullPath) => ipcRenderer.invoke('shell:revealInFolder', fullPath)
 })

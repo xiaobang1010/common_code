@@ -230,6 +230,12 @@ app.whenReady().then(() => {
     }
     return result.filePaths[0]
   })
+
+  // 在系统文件管理器中定位并选中指定路径（文件树右键「在资源管理器中打开」）
+  ipcMain.handle('shell:revealInFolder', (_event, fullPath) => {
+    if (typeof fullPath !== 'string' || !fullPath) return
+    shell.showItemInFolder(fullPath)
+  })
 })
 
 // 所有窗口关闭时的处理：终端控制台模式下生命周期由 launch.py 托管，
