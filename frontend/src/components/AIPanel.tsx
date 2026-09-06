@@ -48,7 +48,6 @@ function AIPanel({ hasWorkspace, onOpenWorkspace, currentTaskSessionId }: AIPane
       <div
         style={{
           padding: '12px 0 14px',
-          borderTop: '1px solid var(--border)',
           flexShrink: 0,
           background: 'var(--fade-bottom)',
         }}
