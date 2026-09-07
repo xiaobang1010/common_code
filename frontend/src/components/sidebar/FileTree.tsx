@@ -27,7 +27,7 @@ const revealInFolder = (fullPath: string) => {
   void w.electronAPI?.revealInFolder?.(fullPath)
 }
 
-// 右键菜单锚点：节点屏幕坐标 + 目标文件相对路径
+// 右键菜单锚点：节点屏幕坐标 + 目标节点相对路径
 interface NodeMenuState {
   x: number
   y: number
@@ -153,7 +153,7 @@ interface FileTreeNodeProps {
   onFileOpen: (path: string) => void
   activePath?: string
   onPinFile?: (path: string) => void
-  // 文件节点右键：弹出操作菜单（目录不响应）
+  // 节点右键：弹出操作菜单（文件与目录均响应）
   onNodeContextMenu: (e: ReactMouseEvent, item: FileItem) => void
 }
 
@@ -201,7 +201,7 @@ function FileTreeNode({ item, depth, onFileOpen, activePath, onPinFile, onNodeCo
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
         onContextMenu={(e) => {
-          if (!isDir) onNodeContextMenu(e, item)
+          onNodeContextMenu(e, item)
         }}
         style={{
           display: 'flex',
@@ -264,7 +264,7 @@ function FilteredTreeNode({ node, depth, q, onFileOpen, activePath, onPinFile, o
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
         onContextMenu={(e) => {
-          if (!isDir) onNodeContextMenu(e, node.item)
+          onNodeContextMenu(e, node.item)
         }}
         style={{
           display: 'flex',
@@ -405,7 +405,7 @@ function FileTree({ onFileOpen, activePath, onPinFile, workspaceName }: FileTree
   // 重取完成前不闪现上一个工作区的树（对齐 useGitStatus 的先清后取模式）
   const workspacePath = useWorkspaceSignal((s) => s.currentPath)
 
-  // ---- 文件节点右键菜单 ----
+  // ---- 树节点右键菜单（文件与目录通用）----
   const [nodeMenu, setNodeMenu] = useState<NodeMenuState | null>(null)
 
   const handleNodeContextMenu = useCallback((e: ReactMouseEvent, item: FileItem) => {
@@ -750,7 +750,7 @@ function FileTree({ onFileOpen, activePath, onPinFile, workspaceName }: FileTree
         </div>
       )}
 
-      {/* 文件节点右键菜单浮层 */}
+      {/* 树节点右键菜单浮层 */}
       {nodeMenu && (
         <FileTreeContextMenu
           x={nodeMenu.x}

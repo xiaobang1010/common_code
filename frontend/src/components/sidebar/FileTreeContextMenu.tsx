@@ -11,7 +11,7 @@ interface FileTreeContextMenuProps {
   onAddToChat: () => void
 }
 
-// 文件树文件节点右键菜单：固定定位浮层，点击外部 / Esc 收起。
+// 文件树节点右键菜单：固定定位浮层，点击外部 / Esc 收起。
 // 样式对齐标签页右键菜单（TabContextMenu），复制类动作后菜单自动收起
 function FileTreeContextMenu({
   x,
