@@ -3,10 +3,8 @@ import { useGitStatus, dedupeChanges } from '../useGitStatus'
 import { useSpecProgress, deriveProgress } from '../../../hooks/useSpecProgress'
 
 interface SummaryCardProps {
-  // 当前会话 id：spec 进展按会话归属拉取（null = 无活跃会话，仅显示工作块数）
+  // 当前会话 id：清单进展按会话归属拉取（null = 无活跃会话）
   sessionId: string | null
-  // 当前会话工作块数量
-  blockCount: number
   // 点击产物文件项：在文件上下文内打开对应文件（可选）
   onOpenFile?: (path: string) => void
 }
@@ -76,8 +74,8 @@ function ProgressRow({ label, done, total, passed }: { label: string; done: numb
   )
 }
 
-// 概要卡：进展（spec 进度 + 会话工作块）/ 产物（git 变更文件汇总 + 文件列表）
-function SummaryCard({ sessionId, blockCount, onOpenFile }: SummaryCardProps) {
+// 概要卡：进展（清单进度，spec 三件套或 todos 轻清单）/ 产物（git 变更文件汇总 + 文件列表）
+function SummaryCard({ sessionId, onOpenFile }: SummaryCardProps) {
   const { data: gitStatus } = useGitStatus()
   // spec 进展按会话归属拉取，与胶囊卡共用同一数据源（useSpecProgress）与口径（deriveProgress）
   const { data: specData } = useSpecProgress(sessionId)
@@ -86,7 +84,7 @@ function SummaryCard({ sessionId, blockCount, onOpenFile }: SummaryCardProps) {
     ? dedupeChanges(gitStatus.changes).filter((c) => !c.path.endsWith('/'))
     : []
 
-  // 进展口径：优先任务、回退验证（皆空回退工作块数）；验收全勾时数字绿色
+  // 验收全勾时数字绿色强调
   const progress = deriveProgress(specData)
   const checks = specData?.checks
   const checksPassed = !!checks && checks.total > 0 && checks.done === checks.total
@@ -100,23 +98,22 @@ function SummaryCard({ sessionId, blockCount, onOpenFile }: SummaryCardProps) {
 
   return (
     <div style={{ paddingBottom: '10px' }}>
-      {/* 进展：有 spec 显示任务/验证进度（口径同胶囊卡），其下保留工作块计数 */}
+      {/* 进展：有清单显示任务/验证进度，无清单显示「暂无进展」 */}
       <SectionHeader title="进展" collapsed={collapsed.progress} onToggle={() => toggle('progress')} />
       {!collapsed.progress && (
         <>
           {specData && specData.tasks.total > 0 && (
-            <ProgressRow label="任务" done={specData.tasks.done} total={specData.tasks.total} passed={checksPassed} />
+            <ProgressRow
+              label={specData.kind === 'todo' ? '清单' : '任务'}
+              done={specData.tasks.done}
+              total={specData.tasks.total}
+              passed={checksPassed}
+            />
           )}
           {specData && specData.checks.total > 0 && (
             <ProgressRow label="验证" done={specData.checks.done} total={specData.checks.total} passed={checksPassed} />
           )}
-          {blockCount > 0 ? (
-            <div style={{ fontSize: '12px', color: 'var(--text-primary)', padding: '2px 12px' }}>
-              已完成 {blockCount} 个工作块
-            </div>
-          ) : (
-            !progress && <Empty text="暂无进展" />
-          )}
+          {!progress && <Empty text="暂无进展" />}
         </>
       )}
 

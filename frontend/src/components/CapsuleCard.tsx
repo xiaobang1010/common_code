@@ -3,7 +3,6 @@ import { TOOL_META, type ToolId } from './editor/toolMeta'
 import { useGitStatus } from './inspector/useGitStatus'
 import { useRunningSubagents, type RunningSubagent } from '../hooks/useRunningSubagents'
 import { useSpecProgress, deriveProgress, type SpecCheckItem } from '../hooks/useSpecProgress'
-import { useChatStore } from '../stores/useChatStore'
 
 interface CapsuleCardProps {
   // 点区块直达对应工具标签：展开面板并激活该标签
@@ -123,7 +122,6 @@ function CapsuleCard({ onOpenTool, sessionId }: CapsuleCardProps) {
   const { running: runningAgents } = useRunningSubagents(sessionId)
   // 进展精确到会话：传 sessionId 让后端按会话归属返回 spec，同工作区切会话各看各的
   const { data: specData } = useSpecProgress(sessionId)
-  const blockCount = useChatStore((s) => s.blockIds.length)
   // 卡片形态：收起（小胶囊摘要，默认）/ 展开（固定宽度完整卡）
   const [expanded, setExpanded] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -154,8 +152,19 @@ function CapsuleCard({ onOpenTool, sessionId }: CapsuleCardProps) {
 
   const totals = git.data?.totals ?? { files: 0, additions: 0, deletions: 0 }
   const spec = specData?.spec ?? null
+  // 空分组不显示：todo 轻清单没有验证组
+  const visibleGroups = specData
+    ? (
+        [
+          { key: 'tasks' as const, label: specData.kind === 'todo' ? '清单' : '任务', total: specData.tasks.total },
+          { key: 'checks' as const, label: '验证', total: specData.checks.total },
+        ]
+      ).filter((g) => g.total > 0)
+    : []
+  // 当前分组失效（切会话后原分组无条目）时回落到第一个可见分组
+  const effectiveGroup = visibleGroups.some((g) => g.key === specGroup) ? specGroup : (visibleGroups[0]?.key ?? 'tasks')
   // 当前分组的清单与完成度（点击折叠行后展开全部）
-  const activeGroup = specGroup === 'tasks' ? specData?.tasks : specData?.checks
+  const activeGroup = effectiveGroup === 'tasks' ? specData?.tasks : specData?.checks
   const groupItems = activeGroup?.items ?? []
   const { preceding, focus, following } = specExpanded
     ? { preceding: 0, focus: groupItems, following: 0 }
@@ -166,12 +175,11 @@ function CapsuleCard({ onOpenTool, sessionId }: CapsuleCardProps) {
 
   // ---- 收起态：活动摘要小胶囊，点击展开 ----
   if (!expanded) {
-    // 进度与展开态卡头对齐：与概要卡共用 deriveProgress 口径（优先任务、回退验证），
-    // 无 spec 时回退工作块数（同展开态卡头）；验收全勾时整体绿色
+    // 与概要卡共用 deriveProgress 口径；验收全勾时整体绿色
     const progressSource = deriveProgress(specData)
     const specxy = progressSource
       ? ` · ${progressSource.done}/${progressSource.total}`
-      : ` ${blockCount} 个工作块`
+      : ' · 暂无进展'
     return (
       <div
         onClick={() => setExpanded(true)}
@@ -254,7 +262,7 @@ function CapsuleCard({ onOpenTool, sessionId }: CapsuleCardProps) {
         ) : (
           <span style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
             <span style={sectionLabelStyle(false)}>进展</span>
-            <span style={sectionLabelStyle(true)}>{blockCount} 个工作块</span>
+            <span style={sectionLabelStyle(true)}>暂无进展</span>
           </span>
         )}
         <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
@@ -392,13 +400,8 @@ function CapsuleCard({ onOpenTool, sessionId }: CapsuleCardProps) {
               background: 'var(--bg-base)',
             }}
           >
-            {(
-              [
-                { key: 'tasks', label: '任务' },
-                { key: 'checks', label: '验证' },
-              ] as const
-            ).map(({ key, label }) => {
-              const selected = specGroup === key
+            {visibleGroups.map(({ key, label }) => {
+              const selected = effectiveGroup === key
               return (
                 <button
                   key={key}

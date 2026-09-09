@@ -16,6 +16,8 @@ export interface SpecChecklist {
 }
 
 export interface SpecProgressData {
+  // 清单类型：spec = 三件套目录，todo = 轻清单单文件；旧返回体缺省按 spec
+  kind: 'spec' | 'todo'
   spec: { name: string; path: string } | null
   tasks: SpecChecklist
   checks: SpecChecklist
@@ -53,6 +55,7 @@ export function useSpecProgress(sessionId: string | null): { data: SpecProgressD
       const json = await resp.json()
       if (gen !== genRef.current) return
       setData({
+        kind: json.kind ?? 'spec',
         spec: json.spec ?? null,
         tasks: json.tasks ?? { total: 0, done: 0, items: [] },
         checks: json.checks ?? { total: 0, done: 0, items: [] },
