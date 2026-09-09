@@ -1,4 +1,4 @@
-import { useState, useEffect, memo, useCallback, type ReactNode } from 'react'
+import { useRef, useState, useEffect, memo, useCallback, type ReactNode } from 'react'
 import { useChatStore, formatDuration, lastActivityAtRef, type WorkBlock, type TimelineItem } from '../../stores/useChatStore'
 import SubagentCard from './SubagentCard'
 import Markdown from './Markdown'
@@ -581,9 +581,16 @@ function WorkBlockView({ blockId }: Props) {
   // 局部订阅：只监听自己的工作块，其他 block 更新时不重渲
   const block = useChatStore(s => s.blocksById[blockId])
   // 展开语义：是否显示过程行（reasoning/tool）；正文行恒可见。
-  // 完成后默认平铺整个时间线，点状态行可折叠过程行降噪
-  const [expanded, setExpanded] = useState(true)
+  // 完成态默认折叠（含历史恢复），流式挂载时展开；点状态行可切换降噪
   const isRunning = block?.status === 'running'
+  const [expanded, setExpanded] = useState(() => block?.status === 'running')
+  // done 迁移自动收起：最终回复完整输出那一刻收回一次过程行；
+  // 仅沿 running→done 翻转触发，之后用户手动展开不再被打扰
+  const prevStatusRef = useRef(block?.status)
+  useEffect(() => {
+    if (prevStatusRef.current === 'running' && block?.status === 'done') setExpanded(false)
+    prevStatusRef.current = block?.status
+  }, [block?.status])
 
   const toggleExpanded = useCallback(() => setExpanded(v => !v), [])
 
@@ -614,17 +621,24 @@ function WorkBlockView({ blockId }: Props) {
     || isRunning
     || !!(block.exitReason && !NORMAL_EXITS.has(block.exitReason))
 
-  // 运行中过程行只显示最近 3 条，其余折叠；结束后显示全部
+  // 运行中过程行折叠：已闭合的思考段不占可见位（随工具轨迹一起进折叠组，避免一层层叠加），
+  // 其余过程行只显示最近 3 条；结束后过程行整体交由 expanded 折叠，此规则不再参与
   const [showAllSteps, setShowAllSteps] = useState(false)
   const processIdx = block.timeline
     .map((it, i) => (it.type === 'text' ? -1 : i))
     .filter(i => i >= 0)
-  const foldRunning = isRunning && !showAllSteps && processIdx.length > 3
-  const hiddenProcess = foldRunning ? processIdx.slice(0, -3) : []
+  const foldRunning = isRunning && !showAllSteps
+  const visibleRunning = foldRunning
+    ? processIdx
+        .filter(i => block.timeline[i].type !== 'reasoning' || block.timeline[i].open)
+        .slice(-3)
+    : processIdx
+  const hiddenProcess = foldRunning ? processIdx.filter(i => !visibleRunning.includes(i)) : []
   const hiddenSet = new Set(hiddenProcess)
 
-  // 异常结束且过程行可见时，时间线首行显示原因
-  const reasonText = !isRunning && expanded ? exitReasonLine(block) : ''
+  // 异常结束原因行：过程行可见时在时间线首行显示；若块没有任何过程行，
+  // 则没有折叠入口可展开（expanded 恒为初始折叠态），原因行直接平铺显示
+  const reasonText = !isRunning && (expanded || !hasProcessRows) ? exitReasonLine(block) : ''
 
   // 时间线按真实时序平铺：text → 正文行；reasoning → 思考行；tool → 事件行。
   // 折叠态（!expanded）只保留正文行 + 一条「已处理 N 步」折叠条
