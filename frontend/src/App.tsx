@@ -11,6 +11,7 @@ import BranchSelector from './components/ai/BranchSelector'
 import { useChatStore, lastActivityAtRef } from './stores/useChatStore'
 import { useSettingsStore } from './stores/useSettingsStore'
 import { useSessions } from './hooks/useSessions'
+import { useBranches } from './hooks/useBranches'
 import { TOOL_META, type ToolId } from './components/editor/toolMeta'
 import { gitApi, sessionsApi, type StateResponse, type TurnExitInfo } from './api/client'
 
@@ -121,26 +122,12 @@ function App() {
     sessions.loadAllSessions()
   }, [isStreaming]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 当前 Git 分支和分支列表
-  const [currentBranch, setCurrentBranch] = useState('')
-  const [branches, setBranches] = useState<string[]>([])
+  // 当前 Git 分支和分支列表：轮询/聚焦/工作区信号自动刷新，应用内切分支
+  // 与下拉打开时手动 refresh（见 useBranches）
+  const { current: currentBranch, branches, refresh: refreshBranches } = useBranches()
 
   // 标记初始会话是否已加载，避免重复加载
   const initialSessionLoaded = useRef(false)
-
-  // 工作区变化时加载分支列表
-  useEffect(() => {
-    if (!sessions.currentWorkspace) return
-    gitApi.branches(sessions.currentWorkspace.path)
-      .then(data => {
-        setBranches(data.branches)
-        setCurrentBranch(data.current)
-      })
-      .catch(() => {
-        setBranches([])
-        setCurrentBranch('')
-      })
-  }, [sessions.currentWorkspace?.path]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // 初始拉取后端汇总状态；改 LLM 配置后刷新 model 显示（原 useChat 内部逻辑）
   useEffect(() => {
@@ -382,14 +369,7 @@ function App() {
       alert('切换工作区失败，未能新建任务')
       return
     }
-    setCurrentBranch(switched.branch)
-    // 刷新分支列表（工作区变了）
-    gitApi.branches(workspacePath)
-      .then(data => {
-        setBranches(data.branches)
-        setCurrentBranch(data.current)
-      })
-      .catch(() => {})
+    // 分支显示由 useBranches 随工作区信号自动刷新
     await handleCreateSession()
   }, [sessions, handleCreateSession])
 
@@ -475,33 +455,20 @@ function App() {
       if (result) {
         setSessionId(sessionId)
         await loadMessagesWithRunningState(result.messages, result.lastTurn)
-        // 更新分支信息
-        if (result.branch !== undefined) {
-          setCurrentBranch(result.branch)
-        }
-        // 刷新分支列表（工作区可能变了）
-        if (sessions.currentWorkspace) {
-          gitApi.branches(sessions.currentWorkspace.path)
-            .then(data => {
-              setBranches(data.branches)
-              setCurrentBranch(data.current)
-            })
-            .catch(() => {})
-        }
+        // 分支显示由 useBranches 随工作区信号自动刷新
       }
     } catch (e) {
       alert(`切换会话失败：${e instanceof Error ? e.message : '未知错误'}`)
     }
   }, [sessions, setSessionId, loadMessagesWithRunningState])
 
-  // 切换工作区：更新分支，加载新当前会话（不中止后台任务）。
+  // 切换工作区：加载新当前会话（不中止后台任务）。
   // 嵌套切换失败时提示用户，本地状态不动（后端引擎未覆盖，不会串数据）
   const handleSwitchWorkspace = useCallback(async (path: string) => {
     disconnectStream()
     const result = await sessions.switchWorkspace(path)
     if (result) {
-      setCurrentBranch(result.branch)
-      // 加载新当前会话的消息
+      // 加载新当前会话的消息（分支显示由 useBranches 随工作区信号自动刷新）
       if (result.sessionId) {
         try {
           const snap = await sessions.switchSession(result.sessionId)
@@ -553,15 +520,15 @@ function App() {
     }
   }, [handleSwitchWorkspace])
 
-  // 切换 Git 分支
+  // 切换 Git 分支：成功后重取分支状态（顺带拿到 reflog 更新后的排序）
   const handleCheckout = useCallback(async (branch: string) => {
     try {
       await gitApi.checkout(branch)
-      setCurrentBranch(branch)
+      refreshBranches()
     } catch {
       // 切换失败静默忽略
     }
-  }, [])
+  }, [refreshBranches])
 
   // 移除工作区：删除后刷新列表，如果删的是当前工作区则清空聊天状态。
   // 删除工作区会连名下所有会话一起删除，运行中的任务也会被中止，需确认
@@ -571,11 +538,10 @@ function App() {
     const isCurrent = workspacePath === sessions.currentWorkspace?.path
     await sessions.deleteWorkspace(workspacePath)
     if (isCurrent) {
-      // 删的是当前工作区，清空聊天和会话状态
+      // 删的是当前工作区，清空聊天和会话状态（分支显示由 useBranches
+      // 随信号变空自动清空）
       setSessionId(null)
       clearMessages()
-      setCurrentBranch('')
-      setBranches([])
     }
   }, [sessions, setSessionId, clearMessages])
 
@@ -631,6 +597,7 @@ function App() {
             currentBranch={currentBranch}
             branches={branches}
             onCheckout={handleCheckout}
+            onRefresh={refreshBranches}
           />
         }
         panelActive={!editorCollapsed}

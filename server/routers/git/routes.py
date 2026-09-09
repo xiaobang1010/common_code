@@ -426,13 +426,46 @@ def git_diff(path: str = "") -> dict:
     }
 
 
+def _recent_branches(cwd: str) -> list[str]:
+    """解析 HEAD reflog 的 checkout 记录，返回按最近使用排序的分支序列。
+
+    reflog 从新到旧输出，形如 "checkout: moving from X to Y" 的行按序提取
+    to 侧分支并去重。已删除分支与 detached HEAD 产生的哈希目标由调用方和
+    现有分支表求交集过滤。reflog 不可用（空仓库/被清理/浅克隆）时返回空
+    列表，排序退化为字母序。
+    """
+    try:
+        proc = subprocess.run(
+            ["git", *GIT_GLOBAL_ARGS, "reflog", "--format=%gs"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            **GIT_TEXT_OPTS,
+            timeout=5,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return []
+    if proc.returncode != 0:
+        return []
+    recent: list[str] = []
+    for line in proc.stdout.splitlines():
+        if not line.startswith("checkout: moving from "):
+            continue
+        # 分支名不含空格，最后一个 " to " 之后即目标分支
+        target = line.rsplit(" to ", 1)[-1].strip()
+        if target and target not in recent:
+            recent.append(target)
+    return recent
+
+
 @router.get("/api/git/branches")
 def git_branches(path: str = "") -> dict:
-    """列出所有 Git 分支。
+    """列出所有 Git 分支，按「当前 → 最近使用 → 字母序」排列。
 
     参数 path：可选，默认用当前工作区。
-    返回 {"branches": [...], "current": "..."}。当前分支排在第一位。
-    非 git 仓库返回空列表。
+    返回 {"branches": [...], "current": "..."}。最近使用取自 reflog 的
+    checkout 记录（与现有分支表求交集，天然剔除已删除分支与 detached 哈希
+    目标）；从未出现在 reflog 的分支按字母序垫底。非 git 仓库返回空列表。
     """
     cwd = path if path else project_root()
     branches: list[str] = []
@@ -471,12 +504,16 @@ def git_branches(path: str = "") -> dict:
     except (subprocess.SubprocessError, OSError):
         return {"branches": [], "current": ""}
 
-    # 当前分支排到第一位
-    if current and current in branches:
-        branches.remove(current)
-        branches.insert(0, current)
-
-    return {"branches": branches, "current": current}
+    # 排序：当前分支第一；其后按 reflog 最近 checkout 使用序（与现有分支
+    # 表求交集）；从未切过的分支按字母序垫底
+    branch_set = set(branches)
+    recent = _recent_branches(cwd)
+    recent_set = set(recent)
+    ordered = ([current] if current else []) + [
+        b for b in recent if b != current and b in branch_set
+    ]
+    rest = sorted(b for b in branches if b != current and b not in recent_set)
+    return {"branches": ordered + rest, "current": current}
 
 
 @router.post("/api/git/checkout")
