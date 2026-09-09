@@ -621,20 +621,11 @@ function WorkBlockView({ blockId }: Props) {
     || isRunning
     || !!(block.exitReason && !NORMAL_EXITS.has(block.exitReason))
 
-  // 运行中过程行折叠：已闭合的思考段不占可见位（随工具轨迹一起进折叠组，避免一层层叠加），
-  // 其余过程行只显示最近 3 条；结束后过程行整体交由 expanded 折叠，此规则不再参与
-  const [showAllSteps, setShowAllSteps] = useState(false)
+  // 运行期过程行全量按时序平铺：思考段结束后收起为一行「思考 · X秒」（点开看全文），
+  // 不做「最近 N 条 + 折叠组」的窗口化；结束后整体交由 expanded 折叠为「已处理 N 步」
   const processIdx = block.timeline
     .map((it, i) => (it.type === 'text' ? -1 : i))
     .filter(i => i >= 0)
-  const foldRunning = isRunning && !showAllSteps
-  const visibleRunning = foldRunning
-    ? processIdx
-        .filter(i => block.timeline[i].type !== 'reasoning' || block.timeline[i].open)
-        .slice(-3)
-    : processIdx
-  const hiddenProcess = foldRunning ? processIdx.filter(i => !visibleRunning.includes(i)) : []
-  const hiddenSet = new Set(hiddenProcess)
 
   // 异常结束原因行：过程行可见时在时间线首行显示；若块没有任何过程行，
   // 则没有折叠入口可展开（expanded 恒为初始折叠态），原因行直接平铺显示
@@ -644,8 +635,7 @@ function WorkBlockView({ blockId }: Props) {
   // 折叠态（!expanded）只保留正文行 + 一条「已处理 N 步」折叠条
   const timelineNodes: React.ReactNode[] = []
   let foldBarRendered = false
-  let runningFoldRendered = false
-  block.timeline.forEach((item, i) => {
+  block.timeline.forEach((item) => {
     if (item.type === 'text') {
       timelineNodes.push(<TextItemView key={item.id} item={item} />)
       return
@@ -678,38 +668,6 @@ function WorkBlockView({ blockId }: Props) {
             onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
           >
             已处理 {processIdx.length} 步 ▸
-          </button>,
-        )
-      }
-      return
-    }
-    if (hiddenSet.has(i)) {
-      if (!runningFoldRendered) {
-        runningFoldRendered = true
-        timelineNodes.push(
-          <button
-            key="running-fold"
-            className="work-row"
-            type="button"
-            onClick={() => setShowAllSteps(true)}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              width: '100%',
-              padding: '3px 0',
-              background: 'transparent',
-              border: 'none',
-              fontSize: '11px',
-              fontFamily: 'var(--font-ui)',
-              color: 'var(--text-tertiary)',
-              textAlign: 'left',
-              cursor: 'pointer',
-              borderRadius: 'var(--radius-sm)',
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--hover-bg)')}
-            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-          >
-            +{hiddenProcess.length} 条历史步骤
           </button>,
         )
       }
