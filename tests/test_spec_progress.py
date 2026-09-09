@@ -1,9 +1,11 @@
-"""spec 进展端点测试 — 覆盖清单解析、代码围栏排除、无 spec 降级与会话归属。
+"""spec 进展端点测试 — 覆盖清单解析（spec 三件套与 todos 轻清单）、代码围栏
+排除、无清单降级与会话归属。
 
 用 conftest 的 workspace fixture 把工作区切到 tmp_path，在隔离目录里
-造 .agent/specs/<任务名>/ 三件套后直接调用路由函数断言解析结果。
-会话归属用临时库 SessionStore 造带工具调用的消息（对齐引擎存储格式），
-monkeypatch server.state.session_store 后传 session_id 断言。
+造 .agent/specs/<任务名>/ 三件套或 .agent/todos/<名字>.md 轻清单后直接
+调用路由函数断言解析结果。会话归属用临时库 SessionStore 造带工具调用的
+消息（对齐引擎存储格式），monkeypatch server.state.session_store 后传
+session_id 断言。
 """
 
 from __future__ import annotations
@@ -52,6 +54,13 @@ def _make_spec(workspace, name: str, tasks: str, checks: str | None) -> None:
     (spec_dir / "tasks.md").write_text(tasks, encoding="utf-8")
     if checks is not None:
         (spec_dir / "checklist.md").write_text(checks, encoding="utf-8")
+
+
+def _make_todo(workspace, name: str, tasks: str) -> None:
+    """在临时工作区造一个 todos 轻清单平铺单文件。"""
+    todos_dir = workspace / ".agent" / "todos"
+    todos_dir.mkdir(parents=True, exist_ok=True)
+    (todos_dir / f"{name}.md").write_text(tasks, encoding="utf-8")
 
 
 def test_progress_parses_both_checklists(workspace):
@@ -235,3 +244,103 @@ def test_recorded_spec_beats_message_scan(workspace, store):
     result = spec_progress(session_id=sess.id)
 
     assert result["spec"]["name"] == "recorded"
+
+
+# ---------------------------------------------------------------------------
+# todos 轻清单
+# ---------------------------------------------------------------------------
+
+
+def test_progress_parses_todo_file(workspace):
+    """todos 单文件解析：kind=todo，spec 指向文件路径，验证组恒为空。"""
+    _make_todo(workspace, "demo", "# 待办\n\n- [x] 已完成步骤\n- [ ] 待办步骤\n")
+
+    result = spec_progress()
+
+    assert result["kind"] == "todo"
+    assert result["spec"] == {"name": "demo", "path": ".agent/todos/demo.md"}
+    assert result["tasks"]["total"] == 2
+    assert result["tasks"]["done"] == 1
+    assert result["tasks"]["items"][0] == {"text": "已完成步骤", "done": True}
+    assert result["checks"] == {"total": 0, "done": 0, "items": []}
+
+
+def test_progress_todo_follows_session_attribution(workspace, store):
+    """会话消息里出现 todos 路径即归属该轻清单，kind=todo。"""
+    _make_todo(workspace, "fix-bug", "- [ ] 复现\n- [ ] 修复\n")
+    other = store.create_session(str(workspace), title="别的会话")
+    sess = store.create_session(str(workspace), title="轻清单会话")
+    store.save_messages(sess.id, [_tool_call_msg(".agent/todos/fix-bug.md")])
+
+    result = spec_progress(session_id=sess.id)
+
+    assert result["kind"] == "todo"
+    assert result["spec"]["name"] == "fix-bug"
+    assert result["tasks"]["total"] == 2
+    # 别的会话没有归属，不串清单
+    assert spec_progress(session_id=other.id) == {"spec": None}
+
+
+def test_progress_todo_write_event_records_attribution(workspace, store):
+    """任务上下文里写 .agent/todos/<名字>.md 即记归属，名字不含扩展名。"""
+    _make_todo(workspace, "live", "- [x] 先勾一个\n")
+    sess = store.create_session(str(workspace), title="跑中的轻任务")
+
+    token = server.state.session_var.set(sess.id)
+    try:
+        target = workspace / ".agent" / "todos" / "live.md"
+        notify_file_changed(str(target), "write", 1, 100)
+    finally:
+        server.state.session_var.reset(token)
+
+    assert store.get_session_spec(sess.id) == "live"
+    result = spec_progress(session_id=sess.id)
+    assert result["kind"] == "todo"
+    assert result["tasks"]["done"] == 1
+
+
+def test_progress_todo_subdir_write_records_nothing(workspace, store):
+    """todos 下的子目录写盘不合轻清单约定（恰三段才认），不记归属。"""
+    sess = store.create_session(str(workspace), title="子目录写入")
+
+    token = server.state.session_var.set(sess.id)
+    try:
+        target = workspace / ".agent" / "todos" / "sub" / "x.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("- [ ] 一\n", encoding="utf-8")
+        notify_file_changed(str(target), "write", 1, 100)
+    finally:
+        server.state.session_var.reset(token)
+
+    assert store.get_session_spec(sess.id) is None
+
+
+def test_progress_same_name_spec_beats_todo(workspace, store):
+    """spec 目录与 todo 文件同名时 spec 目录优先。"""
+    _make_spec(workspace, "demo", tasks="- [ ] 规格任务\n", checks="")
+    _make_todo(workspace, "demo", "- [ ] 轻清单任务\n")
+    sess = store.create_session(str(workspace), title="同名会话")
+    store.update_session_spec(sess.id, "demo")
+
+    result = spec_progress(session_id=sess.id)
+
+    assert result["kind"] == "spec"
+    assert result["spec"]["path"] == ".agent/specs/demo"
+    assert result["tasks"]["items"][0]["text"] == "规格任务"
+
+
+def test_progress_workspace_mixed_picks_most_recent(workspace):
+    """工作区口径下 specs 目录与 todos 文件混排，按 mtime 取最新。"""
+    _make_spec(workspace, "old-spec", tasks="- [ ] 旧规格任务\n", checks="")
+    _make_todo(workspace, "new-todo", "- [ ] 新轻清单任务\n")
+    old_dir = workspace / ".agent" / "specs" / "old-spec"
+    new_todo = workspace / ".agent" / "todos" / "new-todo.md"
+    old_stamp = time.time() - 600
+    os.utime(old_dir, (old_stamp, old_stamp))
+    os.utime(new_todo, None)
+
+    result = spec_progress()
+
+    assert result["kind"] == "todo"
+    assert result["spec"]["name"] == "new-todo"
+    assert result["tasks"]["items"][0]["text"] == "新轻清单任务"

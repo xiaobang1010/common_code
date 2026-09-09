@@ -40,22 +40,31 @@ file_event_broker = FileEventBroker()
 
 
 def _record_spec_attribution(rel: str) -> None:
-    """把 .agent/specs/<名字>/ 下的写盘归属记到任务所属会话上。
+    """把清单文件的写盘归属记到任务所属会话上。
+
+    覆盖两种清单：spec 三件套目录 .agent/specs/<名字>/ 下任意写盘，与
+    todos 轻清单平铺单文件 .agent/todos/<名字>.md（todos 约定平铺，
+    出现子目录即不认）。
 
     胶囊卡「进展」按会话取数（/api/spec/progress?session_id=），
     这里是归属的主要数据源：写盘即记录，不等消息落库。session_var
     未设置（非任务上下文，如用户在编辑器里手改）或会话不存在时静默
-    跳过——人工改 spec 不改归属，归属跟任务走。
+    跳过——人工改清单不改归属，归属跟任务走。
     """
     parts = rel.split("/")
-    if len(parts) < 3 or parts[0] != ".agent" or parts[1] != "specs" or not parts[2]:
+    name: str | None = None
+    if len(parts) >= 3 and parts[0] == ".agent" and parts[1] == "specs" and parts[2]:
+        name = parts[2]
+    elif len(parts) == 3 and parts[0] == ".agent" and parts[1] == "todos" and parts[2].endswith(".md"):
+        name = parts[2][: -len(".md")]
+    if not name:
         return
     try:
         from server import state as server_state
 
         session_id = server_state.session_var.get()
         if session_id:
-            server_state.session_store.update_session_spec(session_id, parts[2])
+            server_state.session_store.update_session_spec(session_id, name)
     except Exception:
         # 归属记录失败不影响事件下发与写盘本身
         pass
@@ -66,7 +75,8 @@ def notify_file_changed(absolute_path: str, change_type: str, mtime: int, size: 
 
     计算相对工作区的路径；工作区外（如 additional_directories 白名单目录）
     的写入会被过滤，不推送给前端（前端文件树不存在该路径）。
-    spec 目录（.agent/specs/<名字>/）内的写入同时记录会话归属。
+    清单文件（.agent/specs/<名字>/ 与 .agent/todos/<名字>.md）内的写入
+    同时记录会话归属。
     """
     root = os.path.realpath(project_root())
     resolved = os.path.realpath(absolute_path)

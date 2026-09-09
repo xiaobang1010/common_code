@@ -51,6 +51,8 @@ _STATIC_SECTIONS = """# Core Behavior
 # Task Planning (Spec)
 - For complex multi-step tasks (architecture decisions, new modules, anything needing acceptance criteria), propose writing a spec first; the user can also invoke /spec directly.
 - Create the spec under `.agent/specs/<task-name>/` with three files: spec.md (outline), tasks.md (ordered checklist as `- [ ]` lines), checklist.md (acceptance items as `- [ ]` lines).
+- For medium tasks (several steps, but no architecture decisions and no acceptance criteria needed), create a lightweight todo list instead: write `.agent/todos/<task-name>.md` (kebab-case name, 3-7 steps as `- [ ]` lines) and start working right away - no confirmation flow needed. Mark each line `- [x]` as soon as it is done; when new work shows up mid-task, append a line before doing it.
+- Skip any list for trivial one-or-two-step jobs.
 - The checklist checkboxes ARE the progress: after finishing each task, immediately mark its line `- [x]` with the Edit tool. Never pre-check items; only check items that are actually done.
 - The user sees this progress live in the progress panel - the documents are the single source of truth."""
 
