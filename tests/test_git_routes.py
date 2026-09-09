@@ -237,3 +237,69 @@ def test_status_repo_prefix_subdir_workspace(git_env):
     prefix = git_status()["repo_prefix"]
     assert prefix == "sub"
     assert "\\" not in prefix
+
+
+def test_branches_recent_checkout_order(git_env):
+    """多次 checkout 后：当前分支第一，其后按 reflog 最近使用序，其余字母序。"""
+    repo, _ = git_env({"a.txt": "1\n"})
+    from server.routers.git.routes import git_branches
+
+    # 初始分支名跟随 git 默认配置（master/main），动态获取避免硬编码
+    base = git_branches(str(repo))["current"]
+    for name in ("dev", "feature-x", "alpha"):
+        _run_git(repo, ["branch", name])
+    # 使用顺序：feature-x → dev → alpha（当前所在）
+    _run_git(repo, ["checkout", "feature-x"])
+    _run_git(repo, ["checkout", "dev"])
+    _run_git(repo, ["checkout", "alpha"])
+
+    resp = git_branches(str(repo))
+    assert resp["current"] == "alpha"
+    assert resp["branches"] == ["alpha", "dev", "feature-x", base]
+
+
+def test_branches_filters_deleted_from_reflog(git_env):
+    """已删除分支留在 reflog 里，但不应出现在分支列表。"""
+    repo, _ = git_env({"a.txt": "1\n"})
+    from server.routers.git.routes import git_branches
+
+    base = git_branches(str(repo))["current"]
+    _run_git(repo, ["branch", "tmp"])
+    _run_git(repo, ["checkout", "tmp"])
+    _run_git(repo, ["checkout", base])
+    _run_git(repo, ["branch", "-D", "tmp"])
+
+    resp = git_branches(str(repo))
+    assert "tmp" not in resp["branches"]
+    assert resp["branches"] == [base]
+
+
+def test_branches_filters_detached_hash_from_reflog(git_env):
+    """detached HEAD 在 reflog 里留下裸哈希目标，不应混入分支列表。"""
+    repo, _ = git_env({"a.txt": "1\n"})
+    from server.routers.git.routes import git_branches
+
+    base = git_branches(str(repo))["current"]
+    _run_git(repo, ["branch", "dev"])
+    # 进 detached 再切回，制造「moving from ... to <hash>」的 reflog 记录
+    _run_git(repo, ["checkout", "--detach"])
+    _run_git(repo, ["checkout", base])
+
+    resp = git_branches(str(repo))
+    assert resp["current"] == base
+    # 哈希目标被与分支表的交集过滤，列表仍是分支名
+    assert resp["branches"] == [base, "dev"]
+
+
+def test_branches_no_checkouts_alphabetical(git_env):
+    """无 checkout 记录（reflog 无可用序列）：当前第一，其余按字母序。"""
+    repo, _ = git_env({"a.txt": "1\n"})
+    from server.routers.git.routes import git_branches
+
+    base = git_branches(str(repo))["current"]
+    _run_git(repo, ["branch", "dev"])
+    _run_git(repo, ["branch", "alpha"])
+
+    resp = git_branches(str(repo))
+    assert resp["current"] == base
+    assert resp["branches"] == [base, "alpha", "dev"]
