@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import Terminal from './Terminal'
 import Resizer from '../Resizer'
 
@@ -7,6 +7,13 @@ interface TerminalTab {
   id: string       // 前端分配的实例 id
   title: string    // 显示名称（pty 就绪后回填 shell 名，如 powershell）
   ptyId?: string   // 后端 pty id，创建后填充
+}
+
+// 单个工作区的终端组：会话列表 + 当前激活会话。
+// 各工作区的终端互不干扰：切到别的工作区时整组只隐藏不卸载，里面跑着的命令继续
+interface WorkspaceGroup {
+  tabs: TerminalTab[]
+  activeId: string
 }
 
 // 终端图标：命令行提示符。标题栏开关与面板头共用，图标随终端功能走
@@ -20,6 +27,15 @@ export const TerminalIcon = (
 // 生成唯一 id
 const genId = () => `term-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
 
+// 新建一个含单会话的终端组
+const newGroup = (): WorkspaceGroup => {
+  const tab: TerminalTab = { id: genId(), title: 'TERMINAL' }
+  return { tabs: [tab], activeId: tab.id }
+}
+
+// 工作区分组键：未选工作区时单独成组（shell 落在主进程兜底的目录）
+const keyOf = (workspacePath: string | null) => workspacePath ?? ''
+
 interface TerminalPanelProps {
   // 展开/收起：收起只切 display，不卸载组件（会话保活）
   open: boolean
@@ -29,44 +45,75 @@ interface TerminalPanelProps {
   onResize: (deltaPx: number) => void
   // 收起面板（与标题栏终端开关同一动作）
   onClose: () => void
+  // 当前工作区目录：切换工作区即切换终端分组
+  workspacePath: string | null
 }
 
 // 会话区底部终端面板：顶部可拖拽分隔条 + 面板头（标题 / 会话条 / 新建 / 收起）+ 终端内容区。
-// 多会话由本组件自己持有：关闭标签只隐藏面板，pty 不销毁，展开后接着用
-function TerminalPanel({ open, height, onResize, onClose }: TerminalPanelProps) {
-  const [tabs, setTabs] = useState<TerminalTab[]>(() => [{ id: genId(), title: 'TERMINAL' }])
-  const [activeId, setActiveId] = useState<string>(() => tabs[0].id)
+// 终端按工作区分组：每组各有会话列表与自己的 shell，面板头只呈现当前工作区那一组
+function TerminalPanel({ open, height, onResize, onClose, workspacePath }: TerminalPanelProps) {
+  const workspaceKey = keyOf(workspacePath)
+  // 面板首次展开时给当前工作区建组，之后每访问到一个新工作区各建一组。
+  // 面板未展开期间切工作区不建组：不在没人用的工作区里白起 shell
+  const [groups, setGroups] = useState<Record<string, WorkspaceGroup>>(() => ({
+    [workspaceKey]: newGroup(),
+  }))
 
-  const addTerminal = useCallback(() => {
-    const newTab: TerminalTab = { id: genId(), title: 'TERMINAL' }
-    setTabs((prev) => [...prev, newTab])
-    setActiveId(newTab.id)
+  useEffect(() => {
+    if (!open) return
+    setGroups((prev) => (prev[workspaceKey] ? prev : { ...prev, [workspaceKey]: newGroup() }))
+  }, [open, workspaceKey])
+
+  const addTerminal = useCallback((path: string) => {
+    setGroups((prev) => {
+      const g = prev[path]
+      if (!g) return prev
+      const tab: TerminalTab = { id: genId(), title: 'TERMINAL' }
+      return { ...prev, [path]: { tabs: [...g.tabs, tab], activeId: tab.id } }
+    })
   }, [])
 
-  const closeTerminal = useCallback((id: string) => {
-    setTabs((prev) => {
-      const next = prev.filter((t) => t.id !== id)
+  const closeTerminal = useCallback((path: string, id: string) => {
+    setGroups((prev) => {
+      const g = prev[path]
+      if (!g) return prev
+      const next = g.tabs.filter((t) => t.id !== id)
       if (next.length === 0) {
         // 至少保留一个会话
-        const fresh = { id: genId(), title: 'TERMINAL' }
-        setActiveId(fresh.id)
-        return [fresh]
+        return { ...prev, [path]: newGroup() }
       }
-      if (id === activeId) {
-        setActiveId(next[next.length - 1].id)
-      }
-      return next
+      // 关掉的是当前会话时，激活态落到剩下的最后一个
+      const activeId = id === g.activeId ? next[next.length - 1].id : g.activeId
+      return { ...prev, [path]: { tabs: next, activeId } }
     })
-  }, [activeId])
+  }, [])
+
+  const activateTerminal = useCallback((path: string, id: string) => {
+    setGroups((prev) => {
+      const g = prev[path]
+      if (!g) return prev
+      return { ...prev, [path]: { tabs: g.tabs, activeId: id } }
+    })
+  }, [])
 
   // pty 就绪：记录 ptyId 并把标签标题回填为实际 shell 名（如 powershell），替代固定 TERMINAL
-  const handleReady = useCallback((tabId: string, ptyId: string, shell: string) => {
-    setTabs((prev) =>
-      prev.map((t) =>
-        t.id === tabId ? { ...t, ptyId, title: shell.replace(/\.exe$/i, '') } : t
-      )
-    )
+  const handleReady = useCallback((path: string, tabId: string, ptyId: string, shell: string) => {
+    setGroups((prev) => {
+      const g = prev[path]
+      if (!g) return prev
+      return {
+        ...prev,
+        [path]: {
+          ...g,
+          tabs: g.tabs.map((t) =>
+            t.id === tabId ? { ...t, ptyId, title: shell.replace(/\.exe$/i, '') } : t
+          ),
+        },
+      }
+    })
   }, [])
+
+  const active = groups[workspaceKey]
 
   return (
     <div
@@ -86,7 +133,7 @@ function TerminalPanel({ open, height, onResize, onClose }: TerminalPanelProps) 
       {/* 顶部分隔条：向上拖面板变高（方向语义由 App 的钳制逻辑决定） */}
       <Resizer direction="vertical" onResize={onResize} />
 
-      {/* 面板头：标题 + 会话条 + 新建 + 收起 */}
+      {/* 面板头：标题 + 当前工作区的会话条 + 新建 + 收起 */}
       <div
         style={{
           height: '32px',
@@ -126,12 +173,12 @@ function TerminalPanel({ open, height, onResize, onClose }: TerminalPanelProps) 
             overflowY: 'hidden',
           }}
         >
-          {tabs.map((tab, idx) => {
-            const active = tab.id === activeId
+          {(active?.tabs ?? []).map((tab, idx) => {
+            const isActive = tab.id === active?.activeId
             return (
               <div
                 key={tab.id}
-                onClick={() => setActiveId(tab.id)}
+                onClick={() => activateTerminal(workspaceKey, tab.id)}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -140,23 +187,23 @@ function TerminalPanel({ open, height, onResize, onClose }: TerminalPanelProps) 
                   cursor: 'pointer',
                   fontSize: '11px',
                   fontFamily: 'var(--font-mono)',
-                  color: active ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                  backgroundColor: active ? 'var(--bg-primary)' : 'transparent',
+                  color: isActive ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                  backgroundColor: isActive ? 'var(--bg-primary)' : 'transparent',
                   borderRight: '1px solid var(--border-subtle)',
-                  borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
+                  borderBottom: isActive ? '2px solid var(--accent)' : '2px solid transparent',
                   whiteSpace: 'nowrap',
                   flexShrink: 0,
                   transition: 'all var(--transition-fast)',
                   letterSpacing: '0.5px',
                 }}
                 onMouseEnter={(e) => {
-                  if (!active) {
+                  if (!isActive) {
                     e.currentTarget.style.color = 'var(--text-secondary)'
                     e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)'
                   }
                 }}
                 onMouseLeave={(e) => {
-                  if (!active) {
+                  if (!isActive) {
                     e.currentTarget.style.color = 'var(--text-tertiary)'
                     e.currentTarget.style.backgroundColor = 'transparent'
                   }
@@ -164,11 +211,11 @@ function TerminalPanel({ open, height, onResize, onClose }: TerminalPanelProps) 
               >
                 <span>{tab.title} {idx + 1}</span>
                 {/* 关闭按钮 - 多于 1 个会话才显示 */}
-                {tabs.length > 1 && (
+                {(active?.tabs.length ?? 0) > 1 && (
                   <button
                     onClick={(e) => {
                       e.stopPropagation()
-                      closeTerminal(tab.id)
+                      closeTerminal(workspaceKey, tab.id)
                     }}
                     title="关闭终端会话"
                     style={{
@@ -202,7 +249,7 @@ function TerminalPanel({ open, height, onResize, onClose }: TerminalPanelProps) 
           })}
           {/* 新建终端会话 */}
           <button
-            onClick={addTerminal}
+            onClick={() => addTerminal(workspaceKey)}
             title="新建终端"
             style={{
               border: 'none',
@@ -263,27 +310,45 @@ function TerminalPanel({ open, height, onResize, onClose }: TerminalPanelProps) 
         </button>
       </div>
 
-      {/* 终端内容区 - 只渲染当前激活的会话，切换重建 */}
+      {/* 内容区：每个工作区的会话组各自挂载，非当前工作区只隐藏（终端会话保活）。
+          只渲染当前激活会话，切换会话重建该组的终端 */}
       <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative' }}>
-        <Terminal key={activeId} instanceId={activeId} onReady={(ptyId, shell) => handleReady(activeId, ptyId, shell)} />
-        {/* 弱提示：会话未就绪/尚无输出时非纯空白，不抢焦点不打断 */}
-        {!tabs.find((t) => t.id === activeId)?.ptyId && (
+        {Object.entries(groups).map(([path, group]) => (
           <div
+            key={path}
             style={{
               position: 'absolute',
               inset: 0,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: 'var(--text-tertiary)',
-              fontSize: '12px',
-              fontFamily: 'var(--font-ui)',
-              pointerEvents: 'none',
+              display: path === workspaceKey ? 'flex' : 'none',
+              flexDirection: 'column',
             }}
           >
-            暂无终端输出
+            <Terminal
+              key={group.activeId}
+              instanceId={group.activeId}
+              cwd={path || undefined}
+              onReady={(ptyId, shell) => handleReady(path, group.activeId, ptyId, shell)}
+            />
+            {/* 弱提示：会话未就绪/尚无输出时非纯空白，不抢焦点不打断 */}
+            {!group.tabs.find((t) => t.id === group.activeId)?.ptyId && (
+              <div
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: 'var(--text-tertiary)',
+                  fontSize: '12px',
+                  fontFamily: 'var(--font-ui)',
+                  pointerEvents: 'none',
+                }}
+              >
+                暂无终端输出
+              </div>
+            )}
           </div>
-        )}
+        ))}
       </div>
     </div>
   )

@@ -740,13 +740,15 @@ function App() {
               currentTaskSessionId={runningSessionId}
             />
           </div>
-          {/* 底部终端面板：首次展开后常驻挂载，收起只隐藏（终端会话保活） */}
+          {/* 底部终端面板：首次展开后常驻挂载，收起只隐藏（终端会话保活）。
+              按工作区分组，切换工作区即切换到该工作区自己的终端 */}
           {terminalMounted && (
             <TerminalPanel
               open={terminalOpen}
               height={terminalHeight}
               onResize={handleTerminalResize}
               onClose={toggleTerminal}
+              workspacePath={sessions.currentWorkspace?.path ?? null}
             />
           )}
         </div>
