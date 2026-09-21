@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react'
 
-// 工具标签标识（概要/终端/文件/搜索/审查）：开关状态由 App 层持有，供标题栏开关与入口卡片共用
-export type ToolId = 'summary' | 'terminal' | 'files' | 'search' | 'review'
+// 工具标签标识（概要/文件/搜索/审查）：开关状态由 App 层持有，供标题栏开关与入口卡片共用。
+// 终端不在此列：它是会话区底部的独立面板，入口在标题栏的终端开关
+export type ToolId = 'summary' | 'files' | 'search' | 'review'
 
 // 图标统一样式参数
 const iconProps = {
@@ -22,14 +23,6 @@ const SummaryIcon = (
     <circle cx="3.5" cy="6" r="0.5" fill="currentColor" />
     <circle cx="3.5" cy="12" r="0.5" fill="currentColor" />
     <circle cx="3.5" cy="18" r="0.5" fill="currentColor" />
-  </svg>
-)
-
-// 终端图标：命令行提示符
-const TerminalIcon = (
-  <svg {...iconProps}>
-    <path d="M4 17l6-5-6-5" />
-    <path d="M12 19h8" />
   </svg>
 )
 
@@ -60,11 +53,10 @@ const ReviewIcon = (
   </svg>
 )
 
-// 工具标签元信息：顺序即标签栏的展示顺序（默认三标签 + 按需打开）。
+// 工具标签元信息：顺序即标签栏的展示顺序（默认标签集 + 按需打开）。
 // 不能随意从表中删除条目：标签渲染、面板映射与 localStorage 恢复均依赖此表
 export const TOOL_META: { id: ToolId; title: string; icon: ReactNode }[] = [
   { id: 'summary', title: '概要', icon: SummaryIcon },
-  { id: 'terminal', title: '终端', icon: TerminalIcon },
   { id: 'files', title: '文件', icon: FilesIcon },
   { id: 'search', title: '搜索', icon: SearchIcon },
   { id: 'review', title: '审查', icon: ReviewIcon },

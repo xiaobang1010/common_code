@@ -59,7 +59,15 @@ function Terminal({ instanceId, onReady }: TerminalProps) {
     const fitAddon = new FitAddon()
     term.loadAddon(fitAddon)
     term.open(container)
-    fitAddon.fit()
+
+    // 容器隐藏时（面板收起为 display:none）尺寸为 0，拟合会算出一个退化的极小尺寸
+    // 并顺着 onResize 把 pty 一起缩掉，正在跑的全屏程序会被打乱。尺寸为 0 时跳过，
+    // 重新可见时 ResizeObserver 会以真实尺寸再触发一次
+    const fitToContainer = () => {
+      if (container.clientWidth === 0 || container.clientHeight === 0) return
+      fitAddon.fit()
+    }
+    fitToContainer()
 
     termRef.current = term
 
@@ -105,10 +113,8 @@ function Terminal({ instanceId, onReady }: TerminalProps) {
       api.resize(res.id, term.cols, term.rows)
     })
 
-    // 容器尺寸变化时重新拟合
-    const resizeObserver = new ResizeObserver(() => {
-      fitAddon.fit()
-    })
+    // 容器尺寸变化时重新拟合（含面板收起/展开时的 0 尺寸切换）
+    const resizeObserver = new ResizeObserver(fitToContainer)
     resizeObserver.observe(container)
 
     return () => {
