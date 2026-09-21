@@ -5,6 +5,7 @@ import AIPanel from './components/AIPanel'
 import TitleBar from './components/TitleBar'
 import CapsuleCard from './components/CapsuleCard'
 import Resizer from './components/Resizer'
+import TerminalPanel from './components/editor/TerminalPanel'
 import SettingsModal from './components/settings/SettingsModal'
 import WorkspaceSelector from './components/ai/WorkspaceSelector'
 import BranchSelector from './components/ai/BranchSelector'
@@ -22,22 +23,29 @@ const CHAT_MIN_WIDTH = 360 // 对话区最小宽度：任何情况下不被挤�
 const EDITOR_MIN = 360
 const EDITOR_MAX_RATIO = 0.85 // 编辑器最多占窗口 85%
 
+// 会话区底部终端面板的高度预算：下限保证可用，上限按窗口比例留出对话区
+const TERMINAL_MIN = 120
+const TERMINAL_DEFAULT = 240
+const TERMINAL_MAX_RATIO = 0.6
+
 // 布局持久化 key：宽度与面板开关状态重启后恢复，设置面板提供「恢复默认布局」
 const LAYOUT_KEYS = {
   sidebarWidth: 'layout.sidebarWidth',
   editorWidth: 'layout.editorWidth',
+  terminalHeight: 'layout.terminalHeight',
   toolTabsOpen: 'layout.toolTabsOpen',
   activeToolId: 'layout.activeToolId',
   toolTabsMigrated: 'layout.toolTabsMigrated',
   sidebarView: 'layout.sidebarView',
 } as const
 
-// 默认工具标签集：转为「产物区」定位后，面板展开默认呈现 概要/终端/文件，激活概要
-const DEFAULT_TOOL_TABS: ToolId[] = ['summary', 'terminal', 'files']
+// 默认工具标签集：右侧产物区默认呈现 概要/文件，激活概要。
+// 终端已迁至会话区底部独立面板，不在工具标签体系内
+const DEFAULT_TOOL_TABS: ToolId[] = ['summary', 'files']
 
 // 初始化工具标签开关集（含一次性旧持久化迁移）：
 // 旧版本默认标签集为空，且用户「关闭全部」也会产生空集——两者无法从值上区分。
-// 用迁移标记区分：仅当存在旧记录（不含 files，旧版本无此工具）时补齐默认三标签并写标记一次，
+// 用迁移标记区分：仅当存在旧记录（不含 files，旧版本无此工具）时补齐默认标签集并写标记一次，
 // 之后用户关空得到的空集保持为空（「关闭全部 = 面板全隐藏」不变量不被重置）
 function loadInitialToolTabs(): ToolId[] {
   const raw = localStorage.getItem(LAYOUT_KEYS.toolTabsOpen)
@@ -55,7 +63,7 @@ function loadInitialToolTabs(): ToolId[] {
   }
   if (localStorage.getItem(LAYOUT_KEYS.toolTabsMigrated) !== '1') {
     if (raw !== null && !ids.includes('files')) {
-      // 旧版本数据：补齐默认三标签，仅迁移这一次
+      // 旧版本数据：补齐默认标签集，仅迁移这一次
       ids = Array.from(new Set([...ids, ...DEFAULT_TOOL_TABS]))
     }
     localStorage.setItem(LAYOUT_KEYS.toolTabsMigrated, '1')
@@ -72,7 +80,12 @@ function App() {
   // 右侧面板（产物区）：默认收起；展开后默认呈现概要产物视图，打开文件不再是唯一展开时机
   const [editorCollapsed, setEditorCollapsed] = useState(true)
 
-  // 工具标签（概要/终端/文件/搜索/审查）开关状态：由 App 持有，标题栏开关/入口卡片/快捷键共用
+  // 底部终端面板：默认收起。首次展开才挂载终端组件（没用过终端就不白起 shell 进程），
+  // 挂载后收起只隐藏不卸载，pty 与其中运行的命令继续存活
+  const [terminalOpen, setTerminalOpen] = useState(false)
+  const [terminalMounted, setTerminalMounted] = useState(false)
+
+  // 工具标签（概要/文件/搜索/审查）开关状态：由 App 持有，标题栏开关/入口卡片/快捷键共用
   const [toolTabsOpen, setToolTabsOpen] = useState<ToolId[]>(() => loadInitialToolTabs())
   const [activeToolId, setActiveToolId] = useState<ToolId | null>(() => {
     const v = localStorage.getItem(LAYOUT_KEYS.activeToolId)
@@ -93,6 +106,10 @@ function App() {
     // 0 表示用 flex 比例；恢复时按当前窗口 85% 上限钳制
     const v = Number(localStorage.getItem(LAYOUT_KEYS.editorWidth))
     return v > 0 ? Math.min(v, window.innerWidth * EDITOR_MAX_RATIO) : 0
+  })
+  const [terminalHeight, setTerminalHeight] = useState(() => {
+    const v = Number(localStorage.getItem(LAYOUT_KEYS.terminalHeight))
+    return v >= TERMINAL_MIN && v <= window.innerHeight * TERMINAL_MAX_RATIO ? v : TERMINAL_DEFAULT
   })
 
   // 聊天状态从 store 订阅：action 引用稳定，不会因流式更新引起本组件重渲
@@ -161,6 +178,9 @@ function App() {
     localStorage.setItem(LAYOUT_KEYS.editorWidth, String(editorWidth))
   }, [editorWidth])
   useEffect(() => {
+    localStorage.setItem(LAYOUT_KEYS.terminalHeight, String(terminalHeight))
+  }, [terminalHeight])
+  useEffect(() => {
     localStorage.setItem(LAYOUT_KEYS.toolTabsOpen, JSON.stringify(toolTabsOpen))
   }, [toolTabsOpen])
   useEffect(() => {
@@ -172,10 +192,13 @@ function App() {
     Object.values(LAYOUT_KEYS).forEach((k) => localStorage.removeItem(k))
     setSidebarWidth(240)
     setEditorWidth(0)
+    setTerminalHeight(TERMINAL_DEFAULT)
     setToolTabsOpen(DEFAULT_TOOL_TABS)
     setActiveToolId('summary')
     setSidebarCollapsed(false)
     setEditorCollapsed(true)
+    // 终端面板只收起不复位挂载闩锁：重置布局不该把正在跑的 shell 杀掉
+    setTerminalOpen(false)
   }, [])
 
   // 窄屏退让：树列折叠由 ArtifactPanel 按编辑区/窗口宽度处理；
@@ -226,6 +249,21 @@ function App() {
     })
   }, [editorWidth])
 
+  // 底部终端面板拖拽：分隔条在面板顶部，分隔条跟着鼠标走
+  // 向上拖（delta 负）面板变高，向下拖变矮
+  const handleTerminalResize = useCallback((delta: number) => {
+    setTerminalHeight((prev) => {
+      const maxH = window.innerHeight * TERMINAL_MAX_RATIO
+      return Math.max(TERMINAL_MIN, Math.min(maxH, prev - delta))
+    })
+  }, [])
+
+  // 开关底部终端面板：首次展开时才挂载终端，之后收起只隐藏（会话保活）
+  const toggleTerminal = useCallback(() => {
+    setTerminalMounted(true)
+    setTerminalOpen((prev) => !prev)
+  }, [])
+
   // ---- 工具标签操作 ----
 
   // 打开工具标签：展开编辑区并激活该面板
@@ -241,7 +279,7 @@ function App() {
     [editorCollapsed, toggleEditor]
   )
 
-  // 关闭工具标签：只隐藏面板，后台状态保留（终端会话不杀、审查结果不清除）
+  // 关闭工具标签：只隐藏面板，后台状态保留（审查结果不清除、文件视图不销毁）
   const closeTool = useCallback((id: ToolId) => {
     setToolTabsOpen((prev) => prev.filter((t) => t !== id))
     setActiveToolId((prev) => (prev === id ? null : prev))
@@ -554,8 +592,8 @@ function App() {
     }
   }, [handleSwitchWorkspace])
 
-  // 全局快捷键：Ctrl/⌘+N 新建任务，Ctrl/⌘+K 打开搜索工具标签
-  // Electron 中这两组快捷键无默认系统行为，全局拦截安全
+  // 全局快捷键：Ctrl/⌘+N 新建任务，Ctrl/⌘+K 打开搜索工具标签，Ctrl+` 开关底部终端面板
+  // Electron 中这些快捷键无默认系统行为，全局拦截安全
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey
@@ -566,11 +604,15 @@ function App() {
       } else if (e.key.toLowerCase() === 'k') {
         e.preventDefault()
         openTool('search')
+      } else if (e.key === '`' && e.ctrlKey) {
+        // 只认 Ctrl：⌘+` 在 macOS 是系统切换窗口快捷键，不抢占
+        e.preventDefault()
+        toggleTerminal()
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [handleCreateSession, openTool])
+  }, [handleCreateSession, openTool, toggleTerminal])
 
   return (
     <div
@@ -602,6 +644,8 @@ function App() {
         }
         panelActive={!editorCollapsed}
         onTogglePanel={togglePanel}
+        terminalActive={terminalOpen}
+        onToggleTerminal={toggleTerminal}
         onOpenSettings={() => setSettingsOpen(true)}
         currentTaskTitle={currentTaskTitle}
         taskRunning={runningSessionId !== null}
@@ -684,13 +728,29 @@ function App() {
           </div>
         )}
 
-        {/* AI 面板：占据剩余空间（主角），最小宽度受保护不被挤没 */}
-        <div style={{ flex: 1, minWidth: CHAT_MIN_WIDTH }}>
-          <AIPanel
-            hasWorkspace={!!sessions.currentWorkspace}
-            onOpenWorkspace={handleOpenWorkspace}
-            currentTaskSessionId={runningSessionId}
-          />
+        {/* 会话区列：对话流 + 输入区在上，底部终端面板在下（同一列纵向排布，
+            右侧产物面板保持全高，不与终端分栏）。最小宽度受保护不被挤没 */}
+        <div style={{ flex: 1, minWidth: CHAT_MIN_WIDTH, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+          {/* AI 面板：占据终端之外的剩余空间（主角），最小高度不设，
+              纵向空间不足时由它先让位给固定高度的终端面板 */}
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <AIPanel
+              hasWorkspace={!!sessions.currentWorkspace}
+              onOpenWorkspace={handleOpenWorkspace}
+              currentTaskSessionId={runningSessionId}
+            />
+          </div>
+          {/* 底部终端面板：首次展开后常驻挂载，收起只隐藏（终端会话保活）。
+              按工作区分组，切换工作区即切换到该工作区自己的终端 */}
+          {terminalMounted && (
+            <TerminalPanel
+              open={terminalOpen}
+              height={terminalHeight}
+              onResize={handleTerminalResize}
+              onClose={toggleTerminal}
+              workspacePath={sessions.currentWorkspace?.path ?? null}
+            />
+          )}
         </div>
 
         {/* 右侧面板（产物区）：默认收起，展开后默认呈现概要产物视图；打开文件不再是唯一展开时机。

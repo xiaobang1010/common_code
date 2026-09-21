@@ -4,7 +4,6 @@ import { subscribeFileEvents } from '../api/fileEvents'
 import Tabs from './editor/Tabs'
 import Breadcrumb from './editor/Breadcrumb'
 import CodeEditor from './editor/CodeEditor'
-import Terminal from './editor/Terminal'
 import TabContextMenu from './editor/TabContextMenu'
 import SearchPanel from './sidebar/SearchPanel'
 import SummaryCard from './inspector/cards/SummaryCard'
@@ -30,13 +29,6 @@ interface OpenTab {
   stale: boolean        // 磁盘已被外部（AI）修改，需重新加载
   revision: number      // 内容整体重置时 +1，用于触发编辑器重挂载
   pinned: boolean       // 是否固定为正式标签（未固定且干净的标签参与预览槽复用）
-}
-
-// 终端会话信息
-interface TerminalTab {
-  id: string       // 前端分配的实例 id
-  title: string    // 显示名称（pty 就绪后回填 shell 名，如 powershell）
-  ptyId?: string   // 后端 pty id，创建后填充
 }
 
 // 保存冲突弹窗信息
@@ -70,186 +62,6 @@ interface ArtifactPanelProps {
   onActivateFile: () => void
 }
 
-// 生成唯一 id
-const genId = () => `term-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-
-// 终端工具标签内容：多会话 tab + 新建，关闭工具标签只隐藏组件不卸载（会话保活）
-function TerminalToolContent() {
-  const [tabs, setTabs] = useState<TerminalTab[]>(() => [{ id: genId(), title: 'TERMINAL' }])
-  const [activeId, setActiveId] = useState<string>(() => tabs[0].id)
-
-  const addTerminal = useCallback(() => {
-    const newTab: TerminalTab = { id: genId(), title: 'TERMINAL' }
-    setTabs((prev) => [...prev, newTab])
-    setActiveId(newTab.id)
-  }, [])
-
-  const closeTerminal = useCallback((id: string) => {
-    setTabs((prev) => {
-      const next = prev.filter((t) => t.id !== id)
-      if (next.length === 0) {
-        // 至少保留一个会话
-        const fresh = { id: genId(), title: 'TERMINAL' }
-        setActiveId(fresh.id)
-        return [fresh]
-      }
-      if (id === activeId) {
-        setActiveId(next[next.length - 1].id)
-      }
-      return next
-    })
-  }, [activeId])
-
-  // pty 就绪：记录 ptyId 并把标签标题回填为实际 shell 名（如 powershell），替代固定 TERMINAL
-  const handleReady = useCallback((tabId: string, ptyId: string, shell: string) => {
-    setTabs((prev) =>
-      prev.map((t) =>
-        t.id === tabId ? { ...t, ptyId, title: shell.replace(/\.exe$/i, '') } : t
-      )
-    )
-  }, [])
-
-  return (
-    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-      {/* 会话列表栏 */}
-      <div
-        style={{
-          height: '32px',
-          display: 'flex',
-          alignItems: 'stretch',
-          backgroundColor: 'var(--bg-base)',
-          borderBottom: '1px solid var(--border-subtle)',
-          flexShrink: 0,
-        }}
-      >
-        {tabs.map((tab, idx) => {
-          const active = tab.id === activeId
-          return (
-            <div
-              key={tab.id}
-              onClick={() => setActiveId(tab.id)}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                padding: '0 12px',
-                cursor: 'pointer',
-                fontSize: '11px',
-                fontFamily: 'var(--font-mono)',
-                color: active ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                backgroundColor: active ? 'var(--bg-primary)' : 'transparent',
-                borderRight: '1px solid var(--border-subtle)',
-                borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
-                whiteSpace: 'nowrap',
-                transition: 'all var(--transition-fast)',
-                letterSpacing: '0.5px',
-              }}
-              onMouseEnter={(e) => {
-                if (!active) {
-                  e.currentTarget.style.color = 'var(--text-secondary)'
-                  e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)'
-                }
-              }}
-              onMouseLeave={(e) => {
-                if (!active) {
-                  e.currentTarget.style.color = 'var(--text-tertiary)'
-                  e.currentTarget.style.backgroundColor = 'transparent'
-                }
-              }}
-            >
-              <span>{tab.title} {idx + 1}</span>
-              {/* 关闭按钮 - 多于 1 个会话才显示 */}
-              {tabs.length > 1 && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    closeTerminal(tab.id)
-                  }}
-                  title="关闭终端会话"
-                  style={{
-                    border: 'none',
-                    background: 'transparent',
-                    color: 'var(--text-tertiary)',
-                    cursor: 'pointer',
-                    padding: '0',
-                    width: '14px',
-                    height: '14px',
-                    borderRadius: '3px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    transition: 'all var(--transition-fast)',
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = 'var(--bg-elevated)'
-                    e.currentTarget.style.color = 'var(--error)'
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = 'transparent'
-                    e.currentTarget.style.color = 'var(--text-tertiary)'
-                  }}
-                >
-                  ×
-                </button>
-              )}
-            </div>
-          )
-        })}
-        {/* 新建终端会话 */}
-        <button
-          onClick={addTerminal}
-          title="新建终端"
-          style={{
-            border: 'none',
-            background: 'transparent',
-            color: 'var(--text-tertiary)',
-            cursor: 'pointer',
-            padding: '0 10px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            transition: 'all var(--transition-fast)',
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = 'var(--bg-tertiary)'
-            e.currentTarget.style.color = 'var(--text-primary)'
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = 'transparent'
-            e.currentTarget.style.color = 'var(--text-tertiary)'
-          }}
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 5v14M5 12h14" />
-          </svg>
-        </button>
-      </div>
-      {/* 终端内容区 - 只渲染当前激活的会话，切换重建 */}
-      <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
-        <Terminal key={activeId} instanceId={activeId} onReady={(ptyId, shell) => handleReady(activeId, ptyId, shell)} />
-        {/* 弱提示：会话未就绪/尚无输出时非纯空白，不抢焦点不打断 */}
-        {!tabs.find((t) => t.id === activeId)?.ptyId && (
-          <div
-            style={{
-              position: 'absolute',
-              inset: 0,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: 'var(--text-tertiary)',
-              fontSize: '12px',
-              fontFamily: 'var(--font-ui)',
-              pointerEvents: 'none',
-            }}
-          >
-            暂无终端输出
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
 const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
   ({ collapsed, onToggleCollapse, toolTabsOpen, activeToolId, onOpenTool, onCloseTool, onActivateFile }, ref) => {
     const [openTabs, setOpenTabs] = useState<OpenTab[]>([])
@@ -271,16 +83,12 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
     const activePathRef = useRef('')
     const activeToolIdRef = useRef<ToolId | null>(activeToolId)
     const onActivateFileRef = useRef(onActivateFile)
-    const onOpenToolRef = useRef(onOpenTool)
-    const onCloseToolRef = useRef(onCloseTool)
 
-    // 回调与激活态用 ref 保存，快捷键/树点击等长驻监听不因重渲失效
+    // 回调与激活态用 ref 保存，长驻监听不因重渲失效
     useEffect(() => {
       activeToolIdRef.current = activeToolId
       onActivateFileRef.current = onActivateFile
-      onOpenToolRef.current = onOpenTool
-      onCloseToolRef.current = onCloseTool
-    }, [activeToolId, onActivateFile, onOpenTool, onCloseTool])
+    }, [activeToolId, onActivateFile])
 
     // 激活文件标签：同时清掉工具标签激活态（内容区回到文件视图）
     const setActive = useCallback((path: string) => {
@@ -295,22 +103,6 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
         openTabsRef.current = next
         return next
       })
-    }, [])
-
-    // Ctrl+` 唤起/收起终端工具标签（收起只隐藏，会话保活）
-    useEffect(() => {
-      const handler = (e: KeyboardEvent) => {
-        if (e.ctrlKey && e.key === '`') {
-          e.preventDefault()
-          if (activeToolIdRef.current === 'terminal') {
-            onCloseToolRef.current('terminal')
-          } else {
-            onOpenToolRef.current('terminal')
-          }
-        }
-      }
-      window.addEventListener('keydown', handler)
-      return () => window.removeEventListener('keydown', handler)
     }, [])
 
     // 由文件读取结果构建标签页对象（pinned 默认 false = 预览标签）
@@ -884,12 +676,12 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
       </div>
     ) : null
 
-    // 工具面板内容：全部保持挂载（非激活用 display:none 隐藏），终端会话不丢失。
-    // files 工具内容 = 文件视图或空态（文件视图见 fileViewNode 的展示分支）
+    // 工具面板内容：全部保持挂载（非激活用 display:none 隐藏）。
+    // files 工具内容 = 文件视图或空态（文件视图见 fileViewNode 的展示分支）。
+    // 终端已迁至会话区底部独立面板，不再是右侧工具标签
     const sessionId = useChatStore((s) => s.sessionId)
     const toolContents: Record<ToolId, ReactNode> = {
       summary: <SummaryCard sessionId={sessionId} onOpenFile={openFile} />,
-      terminal: <TerminalToolContent />,
       files: fileViewNode ?? filesEmptyNode,
       search: <SearchPanel onFileOpen={openFile} />,
       review: <ReviewCard />,

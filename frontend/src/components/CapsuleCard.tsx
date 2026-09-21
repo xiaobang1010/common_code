@@ -11,9 +11,10 @@ interface CapsuleCardProps {
   sessionId: string | null
 }
 
-// ··· 菜单展示的工具标签：概要/终端/审查。
-// 「文件」入口已迁至侧栏工作区行、「搜索」有侧栏常驻按钮与 Ctrl+K，不再重复列出
-const MENU_TOOL_IDS: ToolId[] = ['summary', 'terminal', 'review']
+// ··· 菜单展示的工具标签：概要/审查。
+// 「文件」入口已迁至侧栏工作区行、「搜索」有侧栏常驻按钮与 Ctrl+K，不再重复列出；
+// 终端已迁至会话区底部独立面板，入口在标题栏终端开关，也不在此列出
+const MENU_TOOL_IDS: ToolId[] = ['summary', 'review']
 
 // 折叠焦点窗：>6 条时以第一个未完成项为中心开 3 条（无未完成靠尾），
 // 两端折成「前面/后面 N 项」

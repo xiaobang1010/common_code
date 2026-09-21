@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useChatStore } from '../stores/useChatStore'
 import BrainStatusIcon from './BrainStatusIcon'
+import { TerminalIcon } from './editor/TerminalPanel'
 
 interface TitleBarProps {
   workspaceSelector: React.ReactNode
@@ -8,6 +9,9 @@ interface TitleBarProps {
   // 编辑区展开状态：面板开关展开编辑区并聚焦最近工具标签
   panelActive: boolean
   onTogglePanel: () => void
+  // 底部终端面板展开状态：终端开关与面板开关并列，位置在面板开关左侧
+  terminalActive: boolean
+  onToggleTerminal: () => void
   onOpenSettings: () => void
   // 当前任务标题（侧栏折叠时仍可见）
   currentTaskTitle: string
@@ -72,6 +76,8 @@ function TitleBar({
   branchSelector,
   panelActive,
   onTogglePanel,
+  terminalActive,
+  onToggleTerminal,
   onOpenSettings,
   currentTaskTitle,
   taskRunning = false,
@@ -152,6 +158,39 @@ function TitleBar({
           ...appRegion('no-drag'),
         }}
       >
+        {/* 终端开关：开关会话区底部的终端面板（首次点开才创建 shell） */}
+        <button
+          onClick={onToggleTerminal}
+          title={terminalActive ? '收起终端' : '展开终端'}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: '28px',
+            height: '28px',
+            border: '1px solid',
+            borderColor: terminalActive ? 'var(--border-strong)' : 'var(--border)',
+            borderRadius: 'var(--radius-sm)',
+            background: terminalActive ? 'var(--selected-bg)' : 'transparent',
+            color: terminalActive ? 'var(--text-primary)' : 'var(--text-secondary)',
+            cursor: 'pointer',
+            transition: 'all var(--transition-fast)',
+            flexShrink: 0,
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.borderColor = 'var(--border-strong)'
+            e.currentTarget.style.color = 'var(--text-primary)'
+          }}
+          onMouseLeave={(e) => {
+            if (!terminalActive) {
+              e.currentTarget.style.borderColor = 'var(--border)'
+              e.currentTarget.style.color = 'var(--text-secondary)'
+            }
+          }}
+        >
+          {TerminalIcon}
+        </button>
+
         {/* 面板开关：展开编辑区并聚焦最近工具标签 */}
         <button
           onClick={onTogglePanel}
