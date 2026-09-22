@@ -7,14 +7,10 @@ import subprocess
 
 from fastapi import APIRouter
 
+from server.git_ignore import GIT_GLOBAL_ARGS, GIT_TEXT_OPTS
 from server.paths import is_within_root, project_root
 
 router = APIRouter()
-
-# 统一的 git 全局参数：关闭路径转义，中文文件名原样输出（配 utf-8 解码）
-GIT_GLOBAL_ARGS = ["-c", "core.quotepath=false"]
-# 统一的子进程文本解码选项：git 输出为 utf-8 字节，Windows 默认本地编码会乱码
-GIT_TEXT_OPTS = {"encoding": "utf-8", "errors": "replace"}
 
 # diff 单侧内容超过该字节数时不下发全文，前端用占位提示代替对比视图
 MAX_DIFF_BYTES = 1024 * 1024
