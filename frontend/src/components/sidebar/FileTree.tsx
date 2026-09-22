@@ -11,7 +11,14 @@ interface FileItem {
   name: string
   type: 'dir' | 'file'
   path: string
+  // 被 git 忽略（.gitignore 命中）：照常列出但淡化显示，字段缺失表示未被忽略
+  ignored?: boolean
 }
+
+// 被忽略条目的文字色：与「占位、禁用」同一档灰，仅压暗不隐藏
+const IGNORED_COLOR = 'var(--text-tertiary)'
+// 被忽略条目的悬停提示：让灰色的含义可以自查
+const IGNORED_HINT = '已被 .gitignore 忽略'
 
 // 工作区相对路径（正斜杠口径）拼成当前平台的绝对路径。
 // 工作区路径本身来自主进程，已是原生分隔符口径；Windows 下统一转反斜杠
@@ -56,15 +63,15 @@ function getFileColor(name: string): string {
   return 'var(--text-primary)'
 }
 
-// 文件夹图标 SVG
-function FolderIcon({ open }: { open: boolean }) {
+// 文件夹图标 SVG - color 由调用方给：被忽略的目录要跟着变灰，不能写死
+function FolderIcon({ open, color }: { open: boolean; color: string }) {
   return open ? (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-primary)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
       <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
       <path d="M3 12h18" stroke="var(--border-strong)" strokeWidth="1" />
     </svg>
   ) : (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
       <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
     </svg>
   )
@@ -89,14 +96,15 @@ function LoadingIcon() {
   )
 }
 
-// 过滤命中段高亮：名称中包含关键词的部分加深底色
-function HighlightedName({ name, q }: { name: string; q: string }) {
+// 过滤命中段高亮：名称中包含关键词的部分加深底色。
+// 被忽略的条目整行同为灰色，命中段只用加粗区分，避免灰名称里冒出主色片段
+function HighlightedName({ name, q, ignored }: { name: string; q: string; ignored?: boolean }) {
   const idx = name.toLowerCase().indexOf(q)
   if (idx < 0) return <span>{name}</span>
   return (
     <span>
       {name.slice(0, idx)}
-      <span style={{ backgroundColor: 'var(--selected-bg)', color: 'var(--text-primary)', fontWeight: 600 }}>{name.slice(idx, idx + q.length)}</span>
+      <span style={{ backgroundColor: 'var(--selected-bg)', color: ignored ? IGNORED_COLOR : 'var(--text-primary)', fontWeight: 600 }}>{name.slice(idx, idx + q.length)}</span>
       {name.slice(idx + q.length)}
     </span>
   )
@@ -108,17 +116,17 @@ interface FullTreeNode {
   children: FullTreeNode[]
 }
 
-// 后端递归列表项转为前端树节点
-const toFullNode = (it: { name: string; type: 'dir' | 'file'; path: string; children?: unknown[] }): FullTreeNode => ({
-  item: { name: it.name, type: it.type, path: it.path },
-  children: (it.children || []).map((c) => toFullNode(c as { name: string; type: 'dir' | 'file'; path: string; children?: unknown[] })),
+// 后端递归列表项转为前端树节点（ignored 要原样透传，否则过滤树永远读不到它）
+const toFullNode = (it: { name: string; type: 'dir' | 'file'; path: string; ignored?: boolean; children?: unknown[] }): FullTreeNode => ({
+  item: { name: it.name, type: it.type, path: it.path, ignored: it.ignored },
+  children: (it.children || []).map((c) => toFullNode(c as { name: string; type: 'dir' | 'file'; path: string; ignored?: boolean; children?: unknown[] })),
 })
 
 // 一次性取整棵树：过滤激活时需要全局视角才能保留匹配项的父级目录链
 const loadFullTree = async (): Promise<FullTreeNode[]> => {
   const res = await fetch('/api/files/list?path=.&recursive=true')
   const data = await res.json()
-  return (data.items || []).map((it: { name: string; type: 'dir' | 'file'; path: string; children?: unknown[] }) => toFullNode(it))
+  return (data.items || []).map((it: { name: string; type: 'dir' | 'file'; path: string; ignored?: boolean; children?: unknown[] }) => toFullNode(it))
 }
 
 // 剪枝：只保留名称命中的节点及其父级目录链
@@ -167,6 +175,11 @@ function FileTreeNode({ item, depth, onFileOpen, activePath, onPinFile, onNodeCo
   const isDir = item.type === 'dir'
   // 当前打开文件的节点高亮，选中与视线在树内闭环
   const isActive = !isDir && activePath === item.path
+  // 被忽略的条目一律压暗（含选中态，选中靠底色区分）；未忽略的沿用原配色：
+  // 名称保持「激活/目录用主色、其余用扩展名色」，图标按扩展名色，文件夹按开合分档
+  const fileColor = item.ignored ? IGNORED_COLOR : getFileColor(item.name)
+  const nameColor = item.ignored ? IGNORED_COLOR : isDir || isActive ? 'var(--text-primary)' : fileColor
+  const folderColor = item.ignored ? IGNORED_COLOR : expanded ? 'var(--text-primary)' : 'var(--text-secondary)'
 
   const handleClick = async () => {
     if (!isDir) {
@@ -189,8 +202,6 @@ function FileTreeNode({ item, depth, onFileOpen, activePath, onPinFile, onNodeCo
     setExpanded(!expanded)
   }
 
-  const fileColor = getFileColor(item.name)
-
   return (
     <div>
       <div
@@ -203,6 +214,7 @@ function FileTreeNode({ item, depth, onFileOpen, activePath, onPinFile, onNodeCo
         onContextMenu={(e) => {
           onNodeContextMenu(e, item)
         }}
+        title={item.ignored ? IGNORED_HINT : undefined}
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -211,7 +223,7 @@ function FileTreeNode({ item, depth, onFileOpen, activePath, onPinFile, onNodeCo
           paddingRight: '8px',
           height: '26px',
           cursor: 'pointer',
-          color: isDir ? 'var(--text-primary)' : fileColor,
+          color: nameColor,
           fontSize: '13px',
           fontFamily: 'var(--font-ui)',
           whiteSpace: 'nowrap',
@@ -223,9 +235,9 @@ function FileTreeNode({ item, depth, onFileOpen, activePath, onPinFile, onNodeCo
         }}
       >
         <span style={{ width: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          {loading ? <LoadingIcon /> : isDir ? <FolderIcon open={expanded} /> : <FileIcon color={fileColor} />}
+          {loading ? <LoadingIcon /> : isDir ? <FolderIcon open={expanded} color={folderColor} /> : <FileIcon color={fileColor} />}
         </span>
-        <span style={{ fontWeight: isDir ? 500 : isActive ? 500 : 400, color: isActive ? 'var(--text-primary)' : undefined }}>{item.name}</span>
+        <span style={{ fontWeight: isDir ? 500 : isActive ? 500 : 400 }}>{item.name}</span>
       </div>
       {isDir && expanded && loaded && (
         <div>
@@ -251,7 +263,11 @@ function FilteredTreeNode({ node, depth, q, onFileOpen, activePath, onPinFile, o
   const [hovered, setHovered] = useState(false)
   const isDir = node.item.type === 'dir'
   const isActive = !isDir && activePath === node.item.path
-  const fileColor = getFileColor(node.item.name)
+  const ignored = node.item.ignored
+  // 与普通树同一套配色口径，避免搜索态与常态长得不一样
+  const fileColor = ignored ? IGNORED_COLOR : getFileColor(node.item.name)
+  const nameColor = ignored ? IGNORED_COLOR : isDir || isActive ? 'var(--text-primary)' : fileColor
+  const folderColor = ignored ? IGNORED_COLOR : 'var(--text-primary)'
   return (
     <div>
       <div
@@ -266,6 +282,7 @@ function FilteredTreeNode({ node, depth, q, onFileOpen, activePath, onPinFile, o
         onContextMenu={(e) => {
           onNodeContextMenu(e, node.item)
         }}
+        title={ignored ? IGNORED_HINT : undefined}
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -274,7 +291,7 @@ function FilteredTreeNode({ node, depth, q, onFileOpen, activePath, onPinFile, o
           paddingRight: '8px',
           height: '26px',
           cursor: isDir ? 'default' : 'pointer',
-          color: isDir || isActive ? 'var(--text-primary)' : fileColor,
+          color: nameColor,
           fontSize: '13px',
           fontFamily: 'var(--font-ui)',
           whiteSpace: 'nowrap',
@@ -286,10 +303,10 @@ function FilteredTreeNode({ node, depth, q, onFileOpen, activePath, onPinFile, o
         }}
       >
         <span style={{ width: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          {isDir ? <FolderIcon open={true} /> : <FileIcon color={isActive ? 'var(--text-primary)' : fileColor} />}
+          {isDir ? <FolderIcon open={true} color={folderColor} /> : <FileIcon color={ignored ? IGNORED_COLOR : isActive ? 'var(--text-primary)' : fileColor} />}
         </span>
         <span style={{ fontWeight: isDir ? 500 : isActive ? 500 : 400 }}>
-          <HighlightedName name={node.item.name} q={q} />
+          <HighlightedName name={node.item.name} q={q} ignored={ignored} />
         </span>
       </div>
       {node.children.map((c) => (
@@ -651,7 +668,7 @@ function FileTree({ onFileOpen, activePath, onPinFile, workspaceName }: FileTree
             gap: '4px',
           }}
         >
-          <FolderIcon open={false} />
+          <FolderIcon open={false} color="var(--text-secondary)" />
           新建目录
         </button>
       </div>

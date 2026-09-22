@@ -5,8 +5,23 @@ from __future__ import annotations
 import os
 
 
-# 这些目录不展示给前端
-EXCLUDED_DIRS = {"__pycache__", "node_modules", "dist", ".git"}
+# 文件树列目录的目录跳过口径，按列举模式分两份：
+# ALWAYS_HIDDEN_DIRS 是任何模式都不列出的（git 内部数据，展开没有浏览意义）；
+# RECURSIVE_SKIP_DIRS 只在一次性递归列举时排除——那条路径服务搜索过滤与快速
+# 打开，条目有总量上限，依赖/缓存/构建产物一旦展开就会把上限吃满
+ALWAYS_HIDDEN_DIRS = {".git"}
+
+RECURSIVE_SKIP_DIRS = {
+    ".git",
+    "node_modules",
+    "__pycache__",
+    "dist",
+    ".venv",
+    "venv",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+}
 
 # 统一可编辑文件大小上限（字节）：人侧可编辑上限与 AI 写回上限共用同一套数字
 MAX_EDITABLE_BYTES = 5 * 1024 * 1024

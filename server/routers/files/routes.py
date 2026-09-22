@@ -13,10 +13,12 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from server.file_events import file_event_broker
+from server.git_ignore import ignored_names
 from server.paths import (
+    ALWAYS_HIDDEN_DIRS,
     EXT_TO_LANG,
-    EXCLUDED_DIRS,
     MAX_EDITABLE_BYTES,
+    RECURSIVE_SKIP_DIRS,
     is_within_root,
     project_root,
     resolve_within_root,
@@ -45,19 +47,36 @@ class CreateRequest(BaseModel):
     type: str
 
 
-def _list_dir(target: str, root: str) -> list[dict]:
-    """列单个目录：目录排前面、文件排后面，各自按名字排序，隐藏文件与排除目录跳过。"""
+def _mark_ignored(root: str, items: list[dict]) -> None:
+    """给被 git 忽略的条目打上 ignored 标记。
+
+    目录带尾斜杠问：`.venv`、`.mypy_cache` 这类目录是靠自身内部的忽略规则
+    「自己忽略自己」，不带斜杠时 git 不认，带上才能与 git status --ignored 的口径
+    一致。只给命中的写字段、未命中的保持字段缺失，省掉逐条 false 的冗余体积；
+    忽略判定失败（非 git 仓库等）时什么都不写，条目照常返回。
+    """
+    queries = [item["path"] + "/" if item["type"] == "dir" else item["path"] for item in items]
+    ignored = {path.rstrip("/") for path in ignored_names(root, queries)}
+    for item in items:
+        if item["path"] in ignored:
+            item["ignored"] = True
+
+
+def _list_dir(target: str, root: str, skip_names: set[str]) -> list[dict]:
+    """列单个目录：目录排前面、文件排后面，各自按名字排序。
+
+    skip_names 里的名字一律跳过，判断只看名字、不区分目录与文件——`.git` 在
+    worktree / submodule 场景下是个文件，只判目录会漏掉它。忽略标记由调用方
+    统一补（见 _mark_ignored），避免递归列举时每层目录都去问一次 git。
+    """
     dirs: list[dict] = []
     files: list[dict] = []
     for name in os.listdir(target):
-        # 排除隐藏文件
-        if name.startswith("."):
+        if name in skip_names:
             continue
         full = os.path.join(target, name)
         rel = os.path.relpath(full, root).replace("\\", "/")
         if os.path.isdir(full):
-            if name in EXCLUDED_DIRS:
-                continue
             dirs.append({"name": name, "type": "dir", "path": rel})
         else:
             files.append({"name": name, "type": "file", "path": rel})
@@ -67,6 +86,15 @@ def _list_dir(target: str, root: str) -> list[dict]:
     return dirs + files
 
 
+def _flatten(items: list[dict]) -> list[dict]:
+    """把递归树摊平成条目列表，供一次性打忽略标记用。"""
+    flat: list[dict] = []
+    for item in items:
+        flat.append(item)
+        flat.extend(_flatten(item.get("children") or []))
+    return flat
+
+
 @router.get("/api/files/list")
 def list_files(path: str = ".", recursive: bool = False) -> dict:
     """列目录接口。
@@ -74,9 +102,11 @@ def list_files(path: str = ".", recursive: bool = False) -> dict:
     参数 path：相对路径，默认 "."（项目根目录）。
     参数 recursive：True 时一次性递归返回嵌套树（目录带 children），
     供文件树过滤等需要整棵树视角的场景使用；条目总量设上限防超大仓库。
-    返回 {"items": [{"name", "type", "path", "children"?}]}，
+    返回 {"items": [{"name", "type", "path", "children"?, "ignored"?}]}，
     目录排前面、文件排后面，各自按名字排序。
-    隐藏文件和指定目录会被排除。
+    只有 .git 目录会被跳过；被 git 忽略的条目照常列出并带 ignored 标记。
+    递归模式额外跳过依赖/缓存/构建产物目录（列表见 paths.RECURSIVE_SKIP_DIRS），
+    否则条目上限会被这些目录吃满，搜索与快速打开随之失效。
     """
     root = project_root()
     target = os.path.normpath(os.path.join(root, path))
@@ -88,8 +118,9 @@ def list_files(path: str = ".", recursive: bool = False) -> dict:
     if not os.path.isdir(target):
         return {"items": []}
 
-    items = _list_dir(target, root)
+    items = _list_dir(target, root, ALWAYS_HIDDEN_DIRS if not recursive else RECURSIVE_SKIP_DIRS)
     if not recursive:
+        _mark_ignored(root, items)
         return {"items": items}
 
     # 递归模式：广度优先展开所有子目录，目录条目补 children 字段
@@ -99,10 +130,13 @@ def list_files(path: str = ".", recursive: bool = False) -> dict:
     while queue and total < MAX_ENTRIES:
         item = queue.pop(0)
         full = os.path.join(root, item["path"])
-        children = _list_dir(full, root)
+        children = _list_dir(full, root, RECURSIVE_SKIP_DIRS)
         item["children"] = children
         total += len(children)
         queue.extend(c for c in children if c["type"] == "dir")
+
+    # 整棵树只判一次忽略：逐层判会让每层目录各起一个 git 进程
+    _mark_ignored(root, _flatten(items))
     return {"items": items}
 
 
