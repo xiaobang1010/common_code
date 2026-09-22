@@ -275,6 +275,23 @@ function App() {
     setActiveToolId(null)
   }, [])
 
+  // ---- 智能体轨迹标签 ----
+
+  // 选中任务 id：内存态不持久化（重启后由标签内列表重选）；会话切换时重置防旧选中悬空
+  const [agentTraceId, setAgentTraceId] = useState<string | null>(null)
+  useEffect(() => {
+    setAgentTraceId(null)
+  }, [chatSessionId])
+
+  // 胶囊卡「智能体」条目点入：选中任务并展开产物面板的智能体标签
+  const handleOpenAgent = useCallback(
+    (id: string) => {
+      setAgentTraceId(id)
+      openTool('agent')
+    },
+    [openTool]
+  )
+
   // 标题栏面板开关：展开编辑区并聚焦最近工具标签；已展开则收起
   const togglePanel = useCallback(() => {
     if (!editorCollapsed) {
@@ -761,14 +778,18 @@ function App() {
             onOpenTool={openTool}
             onCloseTool={closeTool}
             onActivateFile={activateFile}
+            agentTraceId={agentTraceId}
+            onSelectAgentTrace={setAgentTraceId}
           />
         </div>
       </div>
 
-      {/* 收起态右上角状态胶囊卡：面板展开时不渲染；区块点击直达对应工具标签 */}
+      {/* 收起态右上角状态胶囊卡：面板展开时不渲染；区块点击直达对应工具标签，
+          「智能体」条目直达产物面板的执行轨迹 */}
       {editorCollapsed && (
         <CapsuleCard
           onOpenTool={openTool}
+          onOpenAgent={handleOpenAgent}
           sessionId={chatSessionId}
         />
       )}
