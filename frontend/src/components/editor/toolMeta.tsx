@@ -1,8 +1,9 @@
 import type { ReactNode } from 'react'
 
-// 工具标签标识（概要/文件/搜索/审查）：开关状态由 App 层持有，供标题栏开关与入口卡片共用。
-// 终端不在此列：它是会话区底部的独立面板，入口在标题栏的终端开关
-export type ToolId = 'summary' | 'files' | 'search' | 'review'
+// 工具标签标识（概要/搜索/审查）：开关状态由 App 层持有，供标题栏开关与入口卡片共用。
+// 不在表内两例：终端是会话区底部的独立面板（入口在标题栏终端开关）；「文件」不是标签——
+// 面板在没有工具激活时的基础视图就是文件视图，打开文件也会自动切过去
+export type ToolId = 'summary' | 'search' | 'review'
 
 // 图标统一样式参数
 const iconProps = {
@@ -23,14 +24,6 @@ const SummaryIcon = (
     <circle cx="3.5" cy="6" r="0.5" fill="currentColor" />
     <circle cx="3.5" cy="12" r="0.5" fill="currentColor" />
     <circle cx="3.5" cy="18" r="0.5" fill="currentColor" />
-  </svg>
-)
-
-// 文件图标：文件夹（与文件树/文件标签语义一致）
-const FilesIcon = (
-  <svg {...iconProps}>
-    <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
-    <path d="M3 12h18" />
   </svg>
 )
 
@@ -57,7 +50,6 @@ const ReviewIcon = (
 // 不能随意从表中删除条目：标签渲染、面板映射与 localStorage 恢复均依赖此表
 export const TOOL_META: { id: ToolId; title: string; icon: ReactNode }[] = [
   { id: 'summary', title: '概要', icon: SummaryIcon },
-  { id: 'files', title: '文件', icon: FilesIcon },
   { id: 'search', title: '搜索', icon: SearchIcon },
   { id: 'review', title: '审查', icon: ReviewIcon },
 ]

@@ -35,40 +35,25 @@ const LAYOUT_KEYS = {
   terminalHeight: 'layout.terminalHeight',
   toolTabsOpen: 'layout.toolTabsOpen',
   activeToolId: 'layout.activeToolId',
-  toolTabsMigrated: 'layout.toolTabsMigrated',
   sidebarView: 'layout.sidebarView',
 } as const
 
-// 默认工具标签集：右侧产物区默认呈现 概要/文件，激活概要。
-// 终端已迁至会话区底部独立面板，不在工具标签体系内
-const DEFAULT_TOOL_TABS: ToolId[] = ['summary', 'files']
+// 默认工具标签集：右侧产物区默认只呈现 概要。
+// 不在工具标签体系内的两例：终端（会话区底部独立面板，入口在标题栏开关）、
+// 文件视图（面板无工具激活时的基础视图，打开文件即切过去，无需标签占位）
+const DEFAULT_TOOL_TABS: ToolId[] = ['summary']
 
-// 初始化工具标签开关集（含一次性旧持久化迁移）：
-// 旧版本默认标签集为空，且用户「关闭全部」也会产生空集——两者无法从值上区分。
-// 用迁移标记区分：仅当存在旧记录（不含 files，旧版本无此工具）时补齐默认标签集并写标记一次，
-// 之后用户关空得到的空集保持为空（「关闭全部 = 面板全隐藏」不变量不被重置）
+// 初始化工具标签开关集：已存记录按当前 TOOL_META 过滤（已被移除的标签在此自然消失），
+// 全新安装采用默认集；用户主动「关闭全部」得到的空集保持为空（面板全隐藏）
 function loadInitialToolTabs(): ToolId[] {
   const raw = localStorage.getItem(LAYOUT_KEYS.toolTabsOpen)
-  let ids: ToolId[] = []
-  if (raw !== null) {
-    try {
-      const v = JSON.parse(raw)
-      ids = Array.isArray(v) ? v.filter((x): x is ToolId => TOOL_META.some((t) => t.id === x)) : []
-    } catch {
-      ids = []
-    }
-  } else {
-    // 全新安装：直接采用新默认集
-    ids = DEFAULT_TOOL_TABS
+  if (raw === null) return DEFAULT_TOOL_TABS
+  try {
+    const v = JSON.parse(raw)
+    return Array.isArray(v) ? v.filter((x): x is ToolId => TOOL_META.some((t) => t.id === x)) : []
+  } catch {
+    return []
   }
-  if (localStorage.getItem(LAYOUT_KEYS.toolTabsMigrated) !== '1') {
-    if (raw !== null && !ids.includes('files')) {
-      // 旧版本数据：补齐默认标签集，仅迁移这一次
-      ids = Array.from(new Set([...ids, ...DEFAULT_TOOL_TABS]))
-    }
-    localStorage.setItem(LAYOUT_KEYS.toolTabsMigrated, '1')
-  }
-  return ids
 }
 
 function App() {
@@ -85,7 +70,7 @@ function App() {
   const [terminalOpen, setTerminalOpen] = useState(false)
   const [terminalMounted, setTerminalMounted] = useState(false)
 
-  // 工具标签（概要/文件/搜索/审查）开关状态：由 App 持有，标题栏开关/入口卡片/快捷键共用
+  // 工具标签（概要/搜索/审查）开关状态：由 App 持有，标题栏开关/入口卡片/快捷键共用
   const [toolTabsOpen, setToolTabsOpen] = useState<ToolId[]>(() => loadInitialToolTabs())
   const [activeToolId, setActiveToolId] = useState<ToolId | null>(() => {
     const v = localStorage.getItem(LAYOUT_KEYS.activeToolId)
