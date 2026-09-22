@@ -239,6 +239,40 @@ async def test_transcript_endpoint_404_for_unknown_agent():
     assert result.status_code == 404
 
 
+def test_transcript_messages_carry_timestamp(monkeypatch, tmp_path):
+    """transcript 端点返回的消息带写入时刻 timestamp，供执行轨迹按时间展示。"""
+    import json
+
+    from server.routers.subagents import routes
+    from tools.subagent import transcript
+
+    # 转录目录指到临时路径，落一份真实的两行 JSONL（assistant 调工具 → tool 回结果）
+    monkeypatch.setattr(transcript, "_get_subagents_base_dir", lambda: tmp_path)
+    agent_dir = tmp_path / "agent_ts1"
+    agent_dir.mkdir()
+    entries = [
+        {"role": "assistant", "content": "", "timestamp": 1000.0,
+         "tool_calls": [{"id": "c1", "function": {"name": "Read", "arguments": "{}"}}]},
+        {"role": "tool", "content": "文件内容", "timestamp": 1005.0, "tool_call_id": "c1"},
+    ]
+    with open(agent_dir / "transcript.jsonl", "w", encoding="utf-8") as f:
+        prev_uuid: str | None = None
+        for entry in entries:
+            entry["uuid"] = f"u{entry['timestamp']}"
+            # parentUuid 链要真实相接，重建线性消息列表时才不会丢行
+            entry["parentUuid"] = prev_uuid
+            entry["agentId"] = "agent_ts1"
+            entry["isSidechain"] = True
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            prev_uuid = entry["uuid"]
+
+    result = routes.get_subagent_transcript("agent_ts1")
+    messages = result["messages"]
+    assert [m["timestamp"] for m in messages] == [1000.0, 1005.0]
+    # tool 结果仍按 tool_call_id 对上，既有过滤逻辑不受新字段影响
+    assert messages[1]["tool_call_id"] == "c1"
+
+
 # ---------------------------------------------------------------------------
 # SendMessage 语义一致（2.5）
 # ---------------------------------------------------------------------------

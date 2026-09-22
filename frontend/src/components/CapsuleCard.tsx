@@ -7,14 +7,17 @@ import { useSpecProgress, deriveProgress, type SpecCheckItem } from '../hooks/us
 interface CapsuleCardProps {
   // 点区块直达对应工具标签：展开面板并激活该标签
   onOpenTool: (id: ToolId) => void
+  // 点「智能体」条目：展开面板、激活智能体标签并选中该任务（执行轨迹在产物面板看）
+  onOpenAgent: (agentId: string) => void
   // 当前会话 id，供智能体轮询按会话过滤
   sessionId: string | null
 }
 
-// ··· 菜单展示的工具标签：概要/审查。
+// ··· 菜单展示的工具标签：概要/审查/智能体。
 // 「文件」入口已迁至侧栏工作区行、「搜索」有侧栏常驻按钮与 Ctrl+K，不再重复列出；
-// 终端已迁至会话区底部独立面板，入口在标题栏终端开关，也不在此列出
-const MENU_TOOL_IDS: ToolId[] = ['summary', 'review']
+// 终端已迁至会话区底部独立面板，入口在标题栏终端开关，也不在此列出。
+// 智能体有专属区块，但区块只在有运行中任务时出现——菜单入口保证历史任务也能打开轨迹面板
+const MENU_TOOL_IDS: ToolId[] = ['summary', 'review', 'agent']
 
 // 折叠焦点窗：>6 条时以第一个未完成项为中心开 3 条（无未完成靠尾），
 // 两端折成「前面/后面 N 项」
@@ -99,26 +102,10 @@ function sectionLabelStyle(dim: boolean): React.CSSProperties {
   }
 }
 
-// 跳转消息流对应 SubagentCard：锚点命中即滚过去并短暂高亮；
-// 目标块因「运行中仅渲染最近 3 步骤」未含卡片时，回退滚到运行中的工作块
-function jumpToSubagent(agentId: string) {
-  // 复用 SubagentCard 根节点现有 data-agent-id（其 agentId 已含结果解析与列表回填两种来源）
-  const card = document.querySelector(`[data-agent-id="${CSS.escape(agentId)}"]`)
-  const target = card ?? document.querySelector('[data-workblock-running="true"]')
-  if (!target) return
-  target.scrollIntoView({ behavior: 'smooth', block: 'center' })
-  const el = target as HTMLElement
-  el.style.transition = 'box-shadow 0.3s ease'
-  el.style.boxShadow = '0 0 0 2px var(--info)'
-  setTimeout(() => {
-    el.style.boxShadow = ''
-  }, 1200)
-}
-
 // 状态胶囊卡：收起态为活动摘要小胶囊，
 // 点击展开为固定宽度完整卡：常驻「进展」「产物」区块、「智能体」未常驻区块、
 // 卡头 ··· 菜单与 ⤢ 收起钮。仍只在编辑区折叠时由 App 渲染（fixed 右上）。
-function CapsuleCard({ onOpenTool, sessionId }: CapsuleCardProps) {
+function CapsuleCard({ onOpenTool, onOpenAgent, sessionId }: CapsuleCardProps) {
   const git = useGitStatus()
   const { running: runningAgents } = useRunningSubagents(sessionId)
   // 进展精确到会话：传 sessionId 让后端按会话归属返回 spec，同工作区切会话各看各的
@@ -220,9 +207,10 @@ function CapsuleCard({ onOpenTool, sessionId }: CapsuleCardProps) {
     )
   }
 
+  // 智能体条目点击：不再跳消息流，直接在产物面板打开该任务的执行轨迹
   const jumpAgent = (a: RunningSubagent) => {
     setAgentsOpen(false)
-    jumpToSubagent(a.agent_id)
+    onOpenAgent(a.agent_id)
   }
 
   return (
@@ -332,6 +320,9 @@ function CapsuleCard({ onOpenTool, sessionId }: CapsuleCardProps) {
           </button>
           {menuOpen && (
             <div
+              /* 菜单项点击不能冒泡到卡头：无 spec 时卡头 onClick 会再调一次
+                 onOpenTool('summary')，与菜单项的展开相互抵消（开又立即收） */
+              onClick={(e) => e.stopPropagation()}
               style={{
                 position: 'absolute',
                 right: 0,
@@ -499,7 +490,7 @@ function CapsuleCard({ onOpenTool, sessionId }: CapsuleCardProps) {
                 key={a.agent_id}
                 style={{ ...sectionStyle(), paddingLeft: '20px' }}
                 onClick={() => jumpAgent(a)}
-                title={a.description}
+                title={a.description ? `${a.description}（查看执行轨迹）` : '查看执行轨迹'}
               >
                 <span
                   style={{

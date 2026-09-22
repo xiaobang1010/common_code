@@ -8,6 +8,7 @@ import TabContextMenu from './editor/TabContextMenu'
 import SearchPanel from './sidebar/SearchPanel'
 import SummaryCard from './inspector/cards/SummaryCard'
 import ReviewCard from './inspector/cards/ReviewCard'
+import AgentTraceCard from './inspector/cards/AgentTraceCard'
 import QuickOpen from './editor/QuickOpen'
 import Markdown from './ai/Markdown'
 import { useChatStore } from '../stores/useChatStore'
@@ -91,10 +92,13 @@ interface ArtifactPanelProps {
   onCloseTool: (id: ToolId) => void
   // 文件标签被激活（点击文件标签/打开文件）时清掉工具标签激活态
   onActivateFile: () => void
+  // 智能体标签：选中任务 id 由 App 持有（胶囊卡点入与标签内切换共用一处状态）
+  agentTraceId: string | null
+  onSelectAgentTrace: (id: string) => void
 }
 
 const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
-  ({ collapsed, onToggleCollapse, toolTabsOpen, activeToolId, onOpenTool, onCloseTool, onActivateFile }, ref) => {
+  ({ collapsed, onToggleCollapse, toolTabsOpen, activeToolId, onOpenTool, onCloseTool, onActivateFile, agentTraceId, onSelectAgentTrace }, ref) => {
     const [openTabs, setOpenTabs] = useState<OpenTab[]>([])
     const [activePath, setActivePath] = useState('')
     const [conflict, setConflict] = useState<ConflictInfo | null>(null)
@@ -884,6 +888,13 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
       summary: <SummaryCard sessionId={sessionId} onOpenFile={openFile} />,
       search: <SearchPanel onFileOpen={openFile} />,
       review: <ReviewCard />,
+      agent: (
+        <AgentTraceCard
+          selectedAgentId={agentTraceId}
+          onSelectAgent={onSelectAgentTrace}
+          active={activeToolId === 'agent'}
+        />
+      ),
     }
 
     // 折叠时不渲染任何形态（入口由右上角状态胶囊卡承接）

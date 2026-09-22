@@ -277,6 +277,8 @@ def get_agent_transcript(agent_id: str) -> list[dict] | None:
     messages: list[dict] = []
     for entry in chain:
         msg: dict[str, Any] = {"role": entry["role"], "content": entry["content"]}
+        # 写入时刻随消息带出，供执行轨迹按时间展示；旧行缺该字段时回退 None
+        msg["timestamp"] = entry.get("timestamp")
         if "tool_calls" in entry:
             msg["tool_calls"] = entry["tool_calls"]
         if "tool_call_id" in entry:
