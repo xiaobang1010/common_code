@@ -14,6 +14,41 @@ import { useChatStore } from '../stores/useChatStore'
 import { TOOL_META, type ToolId } from './editor/toolMeta'
 import { filesApi, type FileWriteError } from '../api/client'
 
+// 自动保存防抖：编辑停顿这么久之后落盘一次
+const AUTOSAVE_DELAY_MS = 800
+
+// 一次性保存提示（「已保存」「文件已更新」）的展示时长
+const FLASH_MS = 1500
+
+// 横幅里的文本按钮（过期重处理 / 放弃修改 / 重新加载）：与既有横幅按钮同款
+const bannerActionStyle: React.CSSProperties = {
+  border: 'none',
+  background: 'transparent',
+  color: 'var(--text-primary)',
+  cursor: 'pointer',
+  fontSize: '12px',
+  fontFamily: 'var(--font-ui)',
+  padding: 0,
+  textDecoration: 'underline',
+}
+
+// 自动保存是否需要起手：有未落盘改动、可写、不在途、不处于外部改动或冲突，
+// 且这次编辑还没失败过——失败后不再自动重试，等新的编辑推进序号再放行。
+// 抽成纯函数便于阅读与手测复现（前端无测试基建）
+function shouldAutoSave(s: {
+  dirty: boolean
+  editable: boolean
+  saving: boolean
+  stale: boolean
+  conflictOpen: boolean
+  editSeq: number
+  failedSeq: number
+}): boolean {
+  return (
+    s.editable && s.dirty && !s.saving && !s.stale && !s.conflictOpen && s.editSeq !== s.failedSeq
+  )
+}
+
 // 打开的标签页信息
 interface OpenTab {
   path: string
@@ -29,19 +64,15 @@ interface OpenTab {
   stale: boolean        // 磁盘已被外部（AI）修改，需重新加载
   revision: number      // 内容整体重置时 +1，用于触发编辑器重挂载
   pinned: boolean       // 是否固定为正式标签（未固定且干净的标签参与预览槽复用）
+  editSeq: number       // 编辑序号：每次内容改动 +1，供自动保存判断「这次编辑是否已经失败过」
+  failedSeq: number     // 最近一次写盘失败对应的编辑序号（-1 表示没有失败过）
 }
 
-// 保存冲突弹窗信息
+// 保存冲突弹窗信息（文件事件触发的冲突只有路径，没有服务端回带的当前 mtime/size）
 interface ConflictInfo {
   path: string
-  currentMtime: number
-  currentSize: number
-}
-
-// 批量关闭待确认信息：paths 为待关闭路径，anchorPath 为右键锚点标签（激活迁移目标）
-interface PendingBatchClose {
-  paths: string[]
-  anchorPath?: string
+  currentMtime?: number
+  currentSize?: number
 }
 
 // 暴露给父组件的方法
@@ -67,9 +98,6 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
     const [openTabs, setOpenTabs] = useState<OpenTab[]>([])
     const [activePath, setActivePath] = useState('')
     const [conflict, setConflict] = useState<ConflictInfo | null>(null)
-    const [pendingClose, setPendingClose] = useState<string | null>(null)
-    // 批量关闭确认弹窗（关闭全部/关闭其他/关闭右侧命中未保存文件时弹一次）
-    const [pendingBatch, setPendingBatch] = useState<PendingBatchClose | null>(null)
     // 标签右键菜单：屏幕坐标 + 锚点（kind=file 为文件路径，kind=tool 为工具标签 id）
     const [tabMenu, setTabMenu] = useState<{ x: number; y: number; path: string; kind: 'file' | 'tool' } | null>(null)
     // .md 预览模式：切文件时回到源码态
@@ -78,9 +106,15 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
     const [quickOpen, setQuickOpen] = useState(false)
     // 最近打开的文件（会话内前端内存记录，重启不持久化）
     const [recentFiles, setRecentFiles] = useState<string[]>([])
+    // 一次性保存提示（「已保存」「文件已更新」这类短暂文案）
+    const [flash, setFlash] = useState<string>('')
 
     const openTabsRef = useRef<OpenTab[]>([])
     const activePathRef = useRef('')
+    // 各文件在途写盘的 promise：同一文件的冲刷与保存要先等它，避免在途期间的新输入被漏写
+    const savingPromisesRef = useRef<Map<string, Promise<boolean>>>(new Map())
+    // 打开文件的请求序号：连续打开时只有最后一次请求的结果能落地
+    const openSeqRef = useRef(0)
     const activeToolIdRef = useRef<ToolId | null>(activeToolId)
     const onActivateFileRef = useRef(onActivateFile)
 
@@ -89,13 +123,6 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
       activeToolIdRef.current = activeToolId
       onActivateFileRef.current = onActivateFile
     }, [activeToolId, onActivateFile])
-
-    // 激活文件标签：同时清掉工具标签激活态（内容区回到文件视图）
-    const setActive = useCallback((path: string) => {
-      activePathRef.current = path
-      setActivePath(path)
-      onActivateFileRef.current()
-    }, [])
 
     const updateTabs = useCallback((updater: (prev: OpenTab[]) => OpenTab[]) => {
       setOpenTabs((prev) => {
@@ -120,41 +147,9 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
       stale: false,
       revision: 0,
       pinned: false,
+      editSeq: 0,
+      failedSeq: -1,
     })
-
-    // 打开文件：已打开则切换标签，否则请求内容后新增标签。
-    // 预览槽复用：当前没有固定且干净的预览标签时，整体替换该槽（path/名字/内容/基线都换掉），
-    // 连续浏览不逐文件堆积；只有固定标签（pinned=true）或脏标签才新增
-    const openFile = useCallback(
-      async (path: string) => {
-        if (collapsed) {
-          onToggleCollapse()
-        }
-        // 记录最近打开（去重置顶，最多 10 条）
-        setRecentFiles((prev) => [path, ...prev.filter((p) => p !== path)].slice(0, 10))
-        if (openTabsRef.current.some((t) => t.path === path)) {
-          setActive(path)
-          return
-        }
-        try {
-          const data = await filesApi.read(path)
-          const slot = openTabsRef.current.find((t) => !t.pinned && t.bufferContent === t.diskContent)
-          if (slot) {
-            updateTabs((prev) =>
-              prev.map((t) => (t.path === slot.path ? { ...makeTab(path, data), revision: t.revision + 1 } : t))
-            )
-          } else {
-            updateTabs((prev) => [...prev, makeTab(path, data)])
-          }
-          setActive(path)
-        } catch (e) {
-          console.error('读取文件失败', e)
-        }
-      },
-      [updateTabs, setActive, collapsed, onToggleCollapse]
-    )
-
-    useImperativeHandle(ref, () => ({ openFile }), [openFile])
 
     // 编辑器内容变更：只更新缓冲，不回灌 value，保持 Monaco 自身 undo 栈。
     // 预览标签首次产生 dirty 时自动固定（pinned=true），此后不再参与预览槽复用
@@ -163,7 +158,7 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
         updateTabs((prev) =>
           prev.map((t) =>
             t.path === path && t.bufferContent !== value
-              ? { ...t, bufferContent: value, pinned: t.bufferContent === t.diskContent ? true : t.pinned }
+              ? { ...t, bufferContent: value, editSeq: t.editSeq + 1, pinned: t.bufferContent === t.diskContent ? true : t.pinned }
               : t
           )
         )
@@ -171,61 +166,97 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
       [updateTabs]
     )
 
-    // 保存：带基线提交；成功同步基线并清 dirty，失败保留内容（冲突弹窗 / 错误提示）
+    // 保存：带基线提交（乐观锁）。成功把磁盘基线推进到「本次真正写入的快照」——
+    // 写盘在途期间用户继续输入时，新内容不会被误标为已保存，脏态保留、由调度补写。
+    // 失败：409 走冲突弹窗（同时置 stale，自动保存据此暂停），其它错误落 error 横幅
     const saveFile = useCallback(
       async (path: string): Promise<boolean> => {
+        // 同一文件的写请求串行：先等掉在途的那次
+        const inflight = savingPromisesRef.current.get(path)
+        if (inflight) await inflight
         const tab = openTabsRef.current.find((t) => t.path === path)
         if (!tab || !tab.editable || tab.saving) return false
         if (tab.bufferContent === tab.diskContent) return true
 
+        const snapshot = tab.bufferContent
+        const seq = tab.editSeq
         updateTabs((prev) => prev.map((t) => (t.path === path ? { ...t, saving: true, error: '' } : t)))
-        try {
-          const result = await filesApi.write({
-            path,
-            content: tab.bufferContent,
-            base_mtime: tab.baseMtime,
-            base_size: tab.baseSize,
-          })
-          updateTabs((prev) =>
-            prev.map((t) =>
-              t.path === path
-                ? { ...t, diskContent: t.bufferContent, baseMtime: result.mtime, baseSize: result.size, saving: false, error: '', stale: false }
-                : t
+        const run = (async (): Promise<boolean> => {
+          try {
+            const result = await filesApi.write({
+              path,
+              content: snapshot,
+              base_mtime: tab.baseMtime,
+              base_size: tab.baseSize,
+            })
+            updateTabs((prev) =>
+              prev.map((t) =>
+                t.path === path
+                  ? { ...t, diskContent: snapshot, baseMtime: result.mtime, baseSize: result.size, saving: false, error: '', stale: false }
+                  : t
+              )
             )
-          )
-          return true
-        } catch (e) {
-          const err = e as FileWriteError
-          if (err.status === 409 && err.conflict) {
-            updateTabs((prev) => prev.map((t) => (t.path === path ? { ...t, saving: false } : t)))
-            setConflict({ path, currentMtime: err.conflict.current_mtime, currentSize: err.conflict.current_size })
-          } else {
-            updateTabs((prev) => prev.map((t) => (t.path === path ? { ...t, saving: false, error: err.message || '保存失败' } : t)))
+            setFlash('已保存')
+            return true
+          } catch (e) {
+            const err = e as FileWriteError
+            if (err.status === 409 && err.conflict) {
+              // 磁盘与基线不一致：置 stale（暂停该文件的自动保存）并弹冲突窗，不落 error 横幅
+              updateTabs((prev) => prev.map((t) => (t.path === path ? { ...t, saving: false, stale: true } : t)))
+              setConflict({ path, currentMtime: err.conflict.current_mtime, currentSize: err.conflict.current_size })
+            } else {
+              // 记下这次失败的编辑序号：同一份未改动的缓冲不再自动重试
+              updateTabs((prev) =>
+                prev.map((t) => (t.path === path ? { ...t, saving: false, failedSeq: seq, error: err.message || '保存失败' } : t))
+              )
+            }
+            return false
           }
-          return false
+        })()
+        savingPromisesRef.current.set(path, run)
+        try {
+          return await run
+        } finally {
+          if (savingPromisesRef.current.get(path) === run) savingPromisesRef.current.delete(path)
         }
       },
       [updateTabs]
     )
 
-    // 覆盖磁盘版本：不带基线强制写入
+    // 覆盖磁盘版本：不带基线强制写入（与 saveFile 共用同一在途链，保证同一文件的写请求不并发）
     const forceSave = useCallback(
       async (path: string) => {
+        const inflight = savingPromisesRef.current.get(path)
+        if (inflight) await inflight
         const tab = openTabsRef.current.find((t) => t.path === path)
         if (!tab) return
-        updateTabs((prev) => prev.map((t) => (t.path === path ? { ...t, saving: true } : t)))
-        try {
-          const result = await filesApi.write({ path, content: tab.bufferContent })
-          updateTabs((prev) =>
-            prev.map((t) =>
-              t.path === path
-                ? { ...t, diskContent: t.bufferContent, baseMtime: result.mtime, baseSize: result.size, saving: false, error: '', stale: false }
-                : t
+        const snapshot = tab.bufferContent
+        const seq = tab.editSeq
+        updateTabs((prev) => prev.map((t) => (t.path === path ? { ...t, saving: true, error: '' } : t)))
+        const run = (async (): Promise<boolean> => {
+          try {
+            const result = await filesApi.write({ path, content: snapshot })
+            updateTabs((prev) =>
+              prev.map((t) =>
+                t.path === path
+                  ? { ...t, diskContent: snapshot, baseMtime: result.mtime, baseSize: result.size, saving: false, error: '', stale: false }
+                  : t
+              )
             )
-          )
-        } catch (e) {
-          const err = e as FileWriteError
-          updateTabs((prev) => prev.map((t) => (t.path === path ? { ...t, saving: false, error: err.message || '保存失败' } : t)))
+            return true
+          } catch (e) {
+            const err = e as FileWriteError
+            updateTabs((prev) =>
+              prev.map((t) => (t.path === path ? { ...t, saving: false, failedSeq: seq, error: err.message || '保存失败' } : t))
+            )
+            return false
+          }
+        })()
+        savingPromisesRef.current.set(path, run)
+        try {
+          await run
+        } finally {
+          if (savingPromisesRef.current.get(path) === run) savingPromisesRef.current.delete(path)
         }
       },
       [updateTabs]
@@ -260,6 +291,128 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
       [updateTabs]
     )
 
+    // 静默重载：AI 改盘而该文件本地干净时自动重读。结果落地前复检缓冲与 revision——
+    // 这期间用户可能已开始输入，那就放弃本次重载改走冲突出口，绝不静默覆盖
+    const reloadSilently = useCallback(
+      async (path: string) => {
+        const before = openTabsRef.current.find((t) => t.path === path)
+        if (!before) return
+        const { revision, bufferContent } = before
+        let data: Awaited<ReturnType<typeof filesApi.read>>
+        try {
+          data = await filesApi.read(path)
+        } catch (e) {
+          console.error('重新加载失败', e)
+          return
+        }
+        const now = openTabsRef.current.find((t) => t.path === path)
+        if (!now) return
+        if (now.revision !== revision || now.bufferContent !== bufferContent) {
+          // 同一文件上用户已开始输入：不覆盖，转冲突处理
+          setConflict({ path })
+          return
+        }
+        updateTabs((prev) =>
+          prev.map((t) =>
+            t.path === path
+              ? {
+                  ...t,
+                  bufferContent: data.content,
+                  diskContent: data.content,
+                  baseMtime: data.mtime,
+                  baseSize: data.size,
+                  editable: data.editable,
+                  stale: false,
+                  error: '',
+                  revision: t.revision + 1,
+                }
+              : t
+          )
+        )
+        setFlash('文件已更新')
+      },
+      [updateTabs]
+    )
+
+    // 冲刷某个文件：先等在途写盘，再按最新缓冲决定是否补写。切换/关闭前必须调用；
+    // 返回 false 表示没落盘，调用方要中止切换/关闭，不能丢内容
+    const flushTab = useCallback(
+      async (path: string): Promise<boolean> => {
+        const inflight = savingPromisesRef.current.get(path)
+        if (inflight) await inflight
+        const tab = openTabsRef.current.find((t) => t.path === path)
+        if (!tab) return true
+        if (!tab.editable || tab.bufferContent === tab.diskContent) return true
+        return saveFile(path)
+      },
+      [saveFile]
+    )
+
+    // 放弃某个文件的本次修改：不再尝试把它的缓冲写盘（文字留在编辑器里，磁盘基线保持旧值），
+    // 清掉脏态/错误/过期标记让用户能继续操作；之后若再编辑触发写盘而磁盘仍不一致，
+    // 会以冲突弹窗的形式再给一次选择，不会静默覆盖
+    const discardLocalEdits = useCallback(
+      (path: string) => {
+        updateTabs((prev) =>
+          prev.map((t) => (t.path === path ? { ...t, diskContent: t.bufferContent, error: '', stale: false, failedSeq: -1 } : t))
+        )
+      },
+      [updateTabs]
+    )
+
+    // 激活文件标签：先把当前标签的待写改动落盘，再切过去（自动保存的防抖窗口不能跨标签丢内容）；
+    // 冲刷失败则留在原标签，由错误横幅给出出口
+    const setActive = useCallback(
+      async (path: string) => {
+        const prev = activePathRef.current
+        if (prev && prev !== path && !(await flushTab(prev))) return
+        activePathRef.current = path
+        setActivePath(path)
+        onActivateFileRef.current()
+      },
+      [flushTab]
+    )
+
+    // 打开文件：已打开则切换标签，否则请求内容后新增标签。
+    // 预览槽复用：当前没有固定且干净的预览标签时，整体替换该槽（path/名字/内容/基线都换掉），
+    // 连续浏览不逐文件堆积；只有固定标签（pinned=true）或脏标签才新增
+    const openFile = useCallback(
+      async (path: string) => {
+        if (collapsed) {
+          onToggleCollapse()
+        }
+        // 记录最近打开（去重置顶，最多 10 条）
+        setRecentFiles((prev) => [path, ...prev.filter((p) => p !== path)].slice(0, 10))
+        if (openTabsRef.current.some((t) => t.path === path)) {
+          // 已打开：只切激活。同时推进请求序号，让仍在途的其它打开请求作废
+          ++openSeqRef.current
+          void setActive(path)
+          return
+        }
+        // 请求序号：连续打开两个文件时，先发出的 read 若后返回不能覆盖后点的结果
+        const seq = ++openSeqRef.current
+        try {
+          const data = await filesApi.read(path)
+          if (seq !== openSeqRef.current) return
+          const slot = openTabsRef.current.find((t) => !t.pinned && t.bufferContent === t.diskContent)
+          if (slot) {
+            updateTabs((prev) =>
+              prev.map((t) => (t.path === slot.path ? { ...makeTab(path, data), revision: t.revision + 1 } : t))
+            )
+          } else {
+            updateTabs((prev) => [...prev, makeTab(path, data)])
+          }
+          void setActive(path)
+        } catch (e) {
+          console.error('读取文件失败', e)
+          if (seq === openSeqRef.current) setFlash('打开文件失败')
+        }
+      },
+      [updateTabs, setActive, collapsed, onToggleCollapse]
+    )
+
+    useImperativeHandle(ref, () => ({ openFile }), [openFile])
+
     // 统一收尾：真正移除一批标签，处理激活迁移与自动收起判定。
     // 收起与激活迁移都以「关闭前」的工具标签激活态为准：工具面板开着时保留其激活态、不收编辑区
     const applyClose = useCallback(
@@ -283,90 +436,41 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
           if (!wasToolActive) onActivateFileRef.current()
         }
         // 最后一个文件标签关掉：仅关闭前无激活工具标签时自动收起编辑区
-        if (next.length === 0 && !collapsed && !wasToolActive) {
-          onToggleCollapse()
+        if (next.length === 0) {
+          setFlash('')
+          if (!collapsed && !wasToolActive) onToggleCollapse()
         }
       },
       [updateTabs, collapsed, onToggleCollapse]
     )
 
-    // 关闭文件标签：dirty 时先询问
-    const handleClose = (path: string) => {
-      const tab = openTabsRef.current.find((t) => t.path === path)
-      if (tab && tab.bufferContent !== tab.diskContent) {
-        setPendingClose(path)
-      } else {
-        applyClose([path])
-      }
+    // 关闭文件标签：先把待写改动落盘，成功才关（自动保存下不再需要「保存/不保存」询问）；
+    // 冲刷失败则保留该标签与内容，错误横幅给出口
+    const handleClose = async (path: string) => {
+      if (!(await flushTab(path))) return
+      applyClose([path])
     }
 
-    const handleCloseSave = async () => {
-      const path = pendingClose
-      if (!path) return
-      const ok = await saveFile(path)
-      setPendingClose(null)
-      if (ok) {
-        applyClose([path])
-      }
-    }
-
-    const handleCloseDiscard = () => {
-      const path = pendingClose
-      setPendingClose(null)
-      if (path) applyClose([path])
-    }
-
-    // 批量关闭入口：范围内有未保存修改时弹一次批量确认，否则直接关
+    // 批量关闭入口：逐个冲刷（有未落盘改动的先落盘），成功一个关一个；
+    // 任一个冲刷失败即中止，失败的与尚未处理的标签都保留（不再弹批量确认）
     const closeTabs = useCallback(
-      (paths: string[], anchorPath?: string) => {
-        const hasDirty = openTabsRef.current.some(
-          (t) => paths.includes(t.path) && t.bufferContent !== t.diskContent
-        )
-        if (hasDirty) {
-          setPendingBatch({ paths, anchorPath })
-        } else {
-          applyClose(paths, anchorPath)
+      async (paths: string[], anchorPath?: string) => {
+        const closed: string[] = []
+        for (const p of paths) {
+          if (!(await flushTab(p))) break
+          closed.push(p)
         }
+        if (closed.length > 0) applyClose(closed, anchorPath)
       },
-      [applyClose]
+      [flushTab, applyClose]
     )
-
-    // 批量确认「全部保存」：按 tab 顺序逐个保存，成功即关；
-    // 任一失败（含 409 冲突走既有冲突弹窗）即中止，失败与未处理标签保留、已关闭的保持关闭
-    const handleBatchSave = async () => {
-      const batch = pendingBatch
-      if (!batch) return
-      setPendingBatch(null)
-      const targets = openTabsRef.current.filter((t) => batch.paths.includes(t.path))
-      const closed: string[] = []
-      // 干净标签（含超限只读大文件，必然无未保存修改）不走 saveFile
-      // ——只读标签在 saveFile 里会被 editable 检查判为失败，不能让它中止批量流程
-      for (const t of targets) {
-        if (t.bufferContent === t.diskContent) closed.push(t.path)
-      }
-      for (const t of targets) {
-        if (t.bufferContent === t.diskContent) continue
-        const ok = await saveFile(t.path)
-        if (!ok) break
-        closed.push(t.path)
-      }
-      // 逐个 applyClose 会读到未刷新的旧列表、后关的把先关的复活，必须收集后一次关掉
-      if (closed.length > 0) applyClose(closed, batch.anchorPath)
-    }
-
-    // 批量确认「全不保存」：放弃修改直接关闭
-    const handleBatchDiscard = () => {
-      const batch = pendingBatch
-      setPendingBatch(null)
-      if (batch) applyClose(batch.paths, batch.anchorPath)
-    }
 
     // ---- 标签右键菜单动作 ----
 
     // 关闭其他：锚点标签保留，其余全关
     const closeOthers = useCallback(
       (path: string) => {
-        closeTabs(openTabsRef.current.filter((t) => t.path !== path).map((t) => t.path), path)
+        void closeTabs(openTabsRef.current.filter((t) => t.path !== path).map((t) => t.path), path)
       },
       [closeTabs]
     )
@@ -375,7 +479,7 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
     const closeRight = useCallback(
       (path: string) => {
         const idx = openTabsRef.current.findIndex((t) => t.path === path)
-        closeTabs(openTabsRef.current.slice(idx + 1).map((t) => t.path), path)
+        void closeTabs(openTabsRef.current.slice(idx + 1).map((t) => t.path), path)
       },
       [closeTabs]
     )
@@ -413,32 +517,34 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
     const openToolIds = TOOL_META.filter((t) => toolTabsOpen.includes(t.id))
     const lastOpenToolId = openToolIds.length > 0 ? openToolIds[openToolIds.length - 1].id : undefined
 
-    // 存在未保存修改时，刷新/关闭页面触发浏览器确认
+    // 存在未落盘状态时（脏缓冲 / 写盘失败 / 正在写 / 冲突未决），刷新或关窗给出确认提示。
+    // 自动保存已把常规编辑的丢失窗口压到防抖时长内，这里只做保底提示：卸载阶段的异步写不可靠，不做 flush
     useEffect(() => {
       const handler = (e: BeforeUnloadEvent) => {
-        if (openTabsRef.current.some((t) => t.bufferContent !== t.diskContent)) {
+        const pending = openTabsRef.current.some(
+          (t) => t.bufferContent !== t.diskContent || !!t.error || t.saving
+        )
+        if (pending || conflict) {
           e.preventDefault()
           e.returnValue = ''
         }
       }
       window.addEventListener('beforeunload', handler)
       return () => window.removeEventListener('beforeunload', handler)
-    }, [])
+    }, [conflict])
 
-    // Ctrl+S 保存当前激活 tab（拦截浏览器默认保存行为）
+    // Ctrl+S 立即冲刷当前标签（拦截浏览器默认保存行为）。自动保存已开启，这里作手动兜底：
+    // 取消防抖立刻写盘；写失败后也能靠它重试（不经失败闸门）
     useEffect(() => {
       const handler = (e: KeyboardEvent) => {
         if (e.ctrlKey && e.key === 's') {
           e.preventDefault()
-          const active = openTabsRef.current.find((t) => t.path === activePathRef.current)
-          if (active && active.editable && active.bufferContent !== active.diskContent) {
-            void saveFile(active.path)
-          }
+          if (activePathRef.current) void flushTab(activePathRef.current)
         }
       }
       window.addEventListener('keydown', handler)
       return () => window.removeEventListener('keydown', handler)
-    }, [saveFile])
+    }, [flushTab])
 
     // Ctrl+P 快速打开文件
     useEffect(() => {
@@ -474,20 +580,26 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
       return () => window.removeEventListener('keydown', handler)
     }, [])
 
-    // 订阅文件变更事件：AI 写盘后把打开的对应 tab 标记为过期。
-    // 必须逐条精确匹配 path，不做防抖——连续改动同一文件时每条都要标到
+    // 订阅文件变更事件：AI 改盘后按该文件本地是否干净分流——干净就静默重载（内容与磁盘一致，
+    // 重载无损失），有本地修改则置 stale 并弹冲突窗（不静默覆盖）。逐条精确匹配 path，不做防抖
     useEffect(
       () =>
         subscribeFileEvents((evt) => {
-          if (evt.type !== 'file_changed') return
-          updateTabs((prev) => prev.map((t) => (t.path === evt.path ? { ...t, stale: true } : t)))
+          if (evt.type !== 'file_changed' || !evt.path) return
+          const path = evt.path
+          const tab = openTabsRef.current.find((t) => t.path === path)
+          if (!tab) return
+          updateTabs((prev) => prev.map((t) => (t.path === path ? { ...t, stale: true } : t)))
+          if (tab.bufferContent === tab.diskContent) {
+            void reloadSilently(path)
+          } else {
+            setConflict({ path })
+          }
         }),
-      [updateTabs],
+      [updateTabs, reloadSilently],
     )
 
     const activeTab = openTabs.find((t) => t.path === activePath)
-    const pendingCloseName = pendingClose ? openTabs.find((t) => t.path === pendingClose)?.name : ''
-    const activeDirty = activeTab ? activeTab.bufferContent !== activeTab.diskContent : false
     // .md 文件支持「代码 / 预览」切换（预览复用对话区的 markdown 渲染）
     const isMarkdown = !!activeTab && (activeTab.language === 'markdown' || activeTab.name.toLowerCase().endsWith('.md'))
 
@@ -495,6 +607,71 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
     useEffect(() => {
       setPreviewMode(false)
     }, [activePath])
+
+    // 一次性提示（「已保存」「文件已更新」）短暂展示后自动隐去
+    useEffect(() => {
+      if (!flash) return
+      const timer = setTimeout(() => setFlash(''), FLASH_MS)
+      return () => clearTimeout(timer)
+    }, [flash])
+
+    // 编辑停顿后自动落盘当前标签。依赖覆盖内容、在途状态、外部改动、冲突与编辑序号：
+    // 带 saving/diskContent 是为了「写盘结束后若仍 dirty（在途期间又有新输入）能重新起手」，
+    // 带 editSeq 是为了「新编辑解除失败闸门」——失败闸门保证持续失败不会被周期性重试
+    useEffect(() => {
+      if (!activeTab) return
+      const ok = shouldAutoSave({
+        dirty: activeTab.bufferContent !== activeTab.diskContent,
+        editable: activeTab.editable,
+        saving: activeTab.saving,
+        stale: activeTab.stale,
+        conflictOpen: !!conflict,
+        editSeq: activeTab.editSeq,
+        failedSeq: activeTab.failedSeq,
+      })
+      if (!ok) return
+      const path = activeTab.path
+      const timer = setTimeout(() => {
+        void saveFile(path)
+      }, AUTOSAVE_DELAY_MS)
+      return () => clearTimeout(timer)
+    }, [activeTab, conflict, saveFile])
+
+    // 冲刷点：窗口失焦与页面隐藏时把所有待写改动落盘，不留在防抖窗口里
+    useEffect(() => {
+      const flushAll = () => {
+        for (const t of openTabsRef.current) {
+          if (t.editable && t.bufferContent !== t.diskContent) void flushTab(t.path)
+        }
+      }
+      const onBlur = () => flushAll()
+      const onVisibility = () => {
+        if (document.visibilityState === 'hidden') flushAll()
+      }
+      window.addEventListener('blur', onBlur)
+      document.addEventListener('visibilitychange', onVisibility)
+      return () => {
+        window.removeEventListener('blur', onBlur)
+        document.removeEventListener('visibilitychange', onVisibility)
+      }
+    }, [flushTab])
+
+    // 面板收起：先把所有待写改动落盘再隐藏
+    useEffect(() => {
+      if (!collapsed) return
+      for (const t of openTabsRef.current) {
+        if (t.editable && t.bufferContent !== t.diskContent) void flushTab(t.path)
+      }
+    }, [collapsed, flushTab])
+
+    // 顶栏保存状态：当前标签写盘在途 / 写失败（红）/ 一次性提示；空闲时不占位
+    const saveStatus = activeTab?.saving
+      ? { text: '保存中…', color: 'var(--text-tertiary)' }
+      : activeTab?.error
+        ? { text: '保存失败', color: 'var(--error)' }
+        : flash
+          ? { text: flash, color: 'var(--text-tertiary)' }
+          : null
 
     // 文件视图节点：无工具激活（activeToolId===null）与「文件」工具（activeToolId==='files'）共用
     const fileViewNode = activeTab ? (
@@ -513,15 +690,25 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
             }}
           >
             {activeTab.bufferContent !== activeTab.diskContent ? (
-              <span>文件已被 AI 修改，你有未保存更改。</span>
+              <>
+                <span>磁盘已变更，你的修改尚未写入。</span>
+                <button onClick={() => setConflict({ path: activeTab.path })} style={bannerActionStyle}>
+                  重新处理
+                </button>
+                <button
+                  onClick={() => discardLocalEdits(activeTab.path)}
+                  title="放弃保存当前修改（内容不写入磁盘）"
+                  style={bannerActionStyle}
+                >
+                  放弃本次修改并继续
+                </button>
+              </>
             ) : (
               <>
-                <span>磁盘已变更，可能由 AI 更新。</span>
-                <button
-                  onClick={() => void reloadTab(activeTab.path)}
-                  style={{ border: 'none', background: 'transparent', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '12px', padding: 0 }}
-                >
-                  点击重新加载
+                <span>磁盘已变更，正在重新加载…</span>
+                {/* 自动重载失败（例如文件被删）时的兜底入口 */}
+                <button onClick={() => void reloadTab(activeTab.path)} style={bannerActionStyle}>
+                  重新加载
                 </button>
               </>
             )}
@@ -548,9 +735,22 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
               color: 'var(--error)',
               fontSize: '12px',
               fontFamily: 'var(--font-ui)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px',
             }}
           >
-            {activeTab.error}
+            <span>{activeTab.error}</span>
+            {/* 写盘失败且有未落盘内容时给一条出路：放弃保存，回到可继续操作的状态 */}
+            {activeTab.bufferContent !== activeTab.diskContent && (
+              <button
+                onClick={() => discardLocalEdits(activeTab.path)}
+                title="放弃保存当前修改（内容不写入磁盘）"
+                style={bannerActionStyle}
+              >
+                放弃本次修改并继续
+              </button>
+            )}
           </div>
         )}
         {/* .md 预览切换按钮：查看增强，默认源码编辑 */}
@@ -677,12 +877,11 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
     ) : null
 
     // 工具面板内容：全部保持挂载（非激活用 display:none 隐藏）。
-    // files 工具内容 = 文件视图或空态（文件视图见 fileViewNode 的展示分支）。
+    // 「文件」不再是工具标签：面板无工具激活时的基础视图就是文件视图
     // 终端已迁至会话区底部独立面板，不再是右侧工具标签
     const sessionId = useChatStore((s) => s.sessionId)
     const toolContents: Record<ToolId, ReactNode> = {
       summary: <SummaryCard sessionId={sessionId} onOpenFile={openFile} />,
-      files: fileViewNode ?? filesEmptyNode,
       search: <SearchPanel onFileOpen={openFile} />,
       review: <ReviewCard />,
     }
@@ -818,27 +1017,23 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
               )
             })}
           </div>
-          {activeTab && (
-            <button
-              onClick={() => void saveFile(activeTab.path)}
-              disabled={!activeDirty || activeTab.saving || !activeTab.editable}
-              title="保存 (Ctrl+S)"
+          {/* 保存状态：脏缓冲由自动保存在停顿后落盘，这里只给轻量反馈，空闲时不占位 */}
+          {saveStatus && (
+            <span
+              title="已开启自动保存，Ctrl+S 可立即保存"
               style={{
-                border: 'none',
-                background: 'transparent',
-                color: activeDirty ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                cursor: activeDirty && !activeTab.saving ? 'pointer' : 'default',
-                padding: '0 10px',
-                fontSize: '12px',
-                fontFamily: 'var(--font-ui)',
                 display: 'flex',
                 alignItems: 'center',
+                padding: '0 10px',
+                fontSize: '11px',
+                fontFamily: 'var(--font-ui)',
+                color: saveStatus.color,
                 whiteSpace: 'nowrap',
-                opacity: activeDirty && !activeTab.saving ? 1 : 0.45,
+                flexShrink: 0,
               }}
             >
-              {activeTab.saving ? '保存中…' : '保存'}
-            </button>
+              {saveStatus.text}
+            </span>
           )}
           {/* 顶栏不常驻文件树开关：文件树入口在左侧栏工作区行 */}
           <button
@@ -871,12 +1066,12 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
         </div>
 
         {/* 面包屑：文件上下文（无工具激活或文件工具内）显示激活文件的完整路径 */}
-        {activeTab && (activeToolId === null || activeToolId === 'files') && <Breadcrumb path={activeTab.path} />}
+        {activeTab && activeToolId === null && <Breadcrumb path={activeTab.path} />}
 
         {/* 中部：内容区（文件/工具二选一）。文件树已迁至左侧栏文件树视图 */}
         <div style={{ flex: 1, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
           <div style={{ flex: 1, minWidth: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-            {/* 文件视图：无工具激活时展示（内容见 fileViewNode，files 工具内通过 toolContents 复用同一节点） */}
+            {/* 文件视图：面板的基础视图（无工具激活时展示，内容见 fileViewNode） */}
             {activeToolId === null && fileViewNode}
 
             {/* 工具视图：激活工具标签时展示（面板与文件共用中部区域，一次只显示一个）。
@@ -906,7 +1101,7 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
               ))}
             </div>
 
-            {/* 无打开文件且无激活工具标签时的空态（内容见 filesEmptyNode，files 工具内通过 toolContents 复用） */}
+            {/* 无打开文件且无工具激活时的空态（内容见 filesEmptyNode） */}
             {activeToolId === null && filesEmptyNode}
           </div>
         </div>
@@ -969,125 +1164,6 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
                 </button>
                 <button
                   onClick={() => setConflict(null)}
-                  style={{ padding: '6px 12px', cursor: 'pointer', background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', fontSize: '12px' }}
-                >
-                  取消
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* 关闭未保存 tab 弹窗 */}
-        {pendingClose && (
-          <div
-            style={{
-              position: 'fixed',
-              inset: 0,
-              backgroundColor: 'var(--scrim)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              zIndex: 100,
-            }}
-            onClick={() => setPendingClose(null)}
-          >
-            <div
-              style={{
-                backgroundColor: 'var(--bg-elevated)',
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius-md)',
-                padding: '20px',
-                maxWidth: '420px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '14px',
-              }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div style={{ color: 'var(--text-primary)', fontSize: '13px', fontFamily: 'var(--font-ui)' }}>
-                「{pendingCloseName}」有未保存的修改。
-                <br />
-                要保存这些修改吗？
-              </div>
-              <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
-                <button
-                  onClick={() => void handleCloseSave()}
-                  style={{ padding: '6px 12px', cursor: 'pointer', background: 'var(--button-primary-bg)', color: 'var(--button-primary-text)', border: 'none', borderRadius: 'var(--radius-sm)', fontSize: '12px' }}
-                >
-                  保存
-                </button>
-                <button
-                  onClick={handleCloseDiscard}
-                  style={{ padding: '6px 12px', cursor: 'pointer', background: 'transparent', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', fontSize: '12px' }}
-                >
-                  不保存
-                </button>
-                <button
-                  onClick={() => setPendingClose(null)}
-                  style={{ padding: '6px 12px', cursor: 'pointer', background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', fontSize: '12px' }}
-                >
-                  取消
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* 批量关闭确认弹窗：列出全部未保存文件，一次决策（全部保存 / 全不保存 / 取消） */}
-        {pendingBatch && (
-          <div
-            style={{
-              position: 'fixed',
-              inset: 0,
-              backgroundColor: 'var(--scrim)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              zIndex: 100,
-            }}
-            onClick={() => setPendingBatch(null)}
-          >
-            <div
-              style={{
-                backgroundColor: 'var(--bg-elevated)',
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius-md)',
-                padding: '20px',
-                maxWidth: '420px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '14px',
-              }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div style={{ color: 'var(--text-primary)', fontSize: '13px', fontFamily: 'var(--font-ui)' }}>
-                以下 {openTabs.filter((t) => pendingBatch.paths.includes(t.path) && t.bufferContent !== t.diskContent).length} 个文件有未保存的修改：
-                <br />
-                <span style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>
-                  {openTabs
-                    .filter((t) => pendingBatch.paths.includes(t.path) && t.bufferContent !== t.diskContent)
-                    .map((t) => t.name)
-                    .join('、')}
-                </span>
-                <br />
-                要保存这些修改吗？
-              </div>
-              <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
-                <button
-                  onClick={() => void handleBatchSave()}
-                  style={{ padding: '6px 12px', cursor: 'pointer', background: 'var(--button-primary-bg)', color: 'var(--button-primary-text)', border: 'none', borderRadius: 'var(--radius-sm)', fontSize: '12px' }}
-                >
-                  全部保存
-                </button>
-                <button
-                  onClick={handleBatchDiscard}
-                  style={{ padding: '6px 12px', cursor: 'pointer', background: 'transparent', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', fontSize: '12px' }}
-                >
-                  全不保存
-                </button>
-                <button
-                  onClick={() => setPendingBatch(null)}
                   style={{ padding: '6px 12px', cursor: 'pointer', background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', fontSize: '12px' }}
                 >
                   取消
