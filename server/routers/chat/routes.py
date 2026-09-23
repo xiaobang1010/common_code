@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import time
 from dataclasses import replace
@@ -178,23 +179,34 @@ def _visible_user_indexes(messages: list[dict]) -> list[int]:
     return indexes
 
 
-async def chat_event_stream(
-    prompt: str, session_id: str = "", edit_user_index: int | None = None
-):
-    """SSE 事件生成器（订阅者角色）。
+# ---------------------------------------------------------------------------
+# _start_run - 会话运行任务启动核心（用户 SSE 路径与后台唤起路径共享）
+# ---------------------------------------------------------------------------
 
-    任务模型：每次对话创建独立 RunContext（专属 QueryEngine + 消息缓冲 +
-    asyncio 任务），绑定启动时的会话。本生成器只是任务的订阅者：
-    断开仅注销订阅，任务在后台继续运行；收尾时保存到绑定会话，
-    若查看会话未被切换（engine_session_id == 启动值）则回写查看视图。
 
-    保留语义（chat-session-binding）：session_id 为空自动建会话（校验工作区
-    已登记）、启动前立即持久化「DB 前缀 + 本条 user」、标题即时生成、
-    session_meta 固定回传、同会话串行约束。
+def _start_run(
+    session_id: str,
+    prompt: str,
+    *,
+    edit_user_index: int | None = None,
+    take_view_pointer: bool = True,
+) -> tuple[server.state.RunContext | None, str | None]:
+    """创建会话运行任务：串行守卫 → 前缀快照 → 持久化 → 引擎 → 后台任务。
 
-    编辑重发：edit_user_index 非 None 时，按可见用户消息序号（_visible_user_indexes）
-    定位 DB 中的目标消息，把该消息及其后全部截掉，新 prompt 作为该位置的用户
-    消息重跑一轮；索引越界时 yield error 事件返回，不做任何持久化。
+    会话必须已存在（自动建会话是 SSE 入口的专属前置逻辑）；收尾统一走
+    run_engine 的 finally（落库/last_turn/视图回写/桥清理/移出注册表），
+    用户路径与唤起路径不再有两套收尾。
+
+    Args:
+        session_id: 目标聊天会话 id
+        prompt: 本轮用户消息（唤起路径为合并后的通知正文）
+        edit_user_index: 编辑重发时按可见用户消息序号截断历史（仅用户路径）
+        take_view_pointer: 是否把查看指针改写指向本会话。用户路径 True；
+            唤起路径 False——后台唤起不得劫持用户正在查看的其他会话
+            （/api/state 的实时消息来源与 /api/abort 缺省目标都跟随该指针）
+
+    Returns:
+        (run, error)：error 非 None 时 run 为 None，error 为面向用户的文案
     """
     from query.services.pricing import calculate_cost
 
@@ -202,34 +214,19 @@ async def chat_event_stream(
     permission_bridge = server.state.permission_bridge
     question_bridge = server.state.question_bridge
     session_store = server.state.session_store
-
-    # ---- 会话确定（自动建会话保留语义） ----
     run_session_id = session_id
-    if not run_session_id:
-        workspace_path = project_root()
-        # 工作区已选择判定：当前路径已登记在工作区表
-        registered = False
-        if session_store is not None:
-            registered = any(w.path == workspace_path for w in session_store.list_workspaces())
-        if not registered:
-            yield f"data: {json.dumps({'type': 'error', 'error': '请先选择工作区'})}\n\n"
-            return
-        session = session_store.create_session(workspace_path, title="", branch=get_git_branch(workspace_path))
-        run_session_id = session.id
 
     # ---- 同会话串行约束：同一会话同时只允许一个运行任务 ----
     if run_session_id in server.state.running_runs:
-        yield (
-            f"data: {json.dumps({'type': 'error', 'error': '当前会话已有任务在运行，请先停止或等待完成'}, ensure_ascii=False)}\n\n"
-        )
-        return
+        return None, '当前会话已有任务在运行，请先停止或等待完成'
+
+    session = session_store.get_session(run_session_id) if session_store is not None else None
+    if session is None:
+        return None, '会话不存在'
 
     # ---- 快照：DB 会话消息前缀（不含本条 user，user 由 submitMessage 内部追加） ----
     # 前缀过一遍悬空 tool_calls 清洗：防御存量脏数据进入新一轮请求（不回写 DB）
-    session = session_store.get_session(run_session_id) if session_store is not None else None
-    prefix_messages: list[dict] = (
-        sanitize_dangling_tool_calls(list(session.messages)) if session else []
-    )
+    prefix_messages: list[dict] = sanitize_dangling_tool_calls(list(session.messages))
 
     # ---- 编辑重发：截断到目标可见用户消息之前（该消息由新 prompt 替换重跑） ----
     # 截断作用于清洗后的前缀，随下方 save_messages 一并持久化；越界在持久化前
@@ -242,14 +239,11 @@ async def chat_event_stream(
             or not isinstance(edit_user_index, int)
             or not 0 <= edit_user_index < len(visible)
         ):
-            yield (
-                f"data: {json.dumps({'type': 'error', 'error': '编辑位置无效，历史未被修改'}, ensure_ascii=False)}\n\n"
-            )
-            return
+            return None, '编辑位置无效，历史未被修改'
         prefix_messages = prefix_messages[: visible[edit_user_index]]
 
     # 任务工作区：会话所属工作区（跨工作区后台任务的 cwd 隔离依据）
-    task_workspace = session.workspace_path if session else project_root()
+    task_workspace = session.workspace_path or project_root()
 
     # ---- 用户消息立即持久化（前缀 + 本条），标题即时生成 ----
     if session_store is not None:
@@ -257,7 +251,7 @@ async def chat_event_stream(
             session_store.save_messages(
                 run_session_id, [*prefix_messages, {"role": "user", "content": prompt, "_ts": time.time() * 1000}]
             )
-            if session is not None and not session.title and prompt.strip():
+            if not session.title and prompt.strip():
                 session_store.update_session_title(run_session_id, _extract_session_title(prompt))
         except Exception:
             pass
@@ -290,10 +284,10 @@ async def chat_event_stream(
         abort_event=run_abort_event,
     )
     server.state.running_runs[run_session_id] = run
-    # 注册时把查看会话指向本会话并记录启动值（收尾回写判定用；
-    # 自动建会话场景由 None 指向新会话；run 期间 switch 会改变它）
-    server.state.engine_session_id = run_session_id
-    view_session_at_start = run_session_id
+    # 查看指针按来源参数化：用户路径注册时指向本会话；唤起路径保持不变
+    if take_view_pointer:
+        server.state.engine_session_id = run_session_id
+    view_session_at_start = server.state.engine_session_id
 
     # ---- 任务事件分发：无订阅者时丢弃（不做无界缓冲） ----
     def dispatch(ev: Any) -> None:
@@ -405,6 +399,17 @@ async def chat_event_stream(
             if server.state.engine_session_id == view_session_at_start:
                 server.state.engine.mutable_messages = list(task_engine.mutable_messages)
             server.state.running_runs.pop(run_session_id, None)
+            # 收尾补偿：父会话运行收尾窗口内到达的通知没有活跃通道负责
+            #（loop 只在有工具调用的轮次边界 drain，最后一轮输出期间入队的
+            # 通知会滞留），此刻已移出注册表，补一次唤起判定（守卫与去重
+            # 均在唤起回调内）
+            try:
+                from tools.subagent.notify import pending_count as _notify_pending
+
+                if _notify_pending(run_session_id) > 0:
+                    _wake_parent(run_session_id)
+            except Exception:
+                pass
             if permission_bridge is not None:
                 permission_bridge.clear_pending(session_id=run_session_id)
             if question_bridge is not None:
@@ -414,6 +419,125 @@ async def chat_event_stream(
             dispatch(None)
 
     run.task = asyncio.create_task(run_engine())
+    return run, None
+
+
+# ---------------------------------------------------------------------------
+# 后台唤起（auto-resume）：子代理通知唤起空闲的父会话
+# ---------------------------------------------------------------------------
+
+# 正在唤起中的父会话去重集：通知风暴（多个子代理同时完成）只建一轮，
+# 建任务期间新到的通知由该轮的活跃通道 drain
+_waking_sessions: set[str] = set()
+
+
+def _auto_resume_enabled() -> bool:
+    """读取 subagents.auto_resume_parent 开关；配置读取失败按开启处理。"""
+    from startup.config import get_global_config
+
+    try:
+        return get_global_config().subagents.auto_resume_parent
+    except Exception:
+        return True
+
+
+def _wake_parent(session_id: str) -> None:
+    """唤起回调（notify 钩子与收尾补偿共用）：空闲父会话建唤起轮次。
+
+    守卫顺序：父会话在运行中 → 返回（活跃通道负责）；开关关闭 → 返回；
+    已在去重集 → 返回；会话不存在（已删除）→ 丢弃通知。全部通过后
+    创建后台唤起任务。
+    """
+    if session_id in server.state.running_runs:
+        return
+    if not _auto_resume_enabled():
+        return
+    if session_id in _waking_sessions:
+        return
+    session_store = server.state.session_store
+    if session_store is not None and session_store.get_session(session_id) is None:
+        return
+    _waking_sessions.add(session_id)
+    try:
+        asyncio.create_task(_wake_run(session_id))
+    except Exception:
+        # 无事件循环等边缘环境：放弃本次唤起，通知留队列走既有语义
+        _waking_sessions.discard(session_id)
+
+
+async def _wake_run(session_id: str) -> None:
+    """唤起任务体：取走全部队列通知合并为一条用户消息，建唤起轮次。
+
+    通知取走即负责：启动失败静默降级不回灌（回灌会在持续失败时形成
+    死循环）；take_view_pointer=False，唤起不劫持用户正在查看的会话。
+    """
+    try:
+        from tools.subagent.notify import drain_notifications
+
+        notices = drain_notifications(session_id)
+        if not notices:
+            return
+        merged = "\n\n".join(
+            n.get("content", "") for n in notices if isinstance(n.get("content"), str) and n.get("content")
+        )
+        run, error = _start_run(session_id, merged, take_view_pointer=False)
+        if error is not None:
+            logging.getLogger(__name__).warning("唤起会话 %s 未启动: %s", session_id, error)
+    finally:
+        _waking_sessions.discard(session_id)
+
+
+def setup_wakeup_hook() -> None:
+    """server 启动时调用：把唤起回调注册进通知队列（tools 层依赖倒置）。"""
+    from tools.subagent.notify import register_wakeup_hook
+
+    register_wakeup_hook(_wake_parent)
+
+
+async def chat_event_stream(
+    prompt: str, session_id: str = "", edit_user_index: int | None = None
+):
+    """SSE 事件生成器（订阅者角色）。
+
+    任务模型：每次对话创建独立 RunContext（专属 QueryEngine + 消息缓冲 +
+    asyncio 任务），绑定启动时的会话。本生成器只是任务的订阅者：
+    断开仅注销订阅，任务在后台继续运行；收尾时保存到绑定会话，
+    若查看会话未被切换（engine_session_id == 启动值）则回写查看视图。
+
+    保留语义（chat-session-binding）：session_id 为空自动建会话（校验工作区
+    已登记）、启动前立即持久化「DB 前缀 + 本条 user」、标题即时生成、
+    session_meta 固定回传、同会话串行约束。
+
+    编辑重发：edit_user_index 非 None 时，按可见用户消息序号（_visible_user_indexes）
+    定位 DB 中的目标消息，把该消息及其后全部截掉，新 prompt 作为该位置的用户
+    消息重跑一轮；索引越界时 yield error 事件返回，不做任何持久化。
+
+    任务启动核心在 _start_run（与后台唤起路径共享），本生成器只负责
+    自动建会话的前置逻辑与事件订阅转发。
+    """
+    session_store = server.state.session_store
+    permission_bridge = server.state.permission_bridge
+    question_bridge = server.state.question_bridge
+
+    # ---- 会话确定（自动建会话保留语义） ----
+    run_session_id = session_id
+    if not run_session_id:
+        workspace_path = project_root()
+        # 工作区已选择判定：当前路径已登记在工作区表
+        registered = False
+        if session_store is not None:
+            registered = any(w.path == workspace_path for w in session_store.list_workspaces())
+        if not registered:
+            yield f"data: {json.dumps({'type': 'error', 'error': '请先选择工作区'})}\n\n"
+            return
+        session = session_store.create_session(workspace_path, title="", branch=get_git_branch(workspace_path))
+        run_session_id = session.id
+
+    # ---- 任务启动核心（与后台唤起路径共享） ----
+    run, error = _start_run(run_session_id, prompt, edit_user_index=edit_user_index)
+    if error is not None:
+        yield f"data: {json.dumps({'type': 'error', 'error': error}, ensure_ascii=False)}\n\n"
+        return
 
     # ---- SSE 转发循环（订阅者；断开仅注销订阅，不取消任务） ----
     subscriber: asyncio.Queue = asyncio.Queue()
@@ -483,6 +607,21 @@ async def chat(body: dict) -> StreamingResponse:
         chat_event_stream(prompt, session_id, edit_user_index),
         media_type="text/event-stream",
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/runs - 当前运行任务的会话键集
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/runs")
+def list_runs() -> dict:
+    """返回当前有运行任务的会话 id 集合（前端唤起感知轮询用，极轻）。
+
+    与 /api/debug/tasks 不同，这里只有键集、无栈帧：外部唤起的运行任务
+    需要被前端以低频轮询发现（5s），开销必须可忽略。
+    """
+    return {"running_session_ids": list(server.state.running_runs.keys())}
 
 
 # ---------------------------------------------------------------------------

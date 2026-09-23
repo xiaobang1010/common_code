@@ -211,10 +211,15 @@ def get_subagent_output(agent_id: str) -> JSONResponse:
 
 @router.get("/api/subagents/{agent_id}/transcript")
 def get_subagent_transcript(agent_id: str) -> JSONResponse:
-    """返回子代理的完整过程记录（从磁盘 transcript 重建）。"""
+    """返回子代理的完整过程记录（从磁盘 transcript 重建）。
+
+    视图模式重建：保留全部 tool_calls（无结果的标记 pending）并带出
+    reasoning/ts 过程字段，供执行轨迹展示进行中状态；resume 等模型
+    消费方仍走默认模式的合法序列剥离。
+    """
     from tools.subagent.transcript import get_agent_transcript
 
-    transcript = get_agent_transcript(agent_id)
+    transcript = get_agent_transcript(agent_id, for_view=True)
     if transcript is None:
         return JSONResponse(
             status_code=404, content={"error": f"no transcript for agent: {agent_id}"}

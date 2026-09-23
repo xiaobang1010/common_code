@@ -131,6 +131,15 @@ async def main() -> None:
     except Exception as e:
         print(f"团队崩溃恢复跳过: {e}", file=sys.stderr)
 
+    # 子代理通知唤起钩子：后台任务完成时自动唤起空闲的父会话继续工作流
+    # （tools 层不反向依赖 server，经注册注入；失败不影响服务启动）
+    try:
+        from server.routers.chat.routes import setup_wakeup_hook
+
+        setup_wakeup_hook()
+    except Exception as e:
+        print(f"唤起钩子注册跳过: {e}", file=sys.stderr)
+
     # 5. 启动服务，写端口 JSON 给 Electron
     port = find_free_port()
     uvicorn_config = uvicorn.Config(

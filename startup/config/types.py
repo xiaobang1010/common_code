@@ -85,6 +85,7 @@ class SubagentsConfig:
         inactivity_timeout_ms: 活性看门狗超时（毫秒，0=关闭）
         max_turns_default: profile 未指定轮次上限时的默认值
         token_budget_default: profile 未指定预算时的默认 token 预算（0=不限）
+        auto_resume_parent: 子代理通知到达时是否自动唤起空闲的父会话
     """
 
     model_overrides: dict[str, str] = field(default_factory=dict)
@@ -93,6 +94,7 @@ class SubagentsConfig:
     inactivity_timeout_ms: int = 300000
     max_turns_default: int = 50
     token_budget_default: int = 0
+    auto_resume_parent: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -102,6 +104,7 @@ class SubagentsConfig:
             "inactivityTimeoutMs": self.inactivity_timeout_ms,
             "maxTurnsDefault": self.max_turns_default,
             "tokenBudgetDefault": self.token_budget_default,
+            "autoResumeParent": self.auto_resume_parent,
         }
 
     @classmethod
@@ -123,6 +126,7 @@ class SubagentsConfig:
             token_budget_default=_non_negative_int(
                 data.get("tokenBudgetDefault"), 0
             ),
+            auto_resume_parent=data.get("autoResumeParent") is not False,
         )
 
 
