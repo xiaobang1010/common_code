@@ -191,6 +191,14 @@ def record_sidechain_transcript(
                 entry["tool_calls"] = msg["tool_calls"]
             if "tool_call_id" in msg:
                 entry["tool_call_id"] = msg["tool_call_id"]
+            # 保留思考与模型时间戳（执行轨迹过程行数据源；转录行是独立 schema，
+            # 键名不带内部字段的下划线前缀）
+            if "_reasoning" in msg:
+                entry["reasoning"] = msg["_reasoning"]
+            if "_reasoning_ms" in msg:
+                entry["reasoning_ms"] = msg["_reasoning_ms"]
+            if "_ts" in msg:
+                entry["ts"] = msg["_ts"]
 
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
             current_parent = msg_uuid
@@ -203,14 +211,16 @@ def record_sidechain_transcript(
 # ---------------------------------------------------------------------------
 
 
-def get_agent_transcript(agent_id: str) -> list[dict] | None:
+def get_agent_transcript(agent_id: str, *, for_view: bool = False) -> list[dict] | None:
     """从 transcript JSONL 文件读取并重建消息列表。
 
     按 parentUuid 链构建线性对话，过滤掉非本 agent 的消息。
-    过滤未完成的 tool_use 和空白 assistant 消息。
 
     Args:
         agent_id: 子代理 ID
+        for_view: 视图模式（执行轨迹展示用）。默认模式剥离全部悬挂 tool_calls
+            （resume/团队/模型工具消费方依赖的合法序列语义）；视图模式不剥离，
+            改为对没有结果的调用就地标记 pending，并带出 reasoning/ts 过程字段
 
     Returns:
         重建后的消息列表，文件不存在返回 None
@@ -283,10 +293,23 @@ def get_agent_transcript(agent_id: str) -> list[dict] | None:
             msg["tool_calls"] = entry["tool_calls"]
         if "tool_call_id" in entry:
             msg["tool_call_id"] = entry["tool_call_id"]
+        if for_view:
+            # 视图模式带出思考与模型时间戳；默认模式不复制，防非下划线键漏进模型请求
+            if "reasoning" in entry:
+                msg["reasoning"] = entry["reasoning"]
+            if "reasoning_ms" in entry:
+                msg["reasoning_ms"] = entry["reasoning_ms"]
+            if "ts" in entry:
+                msg["ts"] = entry["ts"]
         messages.append(msg)
 
-    # 过滤未完成的 tool_use（assistant 有 tool_calls 但没有对应的 tool result）
-    messages = _filter_unresolved_tool_uses(messages)
+    if for_view:
+        # 视图模式不剥离调用：顺序无关标记没有结果的调用（真实行序是结果行
+        # 先于调用行落盘，既有向后扫描在此序下永不命中，不能复用）
+        _mark_pending_tool_calls(messages)
+    else:
+        # 过滤未完成的 tool_use（assistant 有 tool_calls 但没有对应的 tool result）
+        messages = _filter_unresolved_tool_uses(messages)
 
     # 过滤空白 assistant 消息
     messages = [
@@ -296,6 +319,28 @@ def get_agent_transcript(agent_id: str) -> list[dict] | None:
     ]
 
     return messages if messages else None
+
+
+# ---------------------------------------------------------------------------
+# _mark_pending_tool_calls — 视图模式的进行中调用标记
+# ---------------------------------------------------------------------------
+
+
+def _mark_pending_tool_calls(messages: list[dict]) -> None:
+    """视图模式：为没有结果的 tool_calls 就地标记 pending=True。
+
+    先整表收集 tool 结果的 id 集合，再遍历调用做顺序无关匹配——
+    结果行先于调用行落盘的真实行序下，向后扫描式判定会全错。
+    """
+    result_ids = {
+        m.get("tool_call_id")
+        for m in messages
+        if m["role"] == "tool" and m.get("tool_call_id")
+    }
+    for m in messages:
+        for tc in m.get("tool_calls") or []:
+            if tc.get("id") not in result_ids:
+                tc["pending"] = True
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, memo } from 'react'
-import { useChatStore } from '../../../stores/useChatStore'
+import { useChatStore, formatDuration } from '../../../stores/useChatStore'
 import Markdown from '../../ai/Markdown'
 import { VERB_BY_TOOL, extractObject, StepIcon, iconKind } from '../../ai/toolDisplay'
 
@@ -88,39 +88,52 @@ interface AgentTraceCardProps {
 // 转录 → 轨迹步骤（纯函数，与渲染分离）
 // ---------------------------------------------------------------------------
 
-// transcript 端点返回的消息（get_agent_transcript 重建的标准消息 + timestamp）
+// transcript 端点返回的消息（get_agent_transcript 视图模式重建，含过程字段）
 interface TranscriptMessage {
   role: string
   content: string
   timestamp?: number | null
-  tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>
+  ts?: number
+  reasoning?: string
+  reasoning_ms?: number
+  tool_calls?: Array<{ id: string; pending?: boolean; function: { name: string; arguments: string } }>
   tool_call_id?: string
 }
 
-// 轨迹步骤：任务/上下文/正文/工具四类，按转录顺序排列
+// 轨迹步骤：任务/上下文/思考/正文/工具五类，按转录顺序排列
 interface TraceStep {
   id: string
-  kind: 'task' | 'context' | 'text' | 'tool'
-  content?: string       // task/context/text 正文
+  kind: 'task' | 'context' | 'reasoning' | 'text' | 'tool'
+  content?: string       // task/context/reasoning/text 正文
+  durationMs?: number    // 仅 reasoning：思考耗时
   toolName?: string      // 仅 tool
   args?: string
   result?: string
-  resultDone: boolean    // tool：结果是否已回填（未回填即仍在执行或被截断）
-  offsetSec: number | null // 相对首条消息的秒数（旧转录无 timestamp 则为 null）
+  resultDone: boolean    // tool：结果是否已回填
+  pending?: boolean      // 仅 tool：转录中无结果的调用（进行中或悬挂）
+  offsetSec: number | null // 相对首条消息的秒数（旧转录无时间则为 null）
+}
+
+// 消息时间取值（统一归一到秒）：ts 是模型毫秒时间戳，timestamp 是行写入秒级时刻
+function msgTime(m: TranscriptMessage): number | null {
+  if (typeof m.ts === 'number') return m.ts / 1000
+  if (typeof m.timestamp === 'number') return m.timestamp
+  return null
 }
 
 // 消息列表转轨迹步骤：user 建任务/上下文行（首条为任务，后续为队列注入的上下文），
-// assistant 文本建正文行、tool_calls 逐个建工具行，tool 结果按 tool_call_id 回填。
-// 转录侧已保证无悬挂调用（_filter_unresolved_tool_uses），回填不中的情况仅出现在拉取瞬间
+// assistant 的思考行先于正文行与工具行（时序与消息流时间线一致），
+// tool 结果按 tool_call_id 回填；无结果的调用呈「执行中/未完成」态
 function buildTraceSteps(messages: TranscriptMessage[]): TraceStep[] {
   const steps: TraceStep[] = []
   const byCallId = new Map<string, TraceStep>()
-  const baseTs = messages.find((m) => typeof m.timestamp === 'number')?.timestamp ?? null
+  const firstTimed = messages.find((m) => msgTime(m) !== null)
+  const baseTs = firstTimed ? msgTime(firstTimed) : null
   let userCount = 0
 
   messages.forEach((m, i) => {
-    const offsetSec =
-      typeof m.timestamp === 'number' && baseTs !== null ? Math.max(0, Math.round(m.timestamp - baseTs)) : null
+    const t = msgTime(m)
+    const offsetSec = t !== null && baseTs !== null ? Math.max(0, Math.round(t - baseTs)) : null
 
     if (m.role === 'user') {
       if (!(m.content ?? '').trim()) return
@@ -136,6 +149,17 @@ function buildTraceSteps(messages: TranscriptMessage[]): TraceStep[] {
     }
 
     if (m.role === 'assistant') {
+      // 思考行：独立过程事件，先于正文与工具行
+      if ((m.reasoning ?? '').trim()) {
+        steps.push({
+          id: `r${i}`,
+          kind: 'reasoning',
+          content: m.reasoning,
+          durationMs: m.reasoning_ms,
+          offsetSec,
+          resultDone: false,
+        })
+      }
       if ((m.content ?? '').trim()) {
         steps.push({ id: `a${i}`, kind: 'text', content: m.content, offsetSec, resultDone: false })
       }
@@ -145,6 +169,7 @@ function buildTraceSteps(messages: TranscriptMessage[]): TraceStep[] {
           kind: 'tool',
           toolName: tc.function?.name ?? 'unknown',
           args: tc.function?.arguments ?? '',
+          pending: tc.pending === true,
           offsetSec,
           resultDone: false,
         }
@@ -258,9 +283,66 @@ function prettyArgs(args?: string): string {
   }
 }
 
+// 思考行：独立过程事件，口径对齐消息流 ReasoningRow（脑图标 + 「思考 · 时长」，
+// 点击展开思维链全文）；无耗时的旧转录只显示「思考」
+function TraceReasoningRow({ step }: { step: TraceStep }) {
+  const [expanded, setExpanded] = useState(false)
+  const clickable = !!(step.content ?? '').trim()
+  return (
+    <div style={{ padding: '3px 12px' }}>
+      <div
+        onClick={clickable ? () => setExpanded((v) => !v) : undefined}
+        title={clickable ? (expanded ? '收起思维链' : '展开思维链') : undefined}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px',
+          cursor: clickable ? 'pointer' : 'default',
+          fontSize: '11px',
+          fontFamily: 'var(--font-ui)',
+          color: 'var(--text-tertiary)',
+          borderRadius: 'var(--radius-sm)',
+        }}
+      >
+        <span style={{ display: 'flex', flexShrink: 0 }}>
+          <StepIcon kind="brain" />
+        </span>
+        <span style={{ flexShrink: 0 }}>思考</span>
+        {typeof step.durationMs === 'number' && (
+          <span style={{ fontFamily: 'var(--font-mono)', flexShrink: 0 }}>· {formatDuration(step.durationMs)}</span>
+        )}
+        <OffsetTag offsetSec={step.offsetSec} />
+        {clickable && (
+          <span style={{ color: 'var(--text-tertiary)', fontSize: '10px', flexShrink: 0 }}>{expanded ? '▾' : '▸'}</span>
+        )}
+      </div>
+      {expanded && clickable && (
+        <div
+          style={{
+            marginTop: '4px',
+            marginLeft: '18px',
+            fontSize: '11px',
+            lineHeight: '17px',
+            color: 'var(--text-tertiary)',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            maxHeight: '240px',
+            overflowY: 'auto',
+            borderLeft: '2px solid var(--border-subtle)',
+            paddingLeft: '8px',
+          }}
+        >
+          {step.content}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // 工具行：短分类标签 + 对象名摘要（口径同消息流时间线），点击展开参数与结果。
-// 只读展示：无任何操作入口；结果未回填时显示等待提示
-const TraceToolRow = memo(function TraceToolRow({ step }: { step: TraceStep }) {
+// 只读展示：无任何操作入口；转录中无结果的调用按任务状态分示——
+// 运行中呈「执行中」呼吸态，终态降级为中性「未完成」（终态轮询已停，呼吸会误导）
+const TraceToolRow = memo(function TraceToolRow({ step, taskBusy }: { step: TraceStep; taskBusy: boolean }) {
   const [expanded, setExpanded] = useState(false)
   const known = VERB_BY_TOOL[step.toolName?.toLowerCase() ?? '']
   const verb = known ?? '已执行'
@@ -306,7 +388,23 @@ const TraceToolRow = memo(function TraceToolRow({ step }: { step: TraceStep }) {
           </span>
         )}
         {!objectText && <span style={{ flex: 1 }} />}
-        {pending && <span style={{ flexShrink: 0, color: 'var(--text-tertiary)' }}>等待结果...</span>}
+        {pending && taskBusy && (
+          <span style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0, color: 'var(--accent)' }}>
+            <span
+              style={{
+                width: '6px',
+                height: '6px',
+                borderRadius: '50%',
+                backgroundColor: 'var(--accent)',
+                animation: 'breathe 1.6s ease-in-out infinite',
+              }}
+            />
+            执行中
+          </span>
+        )}
+        {pending && !taskBusy && (
+          <span style={{ flexShrink: 0, color: 'var(--text-tertiary)' }}>未完成</span>
+        )}
         <OffsetTag offsetSec={step.offsetSec} />
         {clickable && (
           <span style={{ color: 'var(--text-tertiary)', fontSize: '10px', flexShrink: 0 }}>{expanded ? '▾' : '▸'}</span>
@@ -492,7 +590,8 @@ function AgentTraceCard({ selectedAgentId, onSelectAgent, active }: AgentTraceCa
     followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
   }
 
-  // 轨迹区：加载中 / 空态兜底 / 按序渲染四类步骤
+  // 轨迹区：加载中 / 空态兜底 / 按序渲染五类步骤
+  const taskBusy = selectedTask ? isBusy(selectedTask.status) : false
   const traceNode = (() => {
     if (!selectedTask) return null
     if (messages === null && !traceMissing) {
@@ -510,7 +609,8 @@ function AgentTraceCard({ selectedAgentId, onSelectAgent, active }: AgentTraceCa
       )
     }
     return steps.map((step) => {
-      if (step.kind === 'tool') return <TraceToolRow key={step.id} step={step} />
+      if (step.kind === 'tool') return <TraceToolRow key={step.id} step={step} taskBusy={taskBusy} />
+      if (step.kind === 'reasoning') return <TraceReasoningRow key={step.id} step={step} />
       if (step.kind === 'text') return <TraceTextRow key={step.id} step={step} />
       return <ContextRow key={step.id} step={step} />
     })

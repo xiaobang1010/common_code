@@ -13,6 +13,7 @@ import { useChatStore, lastActivityAtRef } from './stores/useChatStore'
 import { useSettingsStore } from './stores/useSettingsStore'
 import { useSessions } from './hooks/useSessions'
 import { useBranches } from './hooks/useBranches'
+import { useRunsWatcher } from './hooks/useRunsWatcher'
 import { TOOL_META, type ToolId } from './components/editor/toolMeta'
 import { gitApi, sessionsApi, type StateResponse, type TurnExitInfo } from './api/client'
 
@@ -127,6 +128,13 @@ function App() {
   // 当前 Git 分支和分支列表：轮询/聚焦/工作区信号自动刷新，应用内切分支
   // 与下拉打开时手动 refresh（见 useBranches）
   const { current: currentBranch, branches, refresh: refreshBranches } = useBranches()
+
+  // 运行任务感知：外部唤起的轮次（如后台子代理完成自动续跑）出现/结束时
+  // 刷新会话列表——运行指示与当前会话实时消息由既有链路接管。本地流式期间
+  // 本就有 SSE 驱动刷新，暂停轮询
+  useRunsWatcher(!isStreaming, () => {
+    sessions.loadAllSessions()
+  })
 
   // 标记初始会话是否已加载，避免重复加载
   const initialSessionLoaded = useRef(false)
