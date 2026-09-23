@@ -595,7 +595,7 @@ function WorkBlockView({ blockId }: Props) {
   })
 
   return (
-    <div className="work-block" style={{ display: 'flex', flexDirection: 'column', gap: '10px', animation: 'fade-in-up 280ms ease-out' }}>
+    <div className="work-block" data-block-id={blockId} style={{ display: 'flex', flexDirection: 'column', gap: '10px', animation: 'fade-in-up 280ms ease-out' }}>
       {/* 用户消息：技能触发时首行显示「徽章 + 技能名」。
           悬停显示操作组（复制/编辑，对齐主流客户端交互）；运行中块与命令块不提供编辑。
           编辑态气泡替换为输入框：Ctrl+Enter 确认重发、Esc 取消 */}
