@@ -8,6 +8,7 @@
 import { create } from 'zustand'
 import { permissionsApi, questionApi, type PermissionMode, type TurnExitInfo } from '../api/client'
 import { parseUserMessage } from '../utils/skillParse'
+import { openFilesInPanel } from './panelBridge'
 
 // 时间线事件：任务轨迹的三类一等事件，按 SSE 到达的真实时序入列
 export interface TimelineItem {
@@ -110,6 +111,9 @@ interface SSEEvent {
       function: { name: string; arguments: string }
     }>
     tool_call_id?: string
+    // present_files 交付事件（role === 'present_files'）
+    files?: string[]
+    explanation?: string
   }
   request_id?: string
   tool_name?: string
@@ -365,6 +369,25 @@ export const useChatStore = create<ChatState>((set, get) => {
           }
           return { ...b, timeline: updated }
         })
+      } else if (msg.role === 'present_files') {
+        // 交付事件：右侧面板按优先级顺序打开文件（桥接由 App 注册），
+        // explanation 补写到交付卡开头，用户不展开文件也能看到一句话说明
+        const files = Array.isArray(msg.files) ? msg.files : []
+        if (files.length > 0) openFilesInPanel(files)
+        const explanation = (msg.explanation || '').trim()
+        if (explanation) {
+          updateBlock(blockId, b => {
+            const idx = [...b.timeline]
+              .reverse()
+              .findIndex(s => s.type === 'tool' && s.toolName === 'present_files')
+            if (idx === -1) return b
+            const realIdx = b.timeline.length - 1 - idx
+            const item = b.timeline[realIdx]
+            const updated = [...b.timeline]
+            updated[realIdx] = { ...item, result: explanation + '\n' + (item.result || '') }
+            return { ...b, timeline: updated }
+          })
+        }
       } else if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
         // 中间轮（含工具调用）：过渡叙述已由流式 content 入列，这里只关闭 open 项。
         // 直播路径忽略消息携带的 _reasoning（思考已由 reasoning 事件入列，避免重复）

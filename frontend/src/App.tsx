@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import Sidebar, { type SidebarView } from './components/Sidebar'
 import ArtifactPanel, { type ArtifactPanelHandle } from './components/ArtifactPanel'
+import { registerPanelOpener } from './stores/panelBridge'
 import AIPanel from './components/AIPanel'
 import TitleBar from './components/TitleBar'
 import CapsuleCard from './components/CapsuleCard'
@@ -108,6 +109,18 @@ function App() {
   const isStreaming = useChatStore(s => s.isStreaming)
   const sessions = useSessions()
   const editorRef = useRef<ArtifactPanelHandle>(null)
+
+  // present_files 交付桥接：store 层收到交付事件后经此打开右侧面板标签。
+  // 逆序打开让优先级第一的文件最后打开、保持聚焦；组件卸载时注销防止悬挂引用
+  useEffect(() => {
+    registerPanelOpener((files: string[]) => {
+      for (let i = files.length - 1; i >= 0; i--) {
+        void editorRef.current?.openFile(files[i])
+      }
+    })
+    return () => registerPanelOpener(null)
+  }, [])
+
 
   // 当前任务标题（标题栏展示）：从分组数据找当前会话，侧栏折叠时仍可见
   const currentTaskTitle = useMemo(() => {
