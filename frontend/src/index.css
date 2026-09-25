@@ -95,12 +95,16 @@
   --selected-bg: rgba(0, 120, 212, 0.26);     /* 选中 - 强调蓝浸染 */
   --focus-ring: rgba(0, 120, 212, 0.65);      /* 键盘焦点环 - 强调蓝 */
 
-  /* 内容元素 - 行内代码灰底 chip */
+  /* 内容元素 - 行内代码灰底 chip（设置页等处引用；聊天正文用下方 --md-code-*，两者刻意分离） */
   --code-bg: rgba(255, 255, 255, 0.08);
-  --code-border: rgba(255, 255, 255, 0.10);
   --code-text: #d4d4d4;
 
-  /* 对话区限宽可读列：消息列与底部输入区共用的宽度基准与横向留白 */
+  /* 聊天正文行内代码：无边框、随正文字号的半透明 chip，与正文视觉融合 */
+  --md-code-bg: rgba(255, 255, 255, 0.10);
+  --md-code-radius: 4px;
+
+  /* 对话区内容列宽度基准与横向留白：消息列与底部输入区共用。
+     此值为静态回退，实际由 AIPanel 的 ResizeObserver 按分档规则写入内联变量覆盖 */
   --content-max-width: 880px;
   --content-pad-x: 24px;
 
@@ -334,14 +338,15 @@ body {
   color: var(--text-secondary);
 }
 
-/* 行内代码：比正文小一档的灰底 chip，不再与正文同字号抢注意力 */
+/* 行内代码：无边框、字号随正文的半透明 chip——缩号加描边会让 chip 像贴上去的补丁，
+   与正文融为一体才不抢阅读节奏（等宽字体由 streamdown 默认提供） */
 .md-body [data-streamdown="inline-code"] {
-  padding: 1px 5px;
-  border-radius: 5px;
-  border: 1px solid var(--code-border);
-  background: var(--code-bg);
-  color: var(--code-text);
-  font-size: 12.5px;
+  padding: 1px 4px;
+  border-radius: var(--md-code-radius);
+  background: var(--md-code-bg);
+  color: inherit;
+  /* 显式压掉 streamdown 默认的 text-sm，字号严格跟随正文 */
+  font-size: inherit;
 }
 
 /* 列表：行距收紧，列表符号弱化为三级灰 */

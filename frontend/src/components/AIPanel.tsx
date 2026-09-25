@@ -1,6 +1,8 @@
+import { useEffect, useRef } from 'react'
 import ChatStream from './ai/ChatStream'
 import ChatInput from './ai/ChatInput'
 import { useChatStore } from '../stores/useChatStore'
+import { computeChatContentWidth } from '../utils/chatContentWidth'
 
 interface AIPanelProps {
   // 是否已打开工作区：控制对话流空态（无工作区时显示引导）
@@ -14,6 +16,30 @@ interface AIPanelProps {
 // 原顶部 44px 工具条（工作区/分支选择、业务图标、状态点、新建任务）已上提
 // 合并进自绘标题栏（TitleBar），此处不再保留
 function AIPanel({ hasWorkspace, onOpenWorkspace, currentTaskSessionId }: AIPanelProps) {
+  // 内容列宽跟随面板实际宽：测量结果写进根容器的内联 --content-max-width，
+  // 消息列与输入列继承同一变量保持同宽对齐；CSS 里的 880px 仅作首帧回退
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const el = rootRef.current
+    if (!el) return
+    let lastWidth = 0
+    const apply = (panelWidth: number) => {
+      const next = computeChatContentWidth(panelWidth)
+      // 值未变不写，避免 ResizeObserver 逐帧触发无谓的样式失效
+      if (next === lastWidth) return
+      lastWidth = next
+      el.style.setProperty('--content-max-width', `${next}px`)
+    }
+    apply(el.getBoundingClientRect().width)
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width
+      if (typeof width === 'number') apply(width)
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+
   // 局部订阅：流式更新只影响当前工作块，本面板只在关联状态变化时重渲
   const isStreaming = useChatStore(s => s.isStreaming)
   const sendMessage = useChatStore(s => s.sendMessage)
@@ -27,6 +53,7 @@ function AIPanel({ hasWorkspace, onOpenWorkspace, currentTaskSessionId }: AIPane
 
   return (
     <div
+      ref={rootRef}
       style={{
         backgroundColor: 'var(--bg-primary)',
         display: 'flex',
@@ -44,7 +71,7 @@ function AIPanel({ hasWorkspace, onOpenWorkspace, currentTaskSessionId }: AIPane
       {/* 对话流 */}
       <ChatStream hasWorkspace={hasWorkspace} onOpenWorkspace={onOpenWorkspace} />
 
-      {/* 底部输入区：外层仅纵向间距，横向留白由限宽列承担（与消息列同一宽度基准对齐） */}
+      {/* 底部输入区：外层仅纵向间距，横向留白由内容列承担（与消息列同一宽度基准对齐） */}
       <div
         style={{
           padding: '12px 0 14px',
@@ -52,8 +79,8 @@ function AIPanel({ hasWorkspace, onOpenWorkspace, currentTaskSessionId }: AIPane
           background: 'var(--fade-bottom)',
         }}
       >
-        {/* 限宽列：与 ChatStream 消息列共用 --content-max-width 与 --content-pad-x，
-            保证输入框与消息内容同宽、左缘对齐（宽窄屏均成立） */}
+        {/* 内容列：与 ChatStream 消息列共用 --content-max-width（分档动态值）与 --content-pad-x，
+            保证输入框与消息内容同宽、左缘对齐（宽窄面板均成立） */}
         <div
           style={{
             maxWidth: 'var(--content-max-width)',
