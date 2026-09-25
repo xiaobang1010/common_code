@@ -534,16 +534,14 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
         </div>
       )}
 
-      {/* 输入框容器 - 聚焦时中性边框抬升 */}
+      {/* 输入卡片：大圆角浮卡，聚焦靠阴影加深强调（不用焦点环抢视线） */}
       <div
         style={{
           position: 'relative',
-          borderRadius: 'var(--radius-lg)',
+          borderRadius: 'var(--radius-input)',
           background: 'var(--bg-tertiary)',
           border: `1px solid ${isFocused ? 'var(--border-strong)' : 'var(--border)'}`,
-          boxShadow: isFocused
-            ? '0 0 0 3px var(--focus-ring)'
-            : 'none',
+          boxShadow: isFocused ? 'var(--shadow-input-focus)' : 'var(--shadow-input)',
           transition: 'all var(--transition)',
         }}
       >
@@ -569,9 +567,9 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
         <div
           style={{
             position: 'absolute',
-            bottom: '6px',
-            left: '8px',
-            right: '8px',
+            bottom: '8px',
+            left: '12px',
+            right: '12px',
             display: 'flex',
             justifyContent: 'space-between',
             alignItems: 'center',
@@ -586,12 +584,12 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
                 display: 'flex',
                 alignItems: 'center',
                 gap: '3px',
-                padding: '2px 6px',
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius-sm)',
+                padding: '4px 10px',
+                border: 'none',
+                borderRadius: '999px',
                 background: 'transparent',
                 color: permissionMode === 'full_access' ? 'var(--warning)' : 'var(--text-tertiary)',
-                fontSize: '10px',
+                fontSize: '11px',
                 fontFamily: 'var(--font-ui)',
                 fontWeight: 500,
                 cursor: 'pointer',
@@ -599,11 +597,11 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
                 whiteSpace: 'nowrap',
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.borderColor = 'var(--border-strong)'
+                e.currentTarget.style.backgroundColor = 'var(--hover-bg)'
                 e.currentTarget.style.color = permissionMode === 'full_access' ? 'var(--warning)' : 'var(--text-secondary)'
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.borderColor = 'var(--border)'
+                e.currentTarget.style.backgroundColor = 'transparent'
                 e.currentTarget.style.color = permissionMode === 'full_access' ? 'var(--warning)' : 'var(--text-tertiary)'
               }}
             >
@@ -893,12 +891,12 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
                   display: 'flex',
                   alignItems: 'center',
                   gap: '3px',
-                  padding: '2px 6px',
-                  border: '1px solid var(--border)',
-                  borderRadius: 'var(--radius-sm)',
+                  padding: '4px 10px',
+                  border: 'none',
+                  borderRadius: '999px',
                   background: 'transparent',
                   color: providers.length > 0 ? 'var(--text-secondary)' : 'var(--text-tertiary)',
-                  fontSize: '10px',
+                  fontSize: '11px',
                   fontFamily: 'var(--font-ui)',
                   fontWeight: 500,
                   cursor: switching ? 'wait' : 'pointer',
@@ -911,12 +909,12 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
                 }}
                 onMouseEnter={(e) => {
                   if (!switching) {
-                    e.currentTarget.style.borderColor = 'var(--border-strong)'
+                    e.currentTarget.style.backgroundColor = 'var(--hover-bg)'
                     e.currentTarget.style.color = 'var(--text-primary)'
                   }
                 }}
                 onMouseLeave={(e) => {
-                  e.currentTarget.style.borderColor = 'var(--border)'
+                  e.currentTarget.style.backgroundColor = 'transparent'
                   e.currentTarget.style.color = providers.length > 0 ? 'var(--text-secondary)' : 'var(--text-tertiary)'
                 }}
               >
@@ -1009,25 +1007,26 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
               )}
             </div>
             {taskActive ? (
-            // 任务进行中（前台流式或本会话后台任务）：显示停止按钮
+            // 任务进行中（前台流式或本会话后台任务）：圆形停止钮
             <button
               onClick={onStop}
               title="停止生成"
+              aria-label="停止生成"
               style={{
                 pointerEvents: 'auto',
-                padding: '4px 10px',
-                border: '1px solid var(--error)',
-                borderRadius: 'var(--radius-sm)',
+                width: '32px',
+                height: '32px',
+                padding: 0,
+                border: 'none',
+                borderRadius: '50%',
                 background: 'var(--error-soft)',
                 color: 'var(--error)',
-                fontSize: '11px',
-                fontFamily: 'var(--font-ui)',
-                fontWeight: 600,
                 cursor: 'pointer',
                 transition: 'all var(--transition-fast)',
-                display: 'flex',
+                display: 'inline-flex',
                 alignItems: 'center',
-                gap: '4px',
+                justifyContent: 'center',
+                flexShrink: 0,
               }}
               onMouseEnter={(e) => {
                 e.currentTarget.style.background = 'var(--error)'
@@ -1038,33 +1037,32 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
                 e.currentTarget.style.color = 'var(--error)'
               }}
             >
-              停止
-              <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
                 <rect x="6" y="6" width="12" height="12" rx="1.5" />
               </svg>
             </button>
           ) : (
-            // 非流式：显示发送按钮
+            // 非流式：圆形发送钮（↑ 图标），空内容时降为三级灰不可点
             <button
               onClick={handleSend}
               disabled={!text.trim()}
+              title="发送"
+              aria-label="发送"
               style={{
                 pointerEvents: 'auto',
-                padding: '4px 10px',
+                width: '32px',
+                height: '32px',
+                padding: 0,
                 border: 'none',
-                borderRadius: 'var(--radius-sm)',
-                background: text.trim()
-                  ? 'var(--button-primary-bg)'
-                  : 'var(--bg-elevated)',
+                borderRadius: '50%',
+                background: text.trim() ? 'var(--button-primary-bg)' : 'transparent',
                 color: text.trim() ? 'var(--button-primary-text)' : 'var(--text-tertiary)',
-                fontSize: '11px',
-                fontFamily: 'var(--font-ui)',
-                fontWeight: 600,
                 cursor: text.trim() ? 'pointer' : 'default',
                 transition: 'all var(--transition-fast)',
-                display: 'flex',
+                display: 'inline-flex',
                 alignItems: 'center',
-                gap: '4px',
+                justifyContent: 'center',
+                flexShrink: 0,
               }}
               onMouseEnter={(e) => {
                 if (text.trim()) e.currentTarget.style.background = 'var(--button-primary-bg-hover)'
@@ -1073,9 +1071,8 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
                 if (text.trim()) e.currentTarget.style.background = 'var(--button-primary-bg)'
               }}
             >
-              发送
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M5 12h14M13 5l7 7-7 7" />
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 19V5M5 12l7-7 7 7" />
               </svg>
             </button>
             )}
