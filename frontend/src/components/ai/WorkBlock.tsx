@@ -3,6 +3,7 @@ import { useChatStore, formatDuration, lastActivityAtRef, type WorkBlock, type T
 import SubagentCard from './SubagentCard'
 import Markdown from './Markdown'
 import { VERB_BY_TOOL, extractObject, StepIcon, iconKind } from './toolDisplay'
+import { GuidelinesStep, WidgetStep } from './WidgetSteps'
 
 // ---------- 用户消息中的文件引用渲染 ----------
 // 输入框发送时把内联 chip 序列化为 [文件名](./工作区相对路径) 的 Markdown
@@ -216,6 +217,16 @@ const EventLine = memo(function EventLine({ step }: { step: TimelineItem }) {
 
   // Agent 步骤：事件行下方渲染独立状态卡片（状态/耗时/usage/输出预览/停止）
   const isAgentStep = step.toolName === 'Agent' || step.toolName === 'Task'
+
+  // 设计规范加载：内部准备步骤，按紧凑一行呈现，不剧透规范内容
+  // （show_widget 由时间线顶层渲染为交付卡，不经过事件行）
+  if (step.toolName === 'widget_guidelines') {
+    return (
+      <div style={{ padding: '0 0 2px 20px' }}>
+        <GuidelinesStep step={step} />
+      </div>
+    )
+  }
 
   return (
     <div>
@@ -536,22 +547,32 @@ function WorkBlockView({ blockId }: Props) {
     || !!(block.exitReason && !NORMAL_EXITS.has(block.exitReason))
 
   // 运行期过程行全量按时序平铺：思考段结束后收起为一行「思考 · X秒」（点开看全文），
-  // 不做「最近 N 条 + 折叠组」的窗口化；结束后整体交由 expanded 折叠为「已处理 N 步」
+  // 不做「最近 N 条 + 折叠组」的窗口化；结束后整体交由 expanded 折叠为「已处理 N 步」。
+  // show_widget 是交付内容而非过程行：恒可见、不计入步数（与正文同级按时序渲染）
   const processIdx = block.timeline
-    .map((it, i) => (it.type === 'text' ? -1 : i))
+    .map((it, i) => (it.type === 'text' || it.toolName === 'show_widget' ? -1 : i))
     .filter(i => i >= 0)
 
   // 异常结束原因行：过程行可见时在时间线首行显示；若块没有任何过程行，
   // 则没有折叠入口可展开（expanded 恒为初始折叠态），原因行直接平铺显示
   const reasonText = !isRunning && (expanded || !hasProcessRows) ? exitReasonLine(block) : ''
 
-  // 时间线按真实时序平铺：text → 正文行；reasoning → 思考行；tool → 事件行。
-  // 折叠态（!expanded）只保留正文行 + 一条「已处理 N 步」折叠条
+  // 时间线按真实时序平铺：text → 正文行；show_widget → 交付卡（折叠态也可见）；
+  // reasoning → 思考行；其余 tool → 事件行。
+  // 折叠态（!expanded）只保留正文行 + 交付卡 + 一条「已处理 N 步」折叠条
   const timelineNodes: React.ReactNode[] = []
   let foldBarRendered = false
   block.timeline.forEach((item) => {
     if (item.type === 'text') {
       timelineNodes.push(<TextItemView key={item.id} item={item} />)
+      return
+    }
+    if (item.toolName === 'show_widget') {
+      timelineNodes.push(
+        <div key={item.id} style={{ padding: '2px 0' }}>
+          <WidgetStep step={item} />
+        </div>,
+      )
       return
     }
     if (!expanded) {

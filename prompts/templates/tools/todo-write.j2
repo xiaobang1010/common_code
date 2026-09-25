@@ -1,0 +1,83 @@
+Use this tool to create and manage a structured task list for your current coding session (persisted to `.agent/todos/<name>.md`; progress shows live on the summary card). This helps you track progress, organize complex tasks, and demonstrate thoroughness to the user.
+It also helps the user understand the progress of the task and overall progress of their requests.
+
+## When to Use This Tool
+Use this tool proactively in these scenarios:
+1. Complex multi-step tasks - When a task requires 3 or more distinct steps or actions
+2. Non-trivial and complex tasks - Tasks that require careful planning or multiple operations
+3. User explicitly requests a todo list - When the user directly asks you to use a todo list
+4. User provides multiple tasks - When users provide a list of things to be done (numbered or comma-separated)
+5. After receiving new instructions - Immediately capture user requirements as todos
+6. When you start working on a task - Mark it as in_progress BEFORE beginning work. Ideally you should only have one todo as in_progress at a time
+7. After completing a task - Mark it as completed and add any new follow-up tasks discovered during implementation
+
+## When NOT to Use This Tool
+Skip using this tool when:
+1. There is only a single, straightforward task
+2. The task is trivial and tracking it provides no organizational benefit
+3. The task can be completed in less than 3 trivial steps
+4. The task is purely conversational or informational
+
+NOTE that you should not use this tool if there is only one trivial task to do. In that case you are better off just doing the task directly. For architecture-level work needing acceptance criteria, write a spec instead (see Task Planning in the system prompt).
+
+## Task States and Management
+
+1. **Task States**: Use these states to track progress:
+   - pending: Task not yet started
+   - in_progress: Currently working on (limit to ONE task at a time)
+   - completed: Task finished successfully
+
+2. **Task Management**:
+   - Every call REPLACES the whole list: send ALL tasks (completed and pending) with unchanged items included, under the SAME `name`
+   - Update task status in real time as you work
+   - Mark tasks complete IMMEDIATELY after finishing (don't batch completions)
+   - Exactly ONE task must be in_progress at any time (not less, not more)
+   - Complete current tasks before starting new ones
+   - Remove tasks that are no longer relevant from the list entirely
+
+3. **Task Completion Requirements**:
+   - ONLY mark a task as completed when you have FULLY accomplished it
+   - If you encounter errors, blockers, or cannot finish, keep the task as in_progress
+   - When blocked, add a new task describing what needs to be resolved
+   - Never mark a task as completed if:
+     - Tests are failing
+     - Implementation is partial
+     - You encountered unresolved errors
+     - You couldn't find necessary files or dependencies
+
+4. **Task Breakdown**:
+   - Create specific, actionable items in imperative form (e.g., "Run tests", "Fix authentication bug")
+   - Break complex tasks into smaller, manageable steps
+   - Use clear, descriptive task names
+
+## Examples
+
+<example>
+User: I want to add a dark mode toggle to the application settings. Make sure you run the tests when you're done!
+Assistant: Creates the list: [Add dark mode toggle component: pending, Add state management: pending, Support theme switching: pending, Run tests: pending], marks the first item in_progress, and starts implementing. After finishing each item, immediately re-sends the full list with it completed and the next one in_progress.
+
+<reasoning>
+Multi-step feature spanning UI, state, and styling; the user explicitly asked for tests afterward, so "Run tests" belongs on the list.
+</reasoning>
+</example>
+
+<example>
+User: How do I print 'Hello World' in Python?
+Assistant: Answers directly with the one-liner - no todo list.
+
+<reasoning>
+A single trivial task; tracking adds no value.
+</reasoning>
+</example>
+
+## Completion Protocol
+
+1. **Initial definition**: when creating the list, identify ALL tasks required to fulfill the request - missing tasks is a failure.
+2. **Progressive tracking**: after completing each task, IMMEDIATELY re-send the full list with that task completed and the next one in_progress.
+3. **Final completion**: when everything is done, send one final update with ALL items completed, then explicitly confirm to the user: "All tasks have been completed successfully", listing what was accomplished.
+4. **Validation before stopping**:
+   - Every task in the original list has been addressed and marked completed
+   - No task remains pending or in_progress
+   - You have informed the user that all work is complete
+
+**FAILURE CONDITION**: stopping while any task is pending or in_progress signals an incomplete session. When in doubt, use this tool - proactive task management demonstrates attentiveness and ensures you complete all requirements.

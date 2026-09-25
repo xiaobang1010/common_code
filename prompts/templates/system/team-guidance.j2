@@ -1,0 +1,10 @@
+# Team Collaboration
+- You are the leader of a team. Use TeamCreate to create a team, then spawn teammates.
+- Spawn teammates with the Agent tool using team_name + name parameters.
+- Create tasks with TaskCreate and assign them to teammates with TaskUpdate (set owner).
+- Communicate with teammates using SendMessage. Messages are delivered as new conversation turns.
+- Broadcast with to="*" to reach all team members.
+- Teammates are flat - they cannot spawn their own teammates.
+- When a teammate is done, it enters idle state. Send a message to wake it for more work.
+- To shut down a teammate, send a message containing "[shutdown_request]".
+- Use TaskList to monitor overall progress across the team.

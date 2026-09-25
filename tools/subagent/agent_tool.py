@@ -12,7 +12,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from prompts.loader import load_tool_prompt
 
 from tools.protocol import Tool, ToolResult, ToolUseContext, build_tool
 from tools.subagent.types import AgentDefinition
@@ -35,12 +37,30 @@ class AgentInput(BaseModel):
         name: teammate 名字（teammate 派生时必填）
     """
 
-    description: str
-    prompt: str
-    subagent_type: str = "general-purpose"
-    run_in_background: bool = False
-    team_name: str | None = None
-    name: str | None = None
+    description: str = Field(
+        description="3-5 词任务简述（作为子代理标题展示）"
+    )
+    prompt: str = Field(
+        description="给子代理的完整任务指令：目标与背景、已排除什么、期望产出什么形态——"
+        "子代理看不到本对话，必须自包含"
+    )
+    subagent_type: str = Field(
+        default="general-purpose",
+        description="代理类型（见工具说明中的可用清单）；省略即 general-purpose，只读检索类任务用 Explore",
+    )
+    run_in_background: bool = Field(
+        default=False,
+        description="仅当父任务后续步骤不依赖该子代理结果时给 True；"
+        "需要结果才能推进时保持前台执行",
+    )
+    team_name: str | None = Field(
+        default=None,
+        description="团队模式派生队友时必填，其余场景省略",
+    )
+    name: str | None = Field(
+        default=None,
+        description="团队模式队友名字，派生队友时必填",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -48,19 +68,34 @@ class AgentInput(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-AGENT_TOOL_PROMPT = """\
-派生子代理执行隔离上下文的子任务。
+# 无清单数据时的兜底清单（保证不抛异常、描述仍可用）
+_AGENT_LISTING_FALLBACK = [
+    {"type": "general-purpose", "when_to_use": "全工具，通用研究/多步骤任务", "tools": ""},
+    {"type": "Explore", "when_to_use": "只读搜索，快速定位代码库信息", "tools": ""},
+]
 
-使用说明：
-- description 是 3-5 词的简短任务描述
-- prompt 是给子代理的完整任务指令
-- subagent_type 选择代理类型：
-  - general-purpose：全工具，通用研究/多步骤任务
-  - Explore：只读搜索，快速定位代码库信息
-- 需要并行执行多个独立子任务时，在一条消息中发起多个 Agent 工具调用
-- 子代理结果对用户不可见，需要你转述关键发现
-- run_in_background=true 时子代理后台运行，立即返回 agent_id
-"""
+
+def build_agent_prompt() -> str:
+    """组装 Agent 工具完整使用说明（模型侧）。
+
+    代理清单每次调用时动态渲染（工具池每轮重建，自定义 .md 代理即时生效）；
+    模板见 prompts/templates/tools/agent.j2。取数失败退化为兜底两行。
+    """
+    try:
+        from tools.subagent.built_in_agents import get_agent_listing
+
+        listing = get_agent_listing()
+    except Exception:  # noqa: BLE001 清单渲染失败不能阻断工具描述
+        listing = []
+    items = [
+        {
+            "type": item.get("type", "unknown"),
+            "when_to_use": (item.get("when_to_use") or "").strip(),
+            "tools": item.get("tools") or "",
+        }
+        for item in listing
+    ] or _AGENT_LISTING_FALLBACK
+    return load_tool_prompt("agent", agents=items)
 
 
 # ---------------------------------------------------------------------------
@@ -189,8 +224,8 @@ async def _execute(inp: AgentInput, context: ToolUseContext) -> ToolResult:
             content=(
                 f"Subagent launched in background "
                 f"(agent_id: {spawn_result.agent_id}). "
-                f"结果将在完成后自动通知；也可用 GetSubagentOutput 查看中间输出，"
-                f"StopSubagent 停止，SendMessage 续聊。"
+                f"结果将在完成后自动通知，不要轮询或等待；"
+                f"StopSubagent 可停止，SendMessage 可续聊。"
             ),
             is_error=False,
             metadata={
@@ -249,7 +284,7 @@ def get_agent_tool() -> Tool:
         description="Launch a subagent to handle a task",
         input_schema=AgentInput,
         execute=_execute,
-        prompt=AGENT_TOOL_PROMPT,
+        prompt=build_agent_prompt(),
         validate_input=_validate_input,
         is_read_only=True,  # 权限委托给底层工具
         aliases=["Task"],

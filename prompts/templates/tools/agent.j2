@@ -1,0 +1,19 @@
+Launch a new agent to handle a complex, multi-step task in an isolated context.
+
+Available agent types and their tool access:
+{% for item in agents %}
+- {{ item.type }}: {{ item.when_to_use }}{% if item.tools and item.tools != "*" %} (Tools: {{ item.tools }}){% elif item.tools == "*" %} (Tools: *){% endif %}
+{% endfor %}
+Use `subagent_type` to select a type; it defaults to `general-purpose`. Match the type to the work and its tool access. Read-only agents (for example, Explore) must only receive research or planning tasks and must not be asked to modify files.
+
+When to use / not use:
+- Use for: broad codebase exploration (keeps the main context lean), independent tasks that can run in parallel, research needing many rounds of search and synthesis.
+- Do NOT use for: reading a known file path (Read), locating a single class definition (Grep), or inspecting 2-3 files - spawning an agent is slower for those.
+
+Key notes:
+- Always provide a concise 3-5 word `description`.
+- The agent's result is returned only to you, not directly to the user. Summarize the outcome yourself, and verify actual file changes before reporting work as complete.
+- Write a self-contained prompt. The agent cannot see this conversation: include the goal, relevant background, what is already known or ruled out, and concrete pointers such as file paths or line numbers. Do not delegate with vague instructions such as "based on your findings, fix it."
+- State explicitly whether the agent should only research and report, or actually modify code - it cannot infer your intent.
+- Start independent agents concurrently in the same message. Use `run_in_background` only when you do not need the result before continuing; background completion notifies you automatically - do NOT poll or sleep while waiting. Inspect intermediate output with GetSubagentOutput; stop a run with StopSubagent.
+- To continue a previously spawned agent with its full context, use SendMessage with its name. A new Agent call always starts a fresh agent with no memory of prior runs.
