@@ -66,6 +66,67 @@ const PRESET_CSS_CLASSES = `
     .c-red    { --node-bg: #501313; --node-border: #E24B4A; --node-text: #FCEBEB; --node-text-sub: #F09090; }
 }
 
+/* hex 兜底：模型常把浅色板的 hex 直接写进 fill 属性而绕过 .c-* 类，深色下类覆盖不生效。
+ * 按属性选择器把浅色板 hex 在暗色下重映射为对应深色板；!important 兼防同元素内联 style。
+ * 与类覆盖同构：.dark 类 + prefers-color-scheme 双路触发。 */
+.dark rect[fill="#EEEDFE" i], .dark path[fill="#EEEDFE" i], .dark circle[fill="#EEEDFE" i], .dark ellipse[fill="#EEEDFE" i] { fill: #26215C !important; }
+.dark rect[fill="#E1F5EE" i], .dark path[fill="#E1F5EE" i], .dark circle[fill="#E1F5EE" i], .dark ellipse[fill="#E1F5EE" i] { fill: #04342C !important; }
+.dark rect[fill="#FAECE7" i], .dark path[fill="#FAECE7" i], .dark circle[fill="#FAECE7" i], .dark ellipse[fill="#FAECE7" i] { fill: #4A1B0C !important; }
+.dark rect[fill="#FBEAF0" i], .dark path[fill="#FBEAF0" i], .dark circle[fill="#FBEAF0" i], .dark ellipse[fill="#FBEAF0" i] { fill: #4B1528 !important; }
+.dark rect[fill="#F1EFE8" i], .dark path[fill="#F1EFE8" i], .dark circle[fill="#F1EFE8" i], .dark ellipse[fill="#F1EFE8" i] { fill: #2C2C2A !important; }
+.dark rect[fill="#E6F1FB" i], .dark path[fill="#E6F1FB" i], .dark circle[fill="#E6F1FB" i], .dark ellipse[fill="#E6F1FB" i] { fill: #042C53 !important; }
+.dark rect[fill="#EAF3DE" i], .dark path[fill="#EAF3DE" i], .dark circle[fill="#EAF3DE" i], .dark ellipse[fill="#EAF3DE" i] { fill: #173404 !important; }
+.dark rect[fill="#FAEEDA" i], .dark path[fill="#FAEEDA" i], .dark circle[fill="#FAEEDA" i], .dark ellipse[fill="#FAEEDA" i] { fill: #412402 !important; }
+.dark rect[fill="#FCEBEB" i], .dark path[fill="#FCEBEB" i], .dark circle[fill="#FCEBEB" i], .dark ellipse[fill="#FCEBEB" i] { fill: #501313 !important; }
+.dark text[fill="#26215C" i] { fill: #EEEDFE !important; }
+.dark text[fill="#04342C" i] { fill: #E1F5EE !important; }
+.dark text[fill="#4A1B0C" i] { fill: #FAECE7 !important; }
+.dark text[fill="#4B1528" i] { fill: #FBEAF0 !important; }
+.dark text[fill="#2C2C2A" i] { fill: #F1EFE8 !important; }
+.dark text[fill="#042C53" i] { fill: #E6F1FB !important; }
+.dark text[fill="#173404" i] { fill: #EAF3DE !important; }
+.dark text[fill="#412402" i] { fill: #FAEEDA !important; }
+.dark text[fill="#501313" i] { fill: #FCEBEB !important; }
+.dark text[fill="#534AB7" i] { fill: #B8B4F5 !important; }
+.dark text[fill="#0F6E56" i] { fill: #7DDDC0 !important; }
+.dark text[fill="#9B3318" i] { fill: #F0A080 !important; }
+.dark text[fill="#9C2D56" i] { fill: #F0A0C0 !important; }
+.dark text[fill="#5C5C5A" i] { fill: #B8B6B0 !important; }
+.dark text[fill="#1B5C99" i] { fill: #90C4F0 !important; }
+.dark text[fill="#3A6B10" i] { fill: #A0D060 !important; }
+.dark text[fill="#7A4A10" i] { fill: #E0A860 !important; }
+.dark text[fill="#9B2222" i] { fill: #F09090 !important; }
+
+@media (prefers-color-scheme: dark) {
+    rect[fill="#EEEDFE" i], path[fill="#EEEDFE" i], circle[fill="#EEEDFE" i], ellipse[fill="#EEEDFE" i] { fill: #26215C !important; }
+    rect[fill="#E1F5EE" i], path[fill="#E1F5EE" i], circle[fill="#E1F5EE" i], ellipse[fill="#E1F5EE" i] { fill: #04342C !important; }
+    rect[fill="#FAECE7" i], path[fill="#FAECE7" i], circle[fill="#FAECE7" i], ellipse[fill="#FAECE7" i] { fill: #4A1B0C !important; }
+    rect[fill="#FBEAF0" i], path[fill="#FBEAF0" i], circle[fill="#FBEAF0" i], ellipse[fill="#FBEAF0" i] { fill: #4B1528 !important; }
+    rect[fill="#F1EFE8" i], path[fill="#F1EFE8" i], circle[fill="#F1EFE8" i], ellipse[fill="#F1EFE8" i] { fill: #2C2C2A !important; }
+    rect[fill="#E6F1FB" i], path[fill="#E6F1FB" i], circle[fill="#E6F1FB" i], ellipse[fill="#E6F1FB" i] { fill: #042C53 !important; }
+    rect[fill="#EAF3DE" i], path[fill="#EAF3DE" i], circle[fill="#EAF3DE" i], ellipse[fill="#EAF3DE" i] { fill: #173404 !important; }
+    rect[fill="#FAEEDA" i], path[fill="#FAEEDA" i], circle[fill="#FAEEDA" i], ellipse[fill="#FAEEDA" i] { fill: #412402 !important; }
+    rect[fill="#FCEBEB" i], path[fill="#FCEBEB" i], circle[fill="#FCEBEB" i], ellipse[fill="#FCEBEB" i] { fill: #501313 !important; }
+    text[fill="#26215C" i] { fill: #EEEDFE !important; }
+    text[fill="#04342C" i] { fill: #E1F5EE !important; }
+    text[fill="#4A1B0C" i] { fill: #FAECE7 !important; }
+    text[fill="#4B1528" i] { fill: #FBEAF0 !important; }
+    text[fill="#2C2C2A" i] { fill: #F1EFE8 !important; }
+    text[fill="#042C53" i] { fill: #E6F1FB !important; }
+    text[fill="#173404" i] { fill: #EAF3DE !important; }
+    text[fill="#412402" i] { fill: #FAEEDA !important; }
+    text[fill="#501313" i] { fill: #FCEBEB !important; }
+    text[fill="#534AB7" i] { fill: #B8B4F5 !important; }
+    text[fill="#0F6E56" i] { fill: #7DDDC0 !important; }
+    text[fill="#9B3318" i] { fill: #F0A080 !important; }
+    text[fill="#9C2D56" i] { fill: #F0A0C0 !important; }
+    text[fill="#5C5C5A" i] { fill: #B8B6B0 !important; }
+    text[fill="#1B5C99" i] { fill: #90C4F0 !important; }
+    text[fill="#3A6B10" i] { fill: #A0D060 !important; }
+    text[fill="#7A4A10" i] { fill: #E0A860 !important; }
+    text[fill="#9B2222" i] { fill: #F09090 !important; }
+}
+
 /* 语义类（.box / .t / .th / .ts）消费色板变量 */
 .c-purple .box, .c-teal .box, .c-coral .box, .c-pink .box, .c-gray .box,
 .c-blue .box, .c-green .box, .c-amber .box, .c-red .box {
@@ -190,6 +251,9 @@ html, body {
     scrollbar-width: thin;
     scrollbar-color: rgba(128, 128, 128, 0.3) transparent;
 }
+/* 永远预留滚动条槽位：滚动条出现与否不改变内容宽度，
+   否则「滚动条占宽→重排变矮→上报更小→iframe 更矮→滚动条常驻」形成双稳态死循环 */
+html { scrollbar-gutter: stable; }
 html::-webkit-scrollbar,
 body::-webkit-scrollbar {
     width: 6px;
@@ -399,11 +463,13 @@ var s='${`(function() {
     }, true);
 
     // 高度自适应（ResizeObserver + rAF 节流）
+    // 上报加 2px 余量：内容高与 iframe 高只差 1~2px 时滚动条会「出现->占宽->更高->常驻」振荡，
+    // 且宿主防抖守卫会拒绝连续微增，导致 iframe 永久卡短几像素、滚动条常驻。
     function reportHeight() {
         if (!root) {
             return;
         }
-        var h = Math.ceil(root.getBoundingClientRect().height);
+        var h = Math.ceil(root.getBoundingClientRect().height) + 2;
         h = Math.min(Math.max(h, MIN_WIDGET_HEIGHT), MAX_WIDGET_HEIGHT);
         if (h !== lastHeight && h > 0) {
             lastHeight = h;
@@ -741,6 +807,8 @@ var s='${`(function() {
 
             executeScriptsSequentially(scripts).finally(function() {
                 setTimeout(reportHeight, 50);
+                // 字体加载/异步绘图可能让布局在 finalize 后才稳定，补一次延迟上报
+                setTimeout(reportHeight, 350);
             });
         } catch (error) {
             console.warn('[WidgetSandbox] render failed.', error);

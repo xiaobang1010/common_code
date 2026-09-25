@@ -59,7 +59,8 @@
   overflow: hidden;
   min-height: 360px;
   padding: 12px 16px;
-  max-height: 80vh;
+  /* 与 iframe 的整屏上限对齐，避免外层先裁一刀 */
+  max-height: calc(100vh - 16px);
 }
 
 .cc-widget-header {
@@ -188,7 +189,13 @@
   overflow: hidden;
   background: transparent;
   min-height: 320px;
-  max-height: calc(80vh - 40px);
+  /* 上限取「几乎整屏」：比屏幕矮的图完整展示、不出滚动条；
+     真正超长（高于一屏）才钳住并由 iframe 内部滚动消化 */
+  max-height: calc(100vh - 60px);
+  /* 沙箱按 680 设计宽出图，列宽 880~1400 会把 SVG 等比撑大、文字虚大；
+     渲染宽收在设计宽附近并居中 */
+  max-width: 720px;
+  margin-inline: auto;
 }
 
 .cc-widget-frame:focus {
@@ -361,7 +368,9 @@
 .cc-widget-wrapper.cc-widget-chromeless {
   border: none;
   border-radius: 0;
-  margin: 4px 0;
+  /* 与 iframe 同宽居中，让顶栏标题/菜单与图块右缘对齐 */
+  max-width: 720px;
+  margin: 4px auto;
   background: transparent;
   overflow: visible;
 }
@@ -384,9 +393,9 @@
   padding: 8px 0 0;
 }
 
+/* 不再放开高度上限：超长图由 iframe 内部滚动，避免撑爆对话流 */
 .cc-widget-container.cc-widget-chromeless .cc-widget-frame {
   min-height: 0;
-  max-height: none;
   background: transparent;
 }
 
