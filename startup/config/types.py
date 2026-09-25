@@ -90,7 +90,9 @@ class SubagentsConfig:
 
     model_overrides: dict[str, str] = field(default_factory=dict)
     default_model: str = ""
-    auto_background_ms: int = 60000
+    # 阈值过短会让探索型子代理（常需数分钟）在父会话拿到结果前就被提升为后台，
+    # 触发模型轮询/自述等待/重复探索，回复密度被过程叙述稀释——默认放宽到 5 分钟
+    auto_background_ms: int = 300000
     inactivity_timeout_ms: int = 300000
     max_turns_default: int = 50
     token_budget_default: int = 0
@@ -118,7 +120,7 @@ class SubagentsConfig:
                 str(k): str(v) for k, v in overrides.items() if v
             },
             default_model=str(data.get("defaultModel", "") or ""),
-            auto_background_ms=_non_negative_int(data.get("autoBackgroundMs"), 60000),
+            auto_background_ms=_non_negative_int(data.get("autoBackgroundMs"), 300000),
             inactivity_timeout_ms=_non_negative_int(
                 data.get("inactivityTimeoutMs"), 300000
             ),

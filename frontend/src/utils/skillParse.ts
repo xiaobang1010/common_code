@@ -26,5 +26,9 @@ export function parseUserMessage(content: string): UserMessageParseResult {
   if (content.startsWith('<system-reminder>')) {
     return { kind: 'skip', text: '' }
   }
+  // 后台子代理的任务通知是给模型看的机器消息，展示为对话块标题会泄漏内部机制
+  if (content.startsWith('<task-notification>')) {
+    return { kind: 'skip', text: '' }
+  }
   return { kind: 'plain', text: content }
 }

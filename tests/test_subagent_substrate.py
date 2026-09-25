@@ -149,7 +149,7 @@ def test_subagents_config_endpoint_roundtrip(config_client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["ok"] is True
-    assert body["subagents"]["autoBackgroundMs"] == 60000
+    assert body["subagents"]["autoBackgroundMs"] == 300000
 
     resp = config_client.post(
         "/api/config/subagents",
