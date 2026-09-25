@@ -206,8 +206,8 @@ function ChatStream({ hasWorkspace, onOpenWorkspace }: Props) {
           overflowY: 'auto',
         }}
       >
-        {/* 限宽可读列：消息与空态共用；minHeight 撑满滚动容器保证空态垂直居中，
-            窄屏（面板不足 880px）时 max-width 自动退化为全宽、仅保留左右留白 */}
+        {/* 内容可读列：消息与空态共用；minHeight 撑满滚动容器保证空态垂直居中，
+            列宽由 AIPanel 按面板宽分档写入 --content-max-width，面板不足该宽时退化为全宽、仅保留左右留白 */}
         <div
           style={{
             maxWidth: 'var(--content-max-width)',
