@@ -156,6 +156,37 @@
   /* 过渡 */
   --transition-fast: 120ms cubic-bezier(0.4, 0, 0.2, 1);
   --transition: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* 可视化 widget 主题契约（iframe 沙箱收集后推入，使图形无缝继承对话面板配色）。
+     语义色取深底可读的浅档（参考调色板 100/200 级），与九色带体系同源 */
+  --cc-panel-bg: var(--bg-primary);
+  --color-background-primary: var(--bg-primary);
+  --color-background-secondary: var(--bg-elevated);
+  --color-background-tertiary: var(--bg-tertiary);
+  --color-background-info: rgba(55, 138, 221, 0.16);
+  --color-background-danger: rgba(226, 75, 74, 0.14);
+  --color-background-success: rgba(99, 153, 34, 0.16);
+  --color-background-warning: rgba(186, 117, 23, 0.16);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-tertiary: var(--text-tertiary);
+  --color-text-info: #85B7EB;
+  --color-text-danger: #F09595;
+  --color-text-success: #97C459;
+  --color-text-warning: #EF9F27;
+  --color-border-primary: rgba(255, 255, 255, 0.4);
+  --color-border-secondary: rgba(255, 255, 255, 0.3);
+  --color-border-tertiary: rgba(255, 255, 255, 0.15);
+  --color-border-info: rgba(55, 138, 221, 0.5);
+  --color-border-danger: rgba(226, 75, 74, 0.5);
+  --color-border-success: rgba(99, 153, 34, 0.5);
+  --color-border-warning: rgba(186, 117, 23, 0.5);
+  --font-sans: var(--font-ui);
+  --font-serif: Georgia, 'Times New Roman', serif;
+  --border-radius-sm: 4px;
+  --border-radius-md: 8px;
+  --border-radius-lg: 12px;
+  --border-radius-xl: 16px;
 }
 
 /* ============================================================

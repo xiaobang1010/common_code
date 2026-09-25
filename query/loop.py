@@ -104,6 +104,8 @@ def _build_project_info() -> str:
 
     让 agent 明确知晓当前工作区与访问边界（工作区根、git 分支、
     额外允许目录），不必靠 pwd/试错推断；随会话动态构建。
+    以 <user_info> 块承载：可视化规范段引用其中的 IDE Theme 字段决定图形配色，
+    主题作为运行时事实注入（当前应用仅提供深色界面，接入浅色主题后此处跟随设置）。
     """
     from server.paths import effective_root
 
@@ -122,7 +124,8 @@ def _build_project_info() -> str:
             lines.append(f"额外允许目录: {', '.join(additional)}")
     except Exception:
         pass  # 配置读取失败不影响注入
-    return "\n".join(lines)
+    lines.insert(0, "IDE Theme: dark")
+    return "<user_info>\n" + "\n".join(lines) + "\n</user_info>"
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +220,23 @@ def _build_tool_result_messages(
         msg = tool_result_to_openai_message(result)
         messages.append(msg)
     return messages
+
+
+def _present_files_event(result: ToolExecutionResult) -> dict[str, Any] | None:
+    """present_files 交付结果 → 前端结构化事件；其他工具返回 None。
+
+    该事件只随 SSE 发给前端（打开面板标签），不进入对话历史、不落库。
+    """
+    if result.tool_name != "present_files" or result.is_error:
+        return None
+    meta = result.metadata or {}
+    if meta.get("type") != "present_files":
+        return None
+    return {
+        "role": "present_files",
+        "files": meta.get("files", []),
+        "explanation": meta.get("explanation", ""),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -772,6 +792,10 @@ async def query_loop(
                     if completed.context_modifier and completed.context_modifier.get("allowed_tools"):
                         for t in completed.context_modifier["allowed_tools"]:
                             engine.always_allowed.add(t)
+                    # present_files 交付事件：只发前端，不入对话
+                    pf_event = _present_files_event(completed)
+                    if pf_event:
+                        yield pf_event
 
         except Exception as e:
             # 模型调用异常
@@ -800,6 +824,10 @@ async def query_loop(
             if result.context_modifier and result.context_modifier.get("allowed_tools"):
                 for t in result.context_modifier["allowed_tools"]:
                     engine.always_allowed.add(t)
+            # present_files 交付事件：只发前端，不入对话
+            pf_event = _present_files_event(result)
+            if pf_event:
+                yield pf_event
 
         # 更新 token 使用量（写回引擎）
         if usage_info:
