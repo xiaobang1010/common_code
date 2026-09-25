@@ -185,10 +185,10 @@ class Tool:
 
     # --- 必填字段 ---
     name: str
-    description: str
+    description: str  # 短摘要（UI/日志用）；模型侧完整说明书走 prompt
     input_schema: type[BaseModel]
     execute: Callable  # async def execute(input, context) -> ToolResult
-    prompt: str
+    prompt: str  # 工具完整使用说明：序列化时作为 function description 发给模型
 
     # --- 可选渲染 / 验证 / 权限回调 ---
     render: Callable | None = None

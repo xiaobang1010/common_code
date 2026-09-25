@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from prompts.loader import load_tool_prompt
 from tools.implementations.file_read_tool.handler import (
     format_model_content,
     handle_read,
@@ -23,17 +24,6 @@ from tools.protocol import (
     build_tool,
 )
 
-FILE_READ_PROMPT = """\
-读取本地文件系统中的文件内容。
-
-使用说明：
-- file_path 支持绝对路径或相对工作区的路径
-- 默认只读取前 2000 行；文件更大时需用 offset/limit 分段读取
-- offset 为起始行号（从 1 开始），limit 为读取行数
-- 结果使用 cat -n 格式，行号从 1 开始
-- 此工具只能读取文件，不能读取目录
-- 读取成功后系统自动登记文件基线，后续 Write/Edit 覆盖该文件时自动校验，无需手动回传 mtime/size
-"""
 
 
 async def _execute(inp: FileReadInput, context: ToolUseContext) -> ToolResult:
@@ -62,7 +52,7 @@ def get_file_read_tool() -> Tool:
         description="读取文件内容",
         input_schema=FileReadInput,
         execute=_execute,
-        prompt=FILE_READ_PROMPT,
+        prompt=load_tool_prompt("read"),
         is_read_only=True,
         is_concurrent=True,
         requires_permission=False,

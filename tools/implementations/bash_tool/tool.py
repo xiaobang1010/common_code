@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from prompts.loader import load_tool_prompt
 from tools.implementations.bash_tool.handler import (
     format_model_content,
     handle_bash,
@@ -23,18 +24,6 @@ from tools.protocol import (
     build_tool,
 )
 
-BASH_PROMPT = """\
-执行 shell 命令并返回输出。
-
-使用说明：
-- 工作目录在命令之间保持不变，但 shell 状态不会持久化
-- 始终用双引号包裹包含空格的文件路径
-- 尽量在会话中通过使用绝对路径来维持当前工作目录
-- 可以指定可选的超时时间（毫秒），默认 120000ms（2 分钟），上限 600000ms（10 分钟）
-- 发出多个命令时：
-  - 如果命令相互独立且可以并行运行，在一条消息中发起多个 Bash 工具调用
-  - 如果命令相互依赖且必须按顺序运行，使用 '&&' 将它们串联
-"""
 
 # 超时策略：默认 2 分钟，上限 10 分钟，允许调用覆盖（钳制到上限）
 BASH_TIMEOUT_POLICY = TimeoutPolicy(
@@ -71,7 +60,7 @@ def get_bash_tool() -> Tool:
         description="执行 shell 命令",
         input_schema=BashInput,
         execute=_execute,
-        prompt=BASH_PROMPT,
+        prompt=load_tool_prompt("bash"),
         # --- 声明式描述符 ---
         metadata=ToolMetadata(
             risk_level=RISK_HIGH,

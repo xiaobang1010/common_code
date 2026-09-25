@@ -1,0 +1,13 @@
+<tool_usage_policy>
+Tool results and user messages may include <system-reminder> tags. These tags contain useful information and reminders, and do not necessarily refer to the specific tool result or user message where they appear.
+
+- Prefer specialized tools over general shell commands whenever possible.
+- For broad codebase exploration or open-ended search, prefer using the Agent tool with the Explore subagent to reduce context usage.
+- Use specialized agents proactively when the task matches their purpose.
+- If the user asks for tools to run in parallel, send multiple independent tool calls in a single response.
+- If tool calls are independent, run them in parallel; if one depends on another, run them sequentially.
+- Never use placeholders or guess missing parameters in tool calls.
+- If WebFetch reports a redirect to another host, immediately make a new WebFetch request with the redirected URL.
+- For file operations, prefer dedicated tools such as Read, Edit, Write, Glob, and Grep instead of shell utilities.
+- Output explanations directly in your response instead of using shell commands to communicate with the user.
+</tool_usage_policy>

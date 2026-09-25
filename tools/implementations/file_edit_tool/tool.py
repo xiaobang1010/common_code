@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from prompts.loader import load_tool_prompt
 from tools.implementations.file_edit_tool.handler import (
     format_model_content,
     handle_edit,
@@ -23,17 +24,6 @@ from tools.protocol import (
     build_tool,
 )
 
-FILE_EDIT_PROMPT = """\
-在文件中执行精确的字符串替换。
-
-使用说明：
-- 编辑 Read 工具输出中的文本时，确保保留行号前缀之后的精确缩进
-- 始终优先编辑代码库中的现有文件，除非明确要求，否则不要创建新文件
-- 如果 old_string 在文件中不唯一，编辑将失败。请提供更多上下文使其唯一，或使用 replace_all
-- 使用 replace_all 可替换文件中所有匹配的字符串（例如重命名变量）
-- file_path 支持绝对路径或相对工作区的路径
-- 修改已存在文件时系统自动登记并校验文件基线，一般无需手动传 base_mtime/base_size；显式传入时以此为准校验
-"""
 
 
 async def _execute(inp: FileEditInput, context: ToolUseContext) -> ToolResult:
@@ -62,7 +52,7 @@ def get_file_edit_tool() -> Tool:
         description="编辑文件（搜索替换）",
         input_schema=FileEditInput,
         execute=_execute,
-        prompt=FILE_EDIT_PROMPT,
+        prompt=load_tool_prompt("edit"),
         # --- 声明式描述符 ---
         metadata=ToolMetadata(
             risk_level=RISK_MEDIUM,

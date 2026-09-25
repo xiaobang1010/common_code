@@ -1,0 +1,40 @@
+Executes a given bash command and returns its output.
+
+The working directory persists between commands, but shell state does not. The shell environment is initialized from the user's profile.
+
+IMPORTANT: On Windows this tool runs commands via pwsh (PowerShell 7+) or powershell - generate PowerShell-compatible syntax and avoid CMD-style constructs such as `2>nul`. On POSIX platforms the command runs under `/bin/sh`.
+
+IMPORTANT: Avoid using this tool to run `cat`, `head`, `tail`, `sed`, `awk`, or `echo` commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user:
+
+- Read files: Use Read (NOT cat/head/tail)
+- Edit files: Use Edit (NOT sed/awk)
+- Write files: Use Write (NOT echo >/cat <<EOF)
+- Communication: Output text directly (NOT echo/printf)
+
+IMPORTANT: Avoid using this tool to run `find`, `grep`, or `rg` commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user:
+
+- File search: Use Glob (NOT find or ls)
+- Content search: Use Grep (NOT grep or rg)
+
+While the Bash tool can do similar things, it’s better to use the built-in tools as they provide a better user experience and make it easier to review tool calls and give permission.
+
+# Instructions
+- If your command will create new directories or files, first use this tool to run `ls` to verify the parent directory exists and is the correct location.
+- Always quote file paths that contain spaces with double quotes in your command (e.g., cd "path with spaces/file.txt").
+- Try to maintain your current working directory throughout the session by using absolute paths and avoiding usage of `cd`. You may use `cd` if the User explicitly requests it. In particular, never prepend `cd <current-directory>` to a `git` command — `git` already operates on the current working tree, and the compound triggers a permission prompt.
+- You may specify an optional timeout in milliseconds (up to 600000ms). The system default is 120000ms (2 minutes). A command expected to run longer than the default (installers, build steps, long tests, data processing) MUST set an explicit `timeout` large enough for the whole command, otherwise it will be killed mid-run. Only leave `timeout` unset for commands with a known short upper bound (e.g. a quick probe, a health check).
+- When issuing multiple commands:
+  - If the commands are independent and can run in parallel, make multiple Bash tool calls in a single message. Example: if you need to run "git status" and "git diff", send a single message with two Bash tool calls in parallel.
+  - If the commands depend on each other and must run sequentially, use a single Bash call with '&&' to chain them together.
+  - Use ';' only when you need to run commands sequentially but don't care if earlier commands fail.
+  - DO NOT use newlines to separate commands (newlines are ok in quoted strings).
+- For git commands:
+  - Prefer creating a new commit rather than amending an existing commit.
+  - Before running destructive operations (e.g., `git reset --hard`, `git push --force`, `git checkout --`), consider whether there is a safer alternative. Only use destructive operations when they are truly the best approach.
+  - Never skip hooks (`--no-verify`) or bypass signing (`--no-gpg-sign`, `-c commit.gpgsign=false`) unless the user has explicitly asked for it. If a hook fails, investigate and fix the underlying issue.
+- Avoid unnecessary `sleep` commands:
+  - Do not sleep between commands that can run immediately — just run them.
+  - Do not retry failing commands in a sleep loop — diagnose the root cause.
+  - If you must poll an external process, use a check command (e.g. `gh run view`) rather than sleeping first.
+  - If you must sleep, keep the duration short (1-5 seconds) to avoid blocking the user.
+- For GitHub operations (issues, PR checks, releases, comments), use the `gh` command via the Bash tool. If given a GitHub URL, use `gh` to get the information. Example: view PR comments via `gh api repos/foo/bar/pulls/123/comments`.

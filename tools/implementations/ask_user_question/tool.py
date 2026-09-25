@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from prompts.loader import load_tool_prompt
 from tools.implementations.ask_user_question.handler import (
     format_model_content,
     handle_ask_user_question,
@@ -23,16 +24,6 @@ from tools.protocol import (
     build_tool,
 )
 
-ASK_USER_QUESTION_PROMPT = """\
-在执行任务过程中向用户提出问题，挂起等待用户回答后继续。
-
-使用说明：
-- 当遇到多种合理方案需要用户拍板、需求有歧义、或需要收集用户偏好时使用
-- question 应清晰具体，以问号结尾
-- options 可选：提供 2-4 个候选选项，每项含 label（简短显示文本）和 description（说明）
-- 工具会阻塞直到用户回答，回答文本将作为工具结果返回
-- 不要用它询问可以通过读代码/搜索自行解决的问题
-"""
 
 
 async def _execute(inp: AskUserQuestionInput, context: ToolUseContext) -> ToolResult:
@@ -61,7 +52,7 @@ def get_ask_user_question_tool() -> Tool:
         description="向用户提问并等待回答",
         input_schema=AskUserQuestionInput,
         execute=_execute,
-        prompt=ASK_USER_QUESTION_PROMPT,
+        prompt=load_tool_prompt("ask-user-question"),
         is_read_only=True,
         is_concurrent=False,
         requires_permission=False,

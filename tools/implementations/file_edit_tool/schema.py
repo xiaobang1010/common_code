@@ -17,15 +17,26 @@ class FileEditInput(BaseModel):
         base_size: 可选，覆盖前校验的基线 size（字节，来自最近一次 Read）
     """
 
-    file_path: str = Field(description="要编辑的文件路径")
-    old_string: str = Field(description="要被替换的原始文本")
-    new_string: str = Field(description="替换后的文本")
-    replace_all: bool = Field(default=False, description="是否替换所有匹配项")
+    file_path: str = Field(
+        description="要编辑的文件路径（绝对路径或相对工作区的路径）"
+    )
+    old_string: str = Field(
+        description="要被替换的原文：从最近一次 Read 结果原样复制（含精确缩进），在文件内必须唯一；"
+        "不唯一时扩大上下文或改用 replace_all"
+    )
+    new_string: str = Field(
+        description="替换后的文本，必须与 old_string 不同；只改必要部分，不要顺手重排无关内容"
+    )
+    replace_all: bool = Field(
+        default=False,
+        description="是否替换所有匹配项（默认 False 即要求唯一匹配）。仅在逐处替换意图明确时给 True，"
+        "如重命名变量",
+    )
     base_mtime: int | None = Field(
         default=None,
-        description="可选，一般无需传；写回前校验的基线 mtime（缺省自动采用系统登记值）",
+        description="可选，一般无需传：覆盖前校验的基线 mtime，缺省自动采用系统登记值",
     )
     base_size: int | None = Field(
         default=None,
-        description="可选，一般无需传；写回前校验的基线 size（缺省自动采用系统登记值）",
+        description="可选，一般无需传：覆盖前校验的基线 size，缺省自动采用系统登记值",
     )

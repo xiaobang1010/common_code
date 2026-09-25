@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
@@ -58,10 +58,14 @@ def pydantic_to_openai_function_schema(
     }
 
 
-def tool_to_openai_schema(tool: Tool) -> dict:
-    """将 Tool 转换为 OpenAI function schema。"""
+def tool_to_openai_schema(tool: Tool) -> dict[str, Any]:
+    """将 Tool 转换为 OpenAI function schema。
+
+    模型侧读的是 function description，因此优先发送完整使用说明（Tool.prompt）；
+    description 字段保留为短摘要，不再直达模型。
+    """
     return pydantic_to_openai_function_schema(
         model=tool.input_schema,
         name=tool.name,
-        description=tool.description,
+        description=tool.prompt or tool.description,
     )
