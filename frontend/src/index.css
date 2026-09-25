@@ -113,6 +113,11 @@
   --button-primary-bg-hover: #1187ce;
   --button-primary-text: #ffffff;
 
+  /* 停止钮 - 白色实心圆 + 深色方块，与发送钮同构，靠形状而非红色语义区分状态 */
+  --button-stop-bg: #ffffff;
+  --button-stop-bg-hover: #dcdcdc;
+  --button-stop-fg: #1a1a1a;
+
   /* 强调色 - VSCode 蓝，仅关键交互位使用 */
   --accent: #0078d4;
   --accent-hover: #1187ce;

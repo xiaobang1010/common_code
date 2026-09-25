@@ -1007,7 +1007,7 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
               )}
             </div>
             {taskActive ? (
-            // 任务进行中（前台流式或本会话后台任务）：圆形停止钮
+            // 任务进行中（前台流式或本会话后台任务）：圆形停止钮，与发送钮同构（实心圆 + 对比色图形）
             <button
               onClick={onStop}
               title="停止生成"
@@ -1019,8 +1019,8 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
                 padding: 0,
                 border: 'none',
                 borderRadius: '50%',
-                background: 'var(--error-soft)',
-                color: 'var(--error)',
+                background: 'var(--button-stop-bg)',
+                color: 'var(--button-stop-fg)',
                 cursor: 'pointer',
                 transition: 'all var(--transition-fast)',
                 display: 'inline-flex',
@@ -1029,16 +1029,15 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
                 flexShrink: 0,
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.background = 'var(--error)'
-                e.currentTarget.style.color = 'var(--button-primary-text)'
+                e.currentTarget.style.background = 'var(--button-stop-bg-hover)'
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.background = 'var(--error-soft)'
-                e.currentTarget.style.color = 'var(--error)'
+                e.currentTarget.style.background = 'var(--button-stop-bg)'
               }}
             >
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
-                <rect x="6" y="6" width="12" height="12" rx="1.5" />
+              {/* 方块实渲 12px、圆角 3px，对齐参考稿「方块/圆盘 = 0.375」的比例 */}
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
+                <rect width="12" height="12" rx="3" />
               </svg>
             </button>
           ) : (
