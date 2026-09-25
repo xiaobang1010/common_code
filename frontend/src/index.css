@@ -450,13 +450,13 @@ body {
 .chat-rich-input {
   width: 100%;
   box-sizing: border-box;
-  min-height: 72px;
-  max-height: 200px;
+  min-height: 130px;
+  max-height: 240px;
   overflow-y: auto;
   background: transparent;
   border: none;
   /* 底部多留一行工具栏高度，发送圆钮与文字不重叠 */
-  padding: 14px 16px 42px;
+  padding: 16px 16px 52px;
   color: var(--text-primary);
   font-size: 14px;
   font-family: var(--font-ui);

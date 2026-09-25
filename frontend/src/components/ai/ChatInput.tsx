@@ -567,7 +567,7 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
         <div
           style={{
             position: 'absolute',
-            bottom: '8px',
+            bottom: '10px',
             left: '12px',
             right: '12px',
             display: 'flex',
