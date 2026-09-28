@@ -116,9 +116,13 @@ def test_inject_agents_md_on_off_missing(monkeypatch, tmp_path):
     assert "工作区规范内容" in build_subagent_system_prompt(on)
     assert "工作区规范内容" not in build_subagent_system_prompt(off)
 
-    # 文件缺失：静默跳过，返回基础提示词
+    # 文件缺失：AGENTS.md 段静默跳过，但 Notes/env 恒定注入（以基础提示词开头）
     monkeypatch.setattr("server.paths.effective_root", lambda: str(tmp_path / "empty"))
-    assert build_subagent_system_prompt(on) == "基础提示词"
+    prompt = build_subagent_system_prompt(on)
+    assert prompt.startswith("基础提示词")
+    assert "工作区规范内容" not in prompt
+    assert "Notes:" in prompt
+    assert "<env>" in prompt
 
 
 # ---------------------------------------------------------------------------

@@ -68,10 +68,32 @@ class AgentInput(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-# 无清单数据时的兜底清单（保证不抛异常、描述仍可用）
+# 无清单数据时的兜底清单（保证不抛异常、描述仍可用）；描述与内置定义保持同文
 _AGENT_LISTING_FALLBACK = [
-    {"type": "general-purpose", "when_to_use": "全工具，通用研究/多步骤任务", "tools": ""},
-    {"type": "Explore", "when_to_use": "只读搜索，快速定位代码库信息", "tools": ""},
+    {
+        "type": "general-purpose",
+        "when_to_use": (
+            "General-purpose agent for researching complex questions, searching for "
+            "code, and executing multi-step tasks. When you are searching for a "
+            "keyword or file and are not confident that you will find the right "
+            "match in the first few tries use this agent to perform the search "
+            "for you."
+        ),
+        "tools": "",
+    },
+    {
+        "type": "Explore",
+        "when_to_use": (
+            "Read-only search agent for broad fan-out searches - when answering "
+            "means sweeping many files, directories, or naming conventions and "
+            "need only the conclusion, not the file dumps. It reads excerpts "
+            "rather than whole files, so it locates code; it doesn't review or "
+            "audit it. Specify search breadth: \"medium\" for moderate "
+            "exploration, \"very thorough\" for multiple locations and naming "
+            "conventions."
+        ),
+        "tools": "Bash, Glob, Grep, Read, WebFetch, TodoWrite",
+    },
 ]
 
 

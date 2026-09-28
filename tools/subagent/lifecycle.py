@@ -111,7 +111,7 @@ def _apply_budget_defaults(ctx: SubagentContext, agent_def: AgentDefinition) -> 
     """预算双护栏：轮次上限与 token 预算，profile 未指定时应用全局默认。"""
     cfg = _get_subagents_config()
     if ctx.max_turns is None:
-        default_turns = cfg.max_turns_default if cfg is not None else 50
+        default_turns = cfg.max_turns_default if cfg is not None else 4
         ctx.max_turns = default_turns if default_turns > 0 else None
     if ctx.token_budget is None:
         if agent_def.token_budget is not None:
@@ -382,8 +382,8 @@ async def spawn_subagent(request: SpawnRequest) -> SpawnResult:
     )
     _apply_budget_defaults(ctx, agent_def)
 
-    # 系统提示词与工具池
-    system_prompt = build_subagent_system_prompt(agent_def)
+    # 系统提示词与工具池（model 传参用于 env 块的模型名行）
+    system_prompt = build_subagent_system_prompt(agent_def, ctx.model)
     worker_tools = resolve_agent_tools(agent_def, get_tools())
 
     # 子会话绑定（upsert；失败降级为无子会话模式，不阻断派生）

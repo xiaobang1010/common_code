@@ -117,7 +117,8 @@ async def resume_agent_background(
 
     all_tools = get_tools()
     worker_tools = resolve_agent_tools(agent_def, all_tools)
-    system_prompt = build_subagent_system_prompt(agent_def)
+    # 与 lifecycle 派生路径同一组装：恢复的子代理同样带 Notes/env（model 取 ctx.model）
+    system_prompt = build_subagent_system_prompt(agent_def, ctx.model)
 
     task = launch_background_subagent(
         ctx,

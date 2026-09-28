@@ -65,6 +65,95 @@ class QueryEngineConfig:
 
 
 # ---------------------------------------------------------------------------
+# Explore 子代理 Bash 只读白名单（spec 附录 F）
+# ---------------------------------------------------------------------------
+
+# 直接放行的首命令词
+_EXPLORE_BASH_READONLY_COMMANDS = frozenset({
+    "ls", "pwd", "cat", "head", "tail", "find", "grep", "rg", "echo",
+    "wc", "which", "where", "file", "stat", "du", "df", "sort", "uniq", "diff",
+})
+# git 仅放行的只读二级子命令
+_EXPLORE_BASH_GIT_SUBCOMMANDS = frozenset({
+    "status", "log", "diff", "show", "branch", "blame", "rev-parse",
+    "ls-files", "describe", "remote",
+})
+# remote 仅允许查看形态（无参列出 / -v）
+_GIT_REMOTE_VIEW_ARGS = frozenset({"", "-v", "--verbose"})
+# 出现即视为白名单外：重定向/管道/命令替换/heredoc 元字符与 tee
+_EXPLORE_BASH_FORBIDDEN_CHARS = ("<<", ">>", ">", "|", "`", "$(")
+_EXPLORE_BASH_FORBIDDEN_WORDS = {"tee"}
+
+_EXPLORE_BASH_DENY_REASON = (
+    "Permission required but subagents cannot ask the user for approval, "
+    "so this tool call was denied. Explore subagents can only run "
+    "read-only commands (ls, cat, head, tail, find, grep, rg, git "
+    "status/log/diff/show, etc.). If this action needs approval, run it "
+    "in the main conversation instead."
+)
+
+
+def _explore_bash_decision(tool, input_args, context) -> dict | None:
+    """Explore 子代理 Bash 只读判定：命中白名单返回 allow，未命中返回 deny。
+
+    仅作用于「Explore 类型子代理的 Bash 调用」这一场景，其余（非 Bash、
+    非子代理上下文、非 Explore）返回 None 交由通用权限链路，行为不变。
+    子代理无审批通道，通用链路对非删除命令默认放行对只读代理过宽，
+    故在本检查点独立产出 allow/deny。
+    """
+    if getattr(tool, "name", "") != "Bash":
+        return None
+    from tools.subagent.tools import is_subagent_context
+
+    if not is_subagent_context(context):
+        return None
+    agent_id = getattr(context, "tool_use_id", "")
+    try:
+        from tools.subagent.registry import get_subagent_registry
+
+        task = get_subagent_registry().get(agent_id)
+    except Exception:
+        task = None
+    if task is None or getattr(task, "agent_type", "") != "Explore":
+        return None
+
+    command = getattr(input_args, "command", None)
+    if not isinstance(command, str) or not command.strip():
+        return {"decision": "deny", "reason": _EXPLORE_BASH_DENY_REASON}
+    if any(ch in command for ch in _EXPLORE_BASH_FORBIDDEN_CHARS):
+        return {"decision": "deny", "reason": _EXPLORE_BASH_DENY_REASON}
+
+    # 复合命令（;、&&、||）逐段校验，任一段越界即整体拒绝
+    import re
+    import shlex
+
+    for segment in re.split(r";|&&|\|\|", command):
+        try:
+            tokens = shlex.split(segment)
+        except ValueError:
+            return {"decision": "deny", "reason": _EXPLORE_BASH_DENY_REASON}
+        if not tokens:
+            continue
+        if any(t in _EXPLORE_BASH_FORBIDDEN_WORDS for t in tokens):
+            return {"decision": "deny", "reason": _EXPLORE_BASH_DENY_REASON}
+        # 取首词的裸命令名（容忍绝对路径与 .exe 后缀形态）
+        head = tokens[0].rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        if head.endswith(".exe"):
+            head = head[:-4]
+        if head == "git":
+            sub = tokens[1] if len(tokens) > 1 else ""
+            if sub not in _EXPLORE_BASH_GIT_SUBCOMMANDS:
+                return {"decision": "deny", "reason": _EXPLORE_BASH_DENY_REASON}
+            if sub == "remote" and any(
+                arg not in _GIT_REMOTE_VIEW_ARGS for arg in tokens[2:]
+            ):
+                return {"decision": "deny", "reason": _EXPLORE_BASH_DENY_REASON}
+        elif head not in _EXPLORE_BASH_READONLY_COMMANDS:
+            return {"decision": "deny", "reason": _EXPLORE_BASH_DENY_REASON}
+    return {"decision": "allow"}
+
+
+# ---------------------------------------------------------------------------
 # _default_permission_check — 默认权限检查
 # ---------------------------------------------------------------------------
 
@@ -78,6 +167,11 @@ async def _default_permission_check(tool, input_args, context):
         {"decision": "deny", "reason": ...} — 拒绝
         {"decision": "ask", "reason": ...} — 需要用户确认，由上层调弹窗回调处理
     """
+    # Explore 子代理的 Bash 只读白名单判定（优先于通用规则）
+    explore_bash = _explore_bash_decision(tool, input_args, context)
+    if explore_bash is not None:
+        return explore_bash
+
     from tools.utils.permissions.permissions import has_permissions_to_use_tool
     from startup.bootstrap.state import get_permission_mode
 
