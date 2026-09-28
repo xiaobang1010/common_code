@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 
 import re
+from fnmatch import fnmatch
 from pathlib import Path
 
 from tools.implementations.grep_tool.schema import GrepInput
@@ -27,18 +28,18 @@ _EXCLUDED_DIRS = {
     ".git", ".hg", ".svn",
     "node_modules", "__pycache__", ".venv", "venv",
     "dist", "build", ".idea", ".vscode",
+    ".mypy_cache", ".pytest_cache", ".ruff_cache",
+    ".tox", ".nox", ".eggs", ".cache", "coverage", "htmlcov",
 }
 
 
 def _match_include(file_name: str, include: str | None) -> bool:
-    """检查文件名是否匹配 include 模式（支持 "*.py"、逗号分隔多模式）。"""
+    """检查文件名是否匹配 include 模式（fnmatch 语义，仅按文件名匹配，支持逗号分隔多模式）。"""
     if include is None:
         return True
     if "," in include:
         return any(_match_include(file_name, p.strip()) for p in include.split(","))
-    if include.startswith("*."):
-        return file_name.endswith(include[1:])
-    return True
+    return fnmatch(file_name, include)
 
 
 def _iter_candidate_files(search_root: Path) -> list[Path]:
@@ -82,6 +83,32 @@ async def handle_grep(inp: GrepInput, context: ToolUseContext) -> dict:
     return await asyncio.to_thread(_grep_sync, inp)
 
 
+def _filter_git_ignored(files: list[Path], workspace_root: Path) -> list[Path]:
+    """剔除被 .gitignore 忽略的文件（批量判定交给 git，非仓库/失败返回原列表）。
+
+    工作区外路径（额外允许目录）不参与忽略判定；被跟踪文件即使命中
+    忽略模式也不算忽略（git check-ignore 的既有语义），仍参与搜索。
+    """
+    rel_map: dict[str, Path] = {}
+    for f in files:
+        try:
+            rel_map[f.relative_to(workspace_root).as_posix()] = f
+        except ValueError:
+            continue
+    if not rel_map:
+        return files
+    try:
+        from server.git_ignore import ignored_names
+
+        ignored = ignored_names(str(workspace_root), list(rel_map))
+    except Exception:
+        return files
+    if not ignored:
+        return files
+    drop = {rel_map[p] for p in ignored if p in rel_map}
+    return [f for f in files if f not in drop]
+
+
 def _grep_sync(inp: GrepInput) -> dict:
     """同步检索内核：由 handle_grep 放入线程池执行。"""
     # 路径沙箱：未指定 path 时用工作区根
@@ -98,11 +125,12 @@ def _grep_sync(inp: GrepInput) -> dict:
     except re.error as exc:
         raise ToolExecutionError("invalid_regex", f"无效的正则表达式：{exc}")
 
+    workspace_root = get_workspace_root()
+
     files = _iter_candidate_files(search_root)
     if inp.include:
         files = [f for f in files if _match_include(f.name, inp.include)]
-
-    workspace_root = get_workspace_root()
+    files = _filter_git_ignored(files, workspace_root)
 
     # 逐文件搜索（达到上限即停止）
     matches_by_file: dict[str, list[tuple[int, str]]] = {}

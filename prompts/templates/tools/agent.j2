@@ -9,6 +9,7 @@ Use `subagent_type` to select a type; it defaults to `general-purpose`. Match th
 When to use / not use:
 - Use for: broad codebase exploration (keeps the main context lean), independent tasks that can run in parallel, research needing many rounds of search and synthesis.
 - Do NOT use for: reading a known file path (Read), locating a single class definition (Grep), or inspecting 2-3 files - spawning an agent is slower for those.
+- Once you've delegated a search, don't also run it yourself — wait for the result.
 
 Key notes:
 - Always provide a concise 3-5 word `description`.

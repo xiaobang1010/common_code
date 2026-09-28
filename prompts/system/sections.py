@@ -96,7 +96,29 @@ def build_subagent_guidance() -> str:
 
     if not listing:
         listing = [
-            {"type": "general-purpose", "when_to_use": "通用研究与多步骤任务"},
-            {"type": "Explore", "when_to_use": "只读探索，快速定位代码库信息"},
+            {
+                "type": "general-purpose",
+                "when_to_use": (
+                    "General-purpose agent for researching complex questions, "
+                    "searching for code, and executing multi-step tasks. "
+                    "When you are searching for a keyword or file and are not "
+                    "confident that you will find the right match in the "
+                    "first few tries use this agent to perform the search "
+                    "for you."
+                ),
+            },
+            {
+                "type": "Explore",
+                "when_to_use": (
+                    "Read-only search agent for broad fan-out searches - "
+                    "when answering means sweeping many files, directories, "
+                    "or naming conventions and need only the conclusion, "
+                    "not the file dumps. It reads excerpts rather than "
+                    "whole files, so it locates code; it doesn't review or "
+                    "audit it. Specify search breadth: \"medium\" for "
+                    "moderate exploration, \"very thorough\" for multiple "
+                    "locations and naming conventions."
+                ),
+            },
         ]
     return render_prompt("system/subagent-guidance.j2", agents=listing)

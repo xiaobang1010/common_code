@@ -3,7 +3,6 @@
 为子代理创建隔离的执行上下文：克隆文件状态缓存、隔离消息历史、
 共享模型客户端，设置 agent_id 和深度计数。
 
-设计参考 Claude Code 的 createSubagentContext：
 默认所有可变状态都隔离，仅显式 opt-in 共享特定回调。
 """
 
@@ -63,23 +62,86 @@ class SubagentContext:
 
 
 # ---------------------------------------------------------------------------
-# build_subagent_system_prompt — 系统提示词组装（含 AGENTS.md 注入）
+# build_subagent_system_prompt — 系统提示词组装（Notes / env / AGENTS.md 注入）
 # ---------------------------------------------------------------------------
 
 
-def build_subagent_system_prompt(agent_def: AgentDefinition) -> str:
-    """组装子代理系统提示词：定义提示词 + 工作区 AGENTS.md（按开关注入）。
+# 所有子代理共享的注意事项（内置与自定义 .md 代理统一生效）
+_SUBAGENT_NOTES = """\
+Notes:
+- Agent threads always have their cwd reset between bash calls, as a result please only use absolute file paths.
+- In your final response, share file paths (always absolute, never relative) that are relevant to the task. Include code snippets only when the exact text is load-bearing (e.g., a bug you found, a function signature the caller asked for) — do not recap code you merely read.
+- For clear communication with the user the assistant MUST avoid using emojis.
+- Do not use a colon before tool calls.
+- Do NOT Write report/summary/findings/analysis .md files. Return findings directly as your final assistant message — the parent agent reads your text output, not files you create."""
 
-    inject_agents_md 为 True 时读取工作区根目录的 AGENTS.md 追加为工作规范段；
-    读取失败或文件不存在时静默跳过，不阻断派生。
+
+def build_subagent_system_prompt(agent_def: AgentDefinition, model: str | None = None) -> str:
+    """组装子代理系统提示词：定义提示词 + 共享 Notes + 环境块 + AGENTS.md（按开关注入）。
+
+    拼接顺序静态在前、动态在后（代理提示词与 Notes 恒定，env 随工作区与模型变化），
+    利于请求侧前缀缓存；AGENTS.md 读取失败或文件不存在时静默跳过，不阻断派生。
     """
-    base = agent_def.resolve_system_prompt()
+    parts = [
+        agent_def.resolve_system_prompt().rstrip(),
+        _SUBAGENT_NOTES,
+        _build_env_block(model),
+    ]
+    base = "\n\n".join(p for p in parts if p)
     if not agent_def.inject_agents_md:
         return base
     agents_md = _read_workspace_agents_md()
     if not agents_md:
         return base
     return f"{base}\n\n# 工作区规范（AGENTS.md）\n\n{agents_md}"
+
+
+def _build_env_block(model: str | None) -> str:
+    """构造子代理环境信息块：工作区事实 + 模型名（动态段，位于提示词末段）。"""
+    import platform as _platform
+    from pathlib import Path
+
+    lines: list[str] = []
+    root = ""
+    try:
+        from server.paths import effective_root
+
+        root = effective_root()
+    except Exception:
+        pass  # 工作区指针未就绪等场景跳过路径事实
+    if root:
+        lines.append(f"Working directory: {root}")
+        git_dir = Path(root) / ".git"
+        is_repo = git_dir.exists()
+        lines.append(f"Is directory a git repo: {'Yes' if is_repo else 'No'}")
+        if is_repo:
+            branch = _read_git_branch(git_dir)
+            if branch:
+                lines.append(f"Git branch: {branch}")
+    lines.append(f"Platform: {_platform.system().lower()}")
+    lines.append(f"OS Version: {_platform.version()}")
+    lines.append("Shell: Git Bash")
+    block = "<env>\n" + "\n".join(lines) + "\n</env>"
+    if model:
+        block += f"\n\nYou are powered by the model named {model}."
+    return block
+
+
+def _read_git_branch(git_dir) -> str:
+    """从 .git/HEAD 解析当前分支名；worktree/分离头等形态失败返回空串。
+
+    直接读文件而非 subprocess，避免与 query.loop 的分支缓存互相导入。
+    """
+    from pathlib import Path
+
+    try:
+        head = (Path(git_dir) / "HEAD").read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+    if head.startswith("ref: refs/heads/"):
+        return head[len("ref: refs/heads/"):].strip()
+    # 分离头形态给短哈希前缀
+    return head[:12] if head else ""
 
 
 def _read_workspace_agents_md() -> str:

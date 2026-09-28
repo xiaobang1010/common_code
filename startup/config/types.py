@@ -94,7 +94,7 @@ class SubagentsConfig:
     # 触发模型轮询/自述等待/重复探索，回复密度被过程叙述稀释——默认放宽到 5 分钟
     auto_background_ms: int = 300000
     inactivity_timeout_ms: int = 300000
-    max_turns_default: int = 50
+    max_turns_default: int = 4
     token_budget_default: int = 0
     auto_resume_parent: bool = True
 
@@ -124,7 +124,7 @@ class SubagentsConfig:
             inactivity_timeout_ms=_non_negative_int(
                 data.get("inactivityTimeoutMs"), 300000
             ),
-            max_turns_default=_non_negative_int(data.get("maxTurnsDefault"), 50),
+            max_turns_default=_non_negative_int(data.get("maxTurnsDefault"), 4),
             token_budget_default=_non_negative_int(
                 data.get("tokenBudgetDefault"), 0
             ),
