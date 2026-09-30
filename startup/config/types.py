@@ -83,7 +83,7 @@ class SubagentsConfig:
         default_model: 所有子代理的默认模型（空串表示继承主循环模型）
         auto_background_ms: 前台子代理自动转后台阈值（毫秒，0=关闭）
         inactivity_timeout_ms: 活性看门狗超时（毫秒，0=关闭）
-        max_turns_default: profile 未指定轮次上限时的默认值
+        max_turns_default: profile 未指定轮次上限时的默认值（0=不限）
         token_budget_default: profile 未指定预算时的默认 token 预算（0=不限）
         auto_resume_parent: 子代理通知到达时是否自动唤起空闲的父会话
     """
@@ -94,7 +94,10 @@ class SubagentsConfig:
     # 触发模型轮询/自述等待/重复探索，回复密度被过程叙述稀释——默认放宽到 5 分钟
     auto_background_ms: int = 300000
     inactivity_timeout_ms: int = 300000
-    max_turns_default: int = 4
+    # 轮次是保险丝而非节流阀：探索型子代理一次任务常需十几到几十轮工具往返，
+    # 小额度会让子代理在写出总结前被掐断、父会话只收到截断占位消息；
+    # 兜住失控行为已有活性看门狗与 token 预算，默认不限轮次
+    max_turns_default: int = 0
     token_budget_default: int = 0
     auto_resume_parent: bool = True
 
@@ -124,7 +127,7 @@ class SubagentsConfig:
             inactivity_timeout_ms=_non_negative_int(
                 data.get("inactivityTimeoutMs"), 300000
             ),
-            max_turns_default=_non_negative_int(data.get("maxTurnsDefault"), 4),
+            max_turns_default=_non_negative_int(data.get("maxTurnsDefault"), 0),
             token_budget_default=_non_negative_int(
                 data.get("tokenBudgetDefault"), 0
             ),
