@@ -657,6 +657,26 @@ class SessionStore:
             finally:
                 conn.close()
 
+    def export_transcript(
+        self, session_id: str, messages: list[dict]
+    ) -> str:
+        """把会话全量消息导出为 JSONL 转录（压缩逃生门）。
+
+        与会话库同根（~/.agent/transcripts/<session_id>.jsonl），覆盖式全量
+        重写；供压缩续写消息引用，模型/用户可回查被边界移出活跃窗口的细节。
+
+        Returns:
+            转录文件路径字符串
+        """
+        transcript_dir = self.db_path.parent / "transcripts"
+        transcript_dir.mkdir(parents=True, exist_ok=True)
+        path = transcript_dir / f"{session_id}.jsonl"
+        with open(path, "w", encoding="utf-8") as f:
+            for msg in messages:
+                f.write(json.dumps(msg, ensure_ascii=False, default=str))
+                f.write("\n")
+        return str(path)
+
     # ------------------------------------------------------------------
     # 工作区 CRUD
     # ------------------------------------------------------------------

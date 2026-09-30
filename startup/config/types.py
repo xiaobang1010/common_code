@@ -153,7 +153,6 @@ class Settings:
     llm_base_url: str | None = None
     llm_api_key: str | None = None
     auto_compact: bool = True
-    context_collapse: bool = False
     verbose: bool = False
     theme: str = "dark"
     output_style: str = ""
@@ -177,8 +176,6 @@ class Settings:
             result["llm_api_key"] = self.llm_api_key
         if not self.auto_compact:
             result["auto_compact"] = self.auto_compact
-        if self.context_collapse:
-            result["context_collapse"] = self.context_collapse
         if self.verbose:
             result["verbose"] = self.verbose
         if self.theme != "dark":
@@ -211,7 +208,6 @@ class Settings:
             llm_base_url=data.get("llm_base_url"),
             llm_api_key=data.get("llm_api_key"),
             auto_compact=data.get("auto_compact", True),
-            context_collapse=data.get("context_collapse", False),
             verbose=data.get("verbose", False),
             theme=data.get("theme", "dark"),
             output_style=data.get("output_style", ""),

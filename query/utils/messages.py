@@ -72,6 +72,78 @@ def get_messages_after_compact_boundary(messages: list[dict]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# assistant 轮组分组与压缩 pivot
+# ---------------------------------------------------------------------------
+
+
+def group_rounds(messages: list[dict]) -> list[list[dict]]:
+    """按 assistant 轮次分组（压缩保留切点用）。
+
+    规则：每条 assistant 消息开启新组并归入其前 pending 的 user 消息为组首；
+    tool 消息跟随当前组；组前悬空 tool 结果自成一组；末尾无 assistant 的
+    user 消息自成一组。分组不剔除 skill 正文，由调用方决定取舍。
+    """
+    groups: list[list[dict]] = []
+    pending: list[dict] = []
+    for msg in messages:
+        role = msg.get("role", "")
+        if role == "assistant":
+            groups.append(pending + [msg])
+            pending = []
+        elif role == "tool":
+            if groups:
+                groups[-1].append(msg)
+            else:
+                groups.append([msg])
+        elif role == "user":
+            pending.append(msg)
+        else:
+            # 其他角色（system 边界等）不应进分组：原样挂 pending，
+            # 由调用方保证传入的列表已过滤
+            pending.append(msg)
+    if pending:
+        groups.append(pending)
+    return groups
+
+
+def compact_pivot_index(messages: list[dict], keep_groups: int) -> int:
+    """计算压缩 pivot（插入边界的全局下标）。
+
+    在活跃窗口（最后一个压缩边界起）内按 assistant 轮组分组，保留最近
+    keep_groups 组原文；pivot 落在首个保留组的第一条消息处，pivot 之前的
+    活跃消息进入被压缩区。keep_groups ≤ 0 时 pivot 落在活跃窗口首条
+    非 system 消息处（全量摘要，仅旧边界留在原位）。
+
+    Raises:
+        RuntimeError: 活跃窗口内无可压缩消息（保留组覆盖全部或历史过短）
+    """
+    boundary_idx = find_last_compact_boundary_index(messages)
+    active_offset = boundary_idx + 1  # 无 boundary 时为 0
+    active = messages[active_offset:]
+
+    # 活跃窗口内非 system 消息参与分组（旧摘要 role=user 正常入组）
+    non_system = [m for m in active if m.get("role") != "system"]
+    if not non_system:
+        raise RuntimeError("Not enough messages to compact.")
+
+    groups = group_rounds(non_system)
+    if keep_groups <= 0:
+        # 全量摘要：保留 0 组，被压缩区覆盖全部非 system 消息
+        first_kept_role_idx = len(active)
+    else:
+        keep_groups = min(keep_groups, len(groups))
+        if keep_groups >= len(groups):
+            raise RuntimeError("Not enough messages to compact.")
+        first_kept_msg = groups[-keep_groups][0]
+        # 按对象身份定位（内容相同的重复消息用相等比较会错指到最早一条）
+        first_kept_role_idx = next(
+            i for i, m in enumerate(active) if m is first_kept_msg
+        )
+
+    # pivot 必须落在非 system 消息处（插入点之前的消息保持原序）
+    return active_offset + first_kept_role_idx
+
+# ---------------------------------------------------------------------------
 # skill 正文消息识别
 # ---------------------------------------------------------------------------
 

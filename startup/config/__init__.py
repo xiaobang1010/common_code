@@ -52,15 +52,21 @@ class CustomLLMModel:
     """自定义 LLM 模型配置。"""
     model_id: str
     context_window: int = 200000
+    max_output_tokens: int = 32768
 
     def to_dict(self) -> dict[str, Any]:
-        return {"model_id": self.model_id, "context_window": self.context_window}
+        return {
+            "model_id": self.model_id,
+            "context_window": self.context_window,
+            "max_output_tokens": self.max_output_tokens,
+        }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CustomLLMModel:
         return cls(
             model_id=data.get("model_id", ""),
             context_window=data.get("context_window", 200000),
+            max_output_tokens=data.get("max_output_tokens", 32768),
         )
 
 
@@ -672,9 +678,6 @@ def _merge_settings(base: Settings, override: Settings) -> Settings:
         override.llm_api_key if override.llm_api_key is not None else base.llm_api_key
     )
     result.auto_compact = override.auto_compact if not base.auto_compact else override.auto_compact
-    result.context_collapse = (
-        override.context_collapse if override.context_collapse else base.context_collapse
-    )
     result.verbose = override.verbose if override.verbose else base.verbose
     result.theme = override.theme if override.theme != "dark" else base.theme
     result.output_style = override.output_style if override.output_style else base.output_style

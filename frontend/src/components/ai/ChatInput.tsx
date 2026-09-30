@@ -262,21 +262,35 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
     ? `${activeProviderInfo.name} / ${activeModel}`
     : '未配置模型'
 
-  // 上下文窗口大小：当前激活模型的 context_window，取不到（未配置/接口失败）回退 200000
-  const contextWindow = providers
-    .find(p => p.id === activeProvider)
-    ?.models.find(m => m.model_id === activeModel)?.context_window || 200000
-  // 上下文占比：当前 prompt tokens / 窗口大小，超过 80% 进度圈变红
-  const contextPercent = Math.min(100, (tokenUsage.last_prompt_tokens / contextWindow) * 100)
+  // 上下文窗口大小：优先后端统一口径的 window 字段（与压缩触发判定同源），
+  // 退回供应商配置，最后 200000 兜底
+  const metaWindow = typeof contextBreakdown?.window === 'number' ? contextBreakdown.window : 0
+  const contextWindow = metaWindow ||
+    providers
+      .find(p => p.id === activeProvider)
+      ?.models.find(m => m.model_id === activeModel)?.context_window || 200000
+  // 窗口来源为回退默认时给面板加告警角标
+  const windowFallback = contextBreakdown?.window_source === 'fallback'
+  // 已用：后端统一计数（真实 usage 基线+增量），缺失时回退最近一次真实 prompt tokens
+  const contextUsed = typeof contextBreakdown?.used === 'number' && contextBreakdown.used > 0
+    ? contextBreakdown.used
+    : tokenUsage.last_prompt_tokens
+  // 上下文占比：已用 / 窗口，超过 80% 进度圈变红
+  const contextPercent = Math.min(100, (contextUsed / contextWindow) * 100)
 
   // ---- 「上下文容量」面板数据推导 ----
-  // 分类行：去掉 total、按 token 降序，占比为 0 的分类不显示
-  const breakdownRows = contextBreakdown
-    ? Object.entries(contextBreakdown)
-        .filter(([key, v]) => key !== 'total' && v > 0)
+  // 分类行：去掉 total 与窗口元字段、按 token 降序，占比为 0 的分类不显示
+  const BREAKDOWN_META_KEYS = ['total', 'used', 'window', 'window_source', 'auto_compact_threshold']
+  const breakdownRows: Array<[string, number]> = contextBreakdown
+    ? (Object.entries(contextBreakdown)
+        .filter(([key, v]) => !BREAKDOWN_META_KEYS.includes(key) && typeof v === 'number' && v > 0) as Array<[string, number]>)
         .sort((a, b) => b[1] - a[1])
     : []
-  const breakdownTotal = contextBreakdown?.total || 0
+  const breakdownTotal = typeof contextBreakdown?.total === 'number' ? contextBreakdown.total : 0
+  const compactThreshold =
+    typeof contextBreakdown?.auto_compact_threshold === 'number'
+      ? contextBreakdown.auto_compact_threshold
+      : 0
   // 平均缓存命中率 = 累计缓存命中 / 累计实际发送的输入总量（协议无关口径）。
   // 分母由后端按协议折算：OpenAI 兼容的 prompt_tokens 已含缓存、Anthropic 的不含，
   // 若前端自行相加会把 OpenAI 兼容的分母算成两倍、命中率显示成真实值的一半
@@ -775,7 +789,15 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
                       上下文容量
                     </span>
                     <span style={{ color: 'var(--text-secondary)', fontSize: '12px', fontFamily: 'var(--font-mono)' }}>
-                      {formatWan(tokenUsage.last_prompt_tokens)} / {formatWan(contextWindow)}（{contextPercent.toFixed(1)}%）
+                      {formatWan(contextUsed)} / {formatWan(contextWindow)}（{contextPercent.toFixed(1)}%）
+                      {windowFallback && (
+                        <span
+                          title="该模型未在内置表或供应商配置中命中窗口定义，按 200k 回退计算"
+                          style={{ marginLeft: '6px', color: 'var(--warning)' }}
+                        >
+                          窗口回退
+                        </span>
+                      )}
                     </span>
                   </div>
                   {/* 横向进度条（>80% 变红） */}
@@ -818,6 +840,28 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
                   ) : (
                     <div style={{ color: 'var(--text-tertiary)', fontSize: '12px', padding: '4px 0' }}>
                       暂无分类数据，发起一轮对话后显示
+                    </div>
+                  )}
+                  {/* 自动压缩水位：与内部触发判定同源的阈值（超出即自动压缩上下文） */}
+                  {compactThreshold > 0 && (
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '4px 0',
+                      }}
+                    >
+                      <span style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>自动压缩水位</span>
+                      <span
+                        style={{
+                          color: contextUsed >= compactThreshold ? 'var(--error)' : 'var(--text-primary)',
+                          fontSize: '12px',
+                          fontFamily: 'var(--font-mono)',
+                        }}
+                      >
+                        {formatWan(compactThreshold)}
+                      </span>
                     </div>
                   )}
                   {/* 平均缓存命中率 */}

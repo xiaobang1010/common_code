@@ -36,20 +36,26 @@ def _tool(name: str) -> SimpleNamespace:
 
 
 def test_categories_sum_to_total():
-    """各分类之和等于 total，分类值均为正。"""
+    """各分类之和等于 total，分类值均为正；used 元字段与统一计数同源。"""
+    history = [{"role": "user", "content": "H" * 40}]
     breakdown = build_context_breakdown(
         sections=[
             _section("static_sections", "S" * 80, "static"),
             _section("skill_guidance", "K" * 40),
         ],
         tools=[_tool("Read"), _tool("mcp__demo__echo")],
-        history_messages=[{"role": "user", "content": "H" * 40}],
+        history_messages=history,
         skill_listing_text="L" * 40,
         recall_text="R" * 40,
     )
-    cats = {k: v for k, v in breakdown.items() if k != "total"}
+    # 窗口/水位/已用为元字段，不参与分类构成求和
+    meta_keys = {"total", "used", "window", "window_source", "auto_compact_threshold"}
+    cats = {k: v for k, v in breakdown.items() if k not in meta_keys}
     assert sum(cats.values()) == breakdown["total"]
     assert all(v > 0 for v in cats.values())
+    # used：与压缩触发判定同源的统一上下文计数
+    from query.utils.tokens import count_context_tokens
+    assert breakdown["used"] == count_context_tokens(history)
 
 
 def test_mcp_prefix_and_skills_grouping():

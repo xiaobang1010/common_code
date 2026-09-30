@@ -77,6 +77,8 @@ async def cmd_compact(context: CommandContext) -> str:
     # 如果有压缩函数，使用它
     if context.compact_fn is not None:
         try:
+            from query.utils.tokens import count_context_tokens
+
             model = "gpt-4o"
             if context.config is not None:
                 model = context.config.model
@@ -85,14 +87,23 @@ async def cmd_compact(context: CommandContext) -> str:
                 if state.model:
                     model = state.model
 
+            tokens_before = count_context_tokens(list(context.messages))
+            # 手动压缩保留 0 组（全量摘要）；/compact 后的参数作为摘要聚焦指令
             compacted = await context.compact_fn(
                 messages=context.messages,
                 model=model,
+                keep_groups=0,
+                custom_instructions=(context.args or "").strip() or None,
             )
             if compacted is not None:
                 context.messages.clear()
                 context.messages.extend(compacted)
-                return "Conversation compacted."
+                tokens_after = count_context_tokens(compacted)
+                # 前缀必须保持 "Conversation compacted"（HTTP 侧按前缀决定落库）
+                return (
+                    f"Conversation compacted. "
+                    f"context: {tokens_before} -> {tokens_after} tokens"
+                )
             else:
                 return "Compaction returned no result."
         except Exception as e:

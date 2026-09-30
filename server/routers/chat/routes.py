@@ -104,6 +104,9 @@ def serialize_event(event: Any) -> dict:
         # 上下文分类估算（event_type="context_breakdown"），前端面板实时刷新用
         if event.breakdown is not None:
             result["breakdown"] = event.breakdown
+        # 压缩事件载荷（compact_started/completed/failed），前端分隔线/提示用
+        if event.compact_info is not None:
+            result["compact_info"] = event.compact_info
         if event.error is not None:
             result["error"] = str(event.error)
         if event.finish_reason is not None:
@@ -169,6 +172,9 @@ def _visible_user_indexes(messages: list[dict]) -> list[int]:
     indexes: list[int] = []
     for i, msg in enumerate(messages):
         if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        # 压缩摘要消息对模型可见、对用户隐藏，不计入可见序号（与前端判定一致）
+        if msg.get("_compact_summary"):
             continue
         content = msg.get("content", "")
         if not isinstance(content, str):
@@ -353,6 +359,14 @@ def _start_run(
                 # 的 user_ts（与前端重建块的 startTime 同源，才能精确相等比对）
                 sanitized_messages = sanitize_dangling_tool_calls(task_engine.mutable_messages)
                 session_store.save_messages(run_session_id, sanitized_messages)
+                # 压缩逃生门：全量转录与会话库同根落盘（覆盖式），续写消息引用该路径
+                try:
+                    session_store.export_transcript(run_session_id, sanitized_messages)
+                except Exception:
+                    logging.getLogger(__name__).warning(
+                        "会话 %s 转录导出失败（压缩逃生门暂不可用，不影响对话）",
+                        run_session_id, exc_info=True,
+                    )
                 final_session = session_store.get_session(run_session_id)
                 if final_session and not final_session.title:
                     for msg in task_engine.mutable_messages:
@@ -393,7 +407,11 @@ def _start_run(
                     turn_meta["error"] = "回合未产出结果即结束"
                 session_store.set_session_last_turn(run_session_id, turn_meta)
             except Exception:
-                pass
+                # 落库失败不再静默：上下文可能回退旧快照，必须留痕可查
+                logging.getLogger(__name__).warning(
+                    "会话 %s 收尾落库失败，下一轮可能基于旧历史重建上下文",
+                    run_session_id, exc_info=True,
+                )
             # 回写查看视图：查看会话未被切换（含切走又切回）时同步视图，
             # 否则用户看到进展回退、下一轮快照会用旧视图覆盖任务产出
             if server.state.engine_session_id == view_session_at_start:
