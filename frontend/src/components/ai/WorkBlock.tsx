@@ -376,6 +376,35 @@ const ReasoningRow = memo(function ReasoningRow({ item }: { item: TimelineItem }
 // 正文行：过渡叙述与最终回复同为一等事件，统一走 Markdown（streamdown）渲染。
 // 流式中（open）由 streamdown 修复未闭合语法并显示跟随末行的光标，完成后自然定格，
 // 无渲染管线切换
+// 上下文压缩分隔线：三态文案（进行中 / 完成带前后规模 / 失败带原因）
+const CompactDivider = memo(function CompactDivider({ item }: { item: TimelineItem }) {
+  const status = item.compactStatus || 'done'
+  let label = '上下文已压缩'
+  if (status === 'running') label = '正在压缩上下文…'
+  else if (status === 'failed') label = `上下文压缩失败：${item.compactReason || '未知原因'}`
+  else if (typeof item.tokensBefore === 'number') {
+    // 完成态展示压缩前规模（历史重建只带 pre-compact tokens）
+    label = `上下文已压缩（压缩前约 ${(item.tokensBefore / 1000).toFixed(0)}k tokens）`
+  }
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        padding: '6px 0',
+        fontSize: '11px',
+        fontFamily: 'var(--font-ui)',
+        color: status === 'failed' ? 'var(--danger, var(--text-secondary))' : 'var(--text-tertiary)',
+      }}
+    >
+      <span style={{ flex: 1, borderTop: '1px solid var(--border-color, rgba(128,128,128,0.25))' }} />
+      <span style={{ whiteSpace: 'nowrap' }}>{status === 'running' ? '⏳ ' : '▤ '}{label}</span>
+      <span style={{ flex: 1, borderTop: '1px solid var(--border-color, rgba(128,128,128,0.25))' }} />
+    </div>
+  )
+})
+
 const TextItemView = memo(function TextItemView({ item }: { item: TimelineItem }) {
   const streaming = !!item.open
 
@@ -435,6 +464,10 @@ const StatusLine = memo(function StatusLine({ block, expanded, onToggle }: {
     if (idleMs > 10000) return '模型响应较慢，可继续浏览其他区域'
     const runningStep = block.timeline.find(s => s.isRunning)
     if (runningStep) return `正在执行工具 ${runningStep.toolName}`
+    // 压缩进行中：时间线上存在 running 分隔线即透出（覆盖模型请求前的摘要耗时）
+    if (block.timeline.some(s => s.type === 'compact' && s.compactStatus === 'running')) {
+      return '正在压缩上下文'
+    }
     const lastItem = block.timeline[block.timeline.length - 1]
     if (lastItem?.type === 'text' && lastItem.open) return '正在生成回复'
     // 逐次重试反馈：两条协议路径的重试 phase 事件都带「正在重试 n/total」，原样透出
@@ -539,7 +572,8 @@ function WorkBlockView({ blockId }: Props) {
   if (!block) return null
 
   const hasItems = block.timeline.length > 0
-  const hasProcessRows = block.timeline.some(s => s.type !== 'text')
+  // 过程行判定排除 text 与 compact 分隔线：纯压缩块不应因分隔线误触发折叠条
+  const hasProcessRows = block.timeline.some(s => s.type !== 'text' && s.type !== 'compact')
   // 流程区显示规则：有时间线始终显示；无内容运行中显示等待占位；
   // 无内容异常结束保留状态行（行尾灰字承载异常）；其余组合让位给空
   const showFlow = hasItems
@@ -550,7 +584,7 @@ function WorkBlockView({ blockId }: Props) {
   // 不做「最近 N 条 + 折叠组」的窗口化；结束后整体交由 expanded 折叠为「已处理 N 步」。
   // show_widget 是交付内容而非过程行：恒可见、不计入步数（与正文同级按时序渲染）
   const processIdx = block.timeline
-    .map((it, i) => (it.type === 'text' || it.toolName === 'show_widget' ? -1 : i))
+    .map((it, i) => (it.type === 'text' || it.type === 'compact' || it.toolName === 'show_widget' ? -1 : i))
     .filter(i => i >= 0)
 
   // 异常结束原因行：过程行可见时在时间线首行显示；若块没有任何过程行，
@@ -573,6 +607,11 @@ function WorkBlockView({ blockId }: Props) {
           <WidgetStep step={item} />
         </div>,
       )
+      return
+    }
+    // 上下文压缩分隔线：进行中/完成/失败三态，独立于折叠条恒可见
+    if (item.type === 'compact') {
+      timelineNodes.push(<CompactDivider key={item.id} item={item} />)
       return
     }
     if (!expanded) {

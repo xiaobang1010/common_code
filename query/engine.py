@@ -285,6 +285,10 @@ class QueryEngine:
         self._session_id: str = session_id or config.deps.get_uuid()
         # 会话级 ALWAYS_ALLOW 集合：用户选过 always_allow 的工具后续直接放行
         self._always_allowed: set[str] = set()
+        # 会话级压缩追踪：冷却基线与计数快照跨回合保留；
+        # 新用户回合仅重置连败与快速再满计数（submitMessage 内执行）
+        from query.services.compact.auto_compact import CompactTracking
+        self._compact_tracking: CompactTracking = CompactTracking()
 
     @property
     def mutable_messages(self) -> list[dict]:
@@ -315,6 +319,11 @@ class QueryEngine:
     def always_allowed(self) -> set[str]:
         """会话级 ALWAYS_ALLOW 工具集合，跨轮持久化。"""
         return self._always_allowed
+
+    @property
+    def compact_tracking(self):
+        """会话级压缩追踪状态：跨回合保留冷却基线与计数快照。"""
+        return self._compact_tracking
 
     @property
     def config(self) -> QueryEngineConfig:
@@ -389,6 +398,12 @@ class QueryEngine:
 
         # 把 user 消息加到 mutable_messages
         self._mutable_messages.append({"role": "user", "content": prompt, "_ts": time.time() * 1000})
+
+        # 新用户回合：重置压缩连败与快速再满计数；
+        # 冷却基线（last_compact_time）与上次压缩计数快照保留，跨回合生效
+        self._compact_tracking.consecutive_failures = 0
+        if hasattr(self._compact_tracking, "refill_within_rounds"):
+            self._compact_tracking.refill_within_rounds = 0
 
         # 构建循环级快照（session_id 整个会话不变）
         query_config = build_query_config(session_id=self._session_id)

@@ -13,8 +13,9 @@ import { openFilesInPanel } from './panelBridge'
 // 时间线事件：任务轨迹的三类一等事件，按 SSE 到达的真实时序入列
 export interface TimelineItem {
   id: string
-  // text = 正文（过渡叙述与最终回复）；reasoning = 思维链；tool = 工具调用
-  type: 'text' | 'reasoning' | 'tool'
+  // text = 正文（过渡叙述与最终回复）；reasoning = 思维链；tool = 工具调用；
+  // compact = 上下文压缩分隔线（进行中/完成/失败）
+  type: 'text' | 'reasoning' | 'tool' | 'compact'
   // text 正文 / reasoning 思维链全文
   content?: string
   // text/reasoning 是否仍在流式追加（open）；类型切换或回合结束时关闭
@@ -24,6 +25,14 @@ export interface TimelineItem {
   args?: string
   result?: string
   isRunning?: boolean
+  // ---- 以下仅 compact 项 ----
+  // 压缩状态：running（进行中）/ done（完成）/ failed（失败）
+  compactStatus?: 'running' | 'done' | 'failed'
+  // 压缩前后统一计数 token 数（done 时展示）
+  tokensBefore?: number
+  tokensAfter?: number
+  // 失败时的可操作文案
+  compactReason?: string
   // ---- reasoning/tool 计时（ms，事件到达时刻），供「思考 · X秒」显示 ----
   startTime?: number
   endTime?: number
@@ -63,8 +72,9 @@ export interface TokenUsage {
 
 // 上下文分类 token 估算：{分类名: token 数, total: 总数}，
 // 分类名为 system_tools / mcp_tools / skills / system_prompt / messages / other，
-// 由后端 context_metrics 生成，占比为 0 的分类不出现
-export type ContextBreakdown = Record<string, number>
+// 由后端 context_metrics 生成，占比为 0 的分类不出现。
+// model 非空时另带窗口元信息：window / window_source(字符串) / auto_compact_threshold。
+export type ContextBreakdown = Record<string, number | string>
 
 // 权限请求
 export interface PermissionRequest {
@@ -97,7 +107,14 @@ interface SSEEvent {
     completion_tokens: number
   }
   // 上下文分类估算（event_type === 'context_breakdown' 时）
-  breakdown?: Record<string, number>
+  breakdown?: Record<string, number | string>
+  // 压缩事件载荷（event_type === 'compact_*' 时）
+  compact_info?: {
+    status: string
+    tokens_before: number
+    tokens_after: number
+    reason: string
+  }
   error?: string
   finish_reason?: string
   tool_call_id?: string
@@ -114,6 +131,8 @@ interface SSEEvent {
     // present_files 交付事件（role === 'present_files'）
     files?: string[]
     explanation?: string
+    // 压缩摘要标记（role === 'user' 且携带）：前端隐藏不入时间线
+    _compact_summary?: boolean
   }
   request_id?: string
   tool_name?: string
@@ -332,6 +351,66 @@ export const useChatStore = create<ChatState>((set, get) => {
       } else if (evt.event_type === 'phase' && evt.content) {
         // 后端阶段事件：只存最近一次，文案由 WorkBlock 按优先级推导
         updateBlock(blockId, b => ({ ...b, phase: evt.content }))
+      } else if (evt.event_type === 'compact_started') {
+        // 压缩进行中：关闭 open 项后插入 running 分隔线（正文/工具不再交错进压缩条目）
+        updateBlock(blockId, b => {
+          const base = closeOpenIn(b)
+          return {
+            ...base,
+            timeline: [
+              ...base.timeline,
+              { id: genId(), type: 'compact', compactStatus: 'running' },
+            ],
+          }
+        })
+      } else if (evt.event_type === 'compact_completed') {
+        // 压缩完成：把最近的 running 分隔线置为 done 并写入前后计数
+        updateBlock(blockId, b => {
+          const info = evt.compact_info
+          const idx = [...b.timeline].reverse().findIndex(s => s.type === 'compact' && s.compactStatus === 'running')
+          if (idx === -1) {
+            // 无进行中条目（如刷新错过 started）：直接补一条 done
+            return {
+              ...b,
+              timeline: [
+                ...b.timeline,
+                {
+                  id: genId(), type: 'compact', compactStatus: 'done',
+                  tokensBefore: info?.tokens_before, tokensAfter: info?.tokens_after,
+                },
+              ],
+            }
+          }
+          const realIdx = b.timeline.length - 1 - idx
+          const updated = [...b.timeline]
+          updated[realIdx] = {
+            ...updated[realIdx],
+            compactStatus: 'done',
+            tokensBefore: info?.tokens_before,
+            tokensAfter: info?.tokens_after,
+          }
+          return { ...b, timeline: updated }
+        })
+      } else if (evt.event_type === 'compact_failed') {
+        // 压缩失败：running 分隔线置 failed 并带可操作文案
+        updateBlock(blockId, b => {
+          const info = evt.compact_info
+          const idx = [...b.timeline].reverse().findIndex(s => s.type === 'compact' && s.compactStatus === 'running')
+          const reason = info?.reason || evt.content || '上下文压缩失败'
+          if (idx === -1) {
+            return {
+              ...b,
+              timeline: [
+                ...b.timeline,
+                { id: genId(), type: 'compact', compactStatus: 'failed', compactReason: reason },
+              ],
+            }
+          }
+          const realIdx = b.timeline.length - 1 - idx
+          const updated = [...b.timeline]
+          updated[realIdx] = { ...updated[realIdx], compactStatus: 'failed', compactReason: reason }
+          return { ...b, timeline: updated }
+        })
       } else if (evt.event_type === 'error') {
         // 错误保留 tool 项形态：异常展开区首行的原因提取依赖 toolName==='error'
         updateBlock(blockId, b => {
@@ -864,6 +943,28 @@ export const useChatStore = create<ChatState>((set, get) => {
     for (const raw of rawMessages) {
       const role = raw.role as string
       const content = (raw.content as string) || ''
+
+      // 压缩边界（role=system，[Compact Boundary …]）→ 重建分隔线，
+      // 解析 pre-compact tokens 展示压缩前规模
+      if (role === 'system' && content.startsWith('[Compact Boundary')) {
+        if (currentBlock) {
+          const m = /pre-compact tokens:\s*(\d+)/.exec(content)
+          currentBlock.timeline.push({
+            id: genId(),
+            type: 'compact',
+            compactStatus: 'done',
+            tokensBefore: m ? Number(m[1]) : undefined,
+            startTime: tsOf(raw),
+            endTime: tsOf(raw),
+          })
+          currentBlock.endTime = tsOf(raw)
+        }
+        continue
+      }
+      // 压缩摘要消息（role=user 带 _compact_summary）→ 对模型可见、对前端隐藏
+      if (role === 'user' && raw._compact_summary === true) {
+        continue
+      }
 
       if (role === 'user') {
         const parsed = parseUserMessage(content)

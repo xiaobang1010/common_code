@@ -28,6 +28,7 @@ from query.stop_hooks import run_stop_hooks
 from query.services.api.errors import APIError, classify_error, is_recoverable_error
 from query.services.api.llm import StreamEvent, collect_tool_calls
 from query.services.compact.auto_compact import CompactTracking
+from query.utils.messages import get_messages_after_compact_boundary
 from tools.executor import (
     StreamingToolExecutor,
     ToolExecutionResult,
@@ -250,12 +251,17 @@ def _build_assistant_message(
     reasoning_parts: list[str] | None = None,
     reasoning_first_ts: float | None = None,
     reasoning_last_ts: float | None = None,
+    context_usage: int | None = None,
 ) -> dict:
     """从流式事件中收集的内容和工具调用构建 assistant 消息。"""
     content = "".join(content_parts) if content_parts else ""
     msg: dict[str, Any] = {"role": "assistant", "content": content, "_ts": time.time() * 1000}
     if tool_calls:
         msg["tool_calls"] = tool_calls
+    # 上下文计数基线：本次请求的真实总输入（含缓存读写），
+    # 供 count_context_tokens 反向扫描取基线；发给模型前随下划线字段一并剥离
+    if context_usage:
+        msg["_context_usage"] = int(context_usage)
     # 思维链：有思考输出时写入下划线内部字段（与 _ts 同约定，发给模型前会被剥离，
     # 随会话整表 JSON 落库），供前端历史恢复重建「思考 · X秒」行
     reasoning = "".join(reasoning_parts) if reasoning_parts else ""
@@ -293,89 +299,92 @@ async def _mine_conversation_to_palace(engine: QueryEngine) -> None:
 
 
 # ---------------------------------------------------------------------------
-# _run_inline_compression — 内联四级压缩管线
+# _run_inline_compression — 内联两级压缩管线
 # ---------------------------------------------------------------------------
+
+
+def _compact_transcript_path(engine: Any, tool_use_context: Any) -> str:
+    """解析压缩续写消息引用的转录逃生门路径。
+
+    子代理回合复用其既有 sidechain 转录（~/.agent/subagents/<agent_id>/transcript.jsonl，
+    只引用不新建）；主会话指向回合收尾导出的会话转录
+    （~/.agent/transcripts/<session_id>.jsonl）。
+    """
+    from pathlib import Path
+
+    home = Path(os.path.expanduser("~"))
+    if tool_use_context is not None and getattr(tool_use_context, "tool_use_id", ""):
+        return str(
+            home / ".agent" / "subagents" / tool_use_context.tool_use_id / "transcript.jsonl"
+        )
+    return str(home / ".agent" / "transcripts" / f"{engine.session_id}.jsonl")
 
 
 async def _run_inline_compression(
     messages: list[dict],
     model: str,
     tracking: CompactTracking,
-    context_collapse_enabled: bool,
     deps: Any,
-) -> list[dict]:
-    """内联四级压缩管线。
+    transcript_path: str | None = None,
+) -> Any:
+    """内联两级压缩管线（microcompact → autocompact），异步生成器。
 
-    顺序：snip → microcompact → context_collapse → autocompact。
-    snip 和 microcompact 无条件执行（不互斥），
-    autocompact 内部自判阈值，管线层面不做提前返回
-    （原来 run_compression_pipeline 每级之间的 safe_threshold 提前返回已移除）。
-
-    token 估算：粗略方式（字符数 ÷ 4），后续可替换为 tiktoken 等精确估算。
+    yield 两种对象：StreamEvent（压缩进行中/完成/失败事件，供上层转发前端）
+    与最终消息列表（最后一个产出）。snip 与 context_collapse 实验层已下线；
+    autocompact 内部自判阈值，管线层面不做提前返回。
 
     Args:
-        messages: 消息列表
+        messages: 消息列表（全量历史）
         model: 模型名称
-        tracking: 压缩追踪状态
-        context_collapse_enabled: 是否启用 context collapse
+        tracking: 压缩追踪状态（会话级）
         deps: I/O 依赖（取 microcompact、autocompact）
-
-    Returns:
-        压缩后的消息列表
+        transcript_path: 压缩续写消息引用的转录逃生门路径
     """
-    import os
-
-    from query.services.compact.snip import (
-        _estimate_tokens_for_messages as _est_tokens,
-        should_snip,
-        snip_messages,
+    from query.services.api.llm import StreamEvent as _SE
+    from query.services.compact.auto_compact import (
+        STATUS_COMPACTED,
+        STATUS_FAILED,
+        STATUS_BREAKER,
+        STATUS_SKIPPED_RAPID_REFILL,
+        should_auto_compact,
     )
     from query.services.compact.micro_compact import should_micro_compact
-    from query.services.compact.context_collapse import (
-        context_collapse_messages,
-        should_context_collapse,
-    )
-    from startup.model.config import get_effective_context_window
-    from query.utils.messages import get_messages_after_compact_boundary
 
-    # token 估算基于切片后的活跃窗口（最后一个 boundary 之后的消息），
-    # 而非完整历史。REPL 传入的 messages 可能含已被压缩的旧消息，
-    # 那些不会发给 LLM，不应计入 token 估算。
-    context_window = get_effective_context_window(model)
-    active_messages = get_messages_after_compact_boundary(messages)
-    current_tokens = _est_tokens(active_messages)
+    # 1b. Microcompact（闲置/水位触发）
+    if should_micro_compact(messages, model):
+        messages = deps.microcompact(messages=messages, model=model)
 
-    # 1a. Snip（受 COMMON_CODE_ENABLE_SNIP 环境变量门控）
-    snip_enabled = os.environ.get("COMMON_CODE_ENABLE_SNIP", "").lower() in (
-        "1", "true", "yes", "on",
-    )
-    if snip_enabled and should_snip(messages, context_window, current_tokens):
-        messages, _snip_tokens_freed = snip_messages(
-            messages, context_window, current_tokens,
-        )
-        current_tokens = _est_tokens(messages)
-
-    # 1b. Microcompact（无条件执行，snip 和 microcompact 不互斥）
-    if should_micro_compact(messages):
-        messages = deps.microcompact(messages=messages)
-
-    # 1c. Context Collapse（受 context_collapse_enabled 门控）
-    if context_collapse_enabled and should_context_collapse(
-        messages, context_window, current_tokens,
-    ):
-        messages = await context_collapse_messages(
-            messages, model, context_window,
-        )
-
-    # 1d. Autocompact（内部自判阈值，不在管线层面做提前返回）
-    messages, _was_compacted = await deps.autocompact(
+    # 1d. Autocompact：先经判定门，放行时先行进行中标记再执行（LLM 调用耗时可见）
+    if should_auto_compact(messages, model, tracking):
+        yield _SE(type="compact_started", content="auto")
+    messages, result = await deps.autocompact(
         messages=messages,
         model=model,
         tracking=tracking,
-        context_collapse_enabled=context_collapse_enabled,
+        transcript_path=transcript_path,
     )
-
-    return messages
+    if result is not None:
+        info = {
+            "status": result.status,
+            "tokens_before": result.tokens_before,
+            "tokens_after": result.tokens_after,
+            "reason": result.reason,
+        }
+        if result.status == STATUS_COMPACTED:
+            yield _SE(
+                type="compact_completed",
+                content=f"{result.tokens_before} -> {result.tokens_after}",
+                compact_info=info,
+            )
+        elif result.status in (
+            STATUS_FAILED, STATUS_BREAKER, STATUS_SKIPPED_RAPID_REFILL
+        ):
+            yield _SE(
+                type="compact_failed",
+                content=result.reason or result.status,
+                compact_info=info,
+            )
+    yield messages
 
 
 # ---------------------------------------------------------------------------
@@ -466,8 +475,11 @@ async def query_loop(
     deps = engine.deps
     engine_config = engine.config
 
-    # 初始化压缩追踪
-    tracking: CompactTracking = CompactTracking()
+    # 压缩追踪：会话级状态（挂 engine），跨回合保留冷却基线与计数快照
+    tracking: CompactTracking = engine.compact_tracking
+
+    # 压缩逃生门转录路径（主会话 transcripts / 子代理 sidechain）
+    transcript_path = _compact_transcript_path(engine, tool_use_context)
 
     # 循环内临时状态
     state = State()
@@ -547,26 +559,30 @@ async def query_loop(
                 yield LoopResult(reason="completed")
                 return
 
-        # ---- 1. 压缩管线（内联四级）----
+        # ---- 1. 压缩管线（内联两级）----
         if config.auto_compact_enabled and messages:
             try:
-                compacted = await _run_inline_compression(
+                compacted: list[dict] | None = None
+                async for item in _run_inline_compression(
                     messages=messages,
                     model=engine_config.model,
                     tracking=tracking,
-                    context_collapse_enabled=config.context_collapse_enabled,
                     deps=deps,
-                )
+                    transcript_path=transcript_path,
+                ):
+                    if isinstance(item, StreamEvent):
+                        yield item
+                    else:
+                        compacted = item
                 if compacted is not None and compacted != messages:
-                    # 先 yield 压缩产物（boundary marker + summary + kept messages），
-                    # 让 REPL 据此更新自己的完整历史。
-                    for msg in compacted:
-                        yield msg
-                    # 压缩后替换引擎消息
+                    # 全量回写引擎；插入语义下新边界+摘要只在压缩发生时增量下发，
+                    # 微压缩的原位替换不产消息（避免把旧边界/摘要重复推给订阅者）
+                    was_inserted = len(compacted) > len(messages)
                     engine.mutable_messages = compacted
                     messages = compacted
-                    # 重置追踪
-                    tracking = CompactTracking()
+                    if was_inserted:
+                        for msg in get_messages_after_compact_boundary(compacted)[:2]:
+                            yield msg
             except Exception:
                 # 压缩失败不中断循环
                 pass
@@ -634,7 +650,10 @@ async def query_loop(
         # 用户上下文仅临时拼入 api_messages，不污染 messages（messages 会被写回引擎）。
         # 落点用稳定规则（最后一条 user 之前 / 工具续写轮末尾），不再头部插入，
         # 保证自动前缀缓存供应商的历史前缀不被每轮变化的内容击穿
-        api_messages = messages
+        # 发给模型的只有活跃窗口（最后一个压缩边界起）：插入语义下 messages
+        # 是全量历史（含边界前的旧消息与旧摘要），旧消息不应进入请求；
+        # 全量列表留在引擎侧供落库与界面回放
+        api_messages = get_messages_after_compact_boundary(messages)
         recall_text: str | None = None
         if mid_context:
             api_messages = inject_context_before_last_user(api_messages, mid_context)
@@ -683,9 +702,12 @@ async def query_loop(
                 breakdown=build_context_breakdown(
                     sections=sections,
                     tools=engine_config.tools,
-                    history_messages=messages,
+                    # 与请求同口径：只统计活跃窗口（最后一个压缩边界起）
+                    history_messages=get_messages_after_compact_boundary(messages),
                     skill_listing_text=skill_listing_text,
                     recall_text=recall_text,
+                    # 面板"已用/窗口/压缩水位"与触发判定同源（含窗口来源）
+                    model=engine_config.model,
                 ),
             )
         except Exception:
@@ -838,7 +860,10 @@ async def query_loop(
 
         # 构建 assistant 消息
         assistant_msg = _build_assistant_message(
-            content_parts, tool_calls, reasoning_parts, reasoning_first_ts, reasoning_last_ts
+            content_parts, tool_calls, reasoning_parts, reasoning_first_ts, reasoning_last_ts,
+            context_usage=(
+                usage_info.get("total_input_tokens") or usage_info.get("prompt_tokens")
+            ) if usage_info else None,
         )
 
         # ---- 7. 错误恢复 ----
@@ -850,16 +875,26 @@ async def query_loop(
                 # 尝试压缩恢复
                 if not state.has_attempted_reactive_compact and config.auto_compact_enabled:
                     try:
-                        compacted = await _run_inline_compression(
+                        compacted: list[dict] | None = None
+                        async for item in _run_inline_compression(
                             messages=messages,
                             model=engine_config.model,
                             tracking=tracking,
-                            context_collapse_enabled=config.context_collapse_enabled,
                             deps=deps,
-                        )
+                            transcript_path=transcript_path,
+                        ):
+                            if isinstance(item, StreamEvent):
+                                yield item
+                            else:
+                                compacted = item
                         if compacted is not None and compacted != messages:
+                            was_inserted = len(compacted) > len(messages)
                             engine.mutable_messages = compacted
                             messages = compacted
+                            if was_inserted:
+                                # 插入的新边界+摘要增量下发（与主压缩路径同规则）
+                                for msg in get_messages_after_compact_boundary(compacted)[:2]:
+                                    yield msg
                             # 取消流式工具执行器（LLM 没产出有效响应，工具结果不应保留）
                             tool_executor.cancel()
                             updates = {

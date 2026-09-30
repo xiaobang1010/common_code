@@ -41,6 +41,9 @@ class StreamEvent:
             - "tool_call_delta": 工具调用增量
             - "usage": token 使用量
             - "context_breakdown": 上下文分类 token 估算（query_loop 发出）
+            - "compact_started": 自动压缩进行中（管线放行后、LLM 摘要前发出）
+            - "compact_completed": 压缩完成（compact_info 带前后统一计数）
+            - "compact_failed": 压缩失败/熔断（compact_info 带 reason，可操作文案）
             - "error": 错误
             - "done": 流结束
         content: 文本内容（type="content" 或 type="reasoning" 时）
@@ -51,8 +54,11 @@ class StreamEvent:
         error: 错误对象
         finish_reason: 结束原因（type="done" 时）
         breakdown: 上下文分类估算（type="context_breakdown" 时），
-            结构为 {分类名: token 数, "total": 总数}，
+            结构为 {分类名: token 数, "total": 各分类之和}，
             生成逻辑见 query/services/context_metrics.py
+        compact_info: 压缩事件载荷（compact_* 时），结构为
+            {status, tokens_before, tokens_after, reason}，
+            字段取值见 query.services.compact.auto_compact 的 CompactResult
     """
 
     type: str
@@ -65,6 +71,7 @@ class StreamEvent:
     error: Exception | None = None
     finish_reason: str | None = None
     breakdown: dict | None = None
+    compact_info: dict | None = None
 
 
 # ---------------------------------------------------------------------------

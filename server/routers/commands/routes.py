@@ -66,9 +66,9 @@ def _build_context(args: str, *, for_compact: bool = False) -> CommandContext:
 def _persist_compacted_messages() -> None:
     """compact 成功后把压缩结果写回会话存储。
 
-    引擎消息被原地压缩后若不落库，下一轮 /api/chat 的历史前缀取自 DB，
-    会把未压缩历史整体回灌，压缩白做。运行中任务的引擎由其收尾统一落库
-    （收尾保存的就是被原地压缩后的列表），此处只处理空闲查看引擎的场景。
+    插入语义下引擎持有全量历史（边界+摘要在 pivot 处），若不落库，
+    下一轮 /api/chat 的历史前缀取自 DB 会缺新插入的边界与摘要。
+    运行中任务的引擎由其收尾统一落库，此处只处理空闲查看引擎的场景。
     """
     view_session = server_state.engine_session_id
     run = server_state.running_runs.get(view_session) if view_session else None
@@ -80,9 +80,13 @@ def _persist_compacted_messages() -> None:
         return
     try:
         # 与 chat 链路收尾同口径：入库前清洗悬空 tool_calls
-        store.save_messages(
-            view_session, sanitize_dangling_tool_calls(engine.mutable_messages)
-        )
+        sanitized = sanitize_dangling_tool_calls(engine.mutable_messages)
+        store.save_messages(view_session, sanitized)
+        # 手动压缩同样导出转录，保持压缩续写的逃生门可用
+        try:
+            store.export_transcript(view_session, sanitized)
+        except Exception:
+            logger.warning("compact 转录导出失败（逃生门暂不可用，不影响压缩）", exc_info=True)
     except Exception:
         logger.warning("compact 结果落库失败（内存视图已压缩，重启后回退 DB 旧历史）", exc_info=True)
 
