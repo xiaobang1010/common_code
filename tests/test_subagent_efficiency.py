@@ -335,10 +335,10 @@ def test_budget_defaults_fallback_turns(monkeypatch):
         parent_context=None, agent_def=agent, main_loop_model="m", prompt="t"
     )
     lifecycle._apply_budget_defaults(ctx, agent)
-    assert ctx.max_turns == 4
+    assert ctx.max_turns is None
 
 
-def test_config_default_max_turns_is_four():
+def test_config_default_max_turns_is_unlimited():
     from startup.config.types import SubagentsConfig
 
-    assert SubagentsConfig().max_turns_default == 4
+    assert SubagentsConfig().max_turns_default == 0

@@ -111,7 +111,8 @@ def _apply_budget_defaults(ctx: SubagentContext, agent_def: AgentDefinition) -> 
     """预算双护栏：轮次上限与 token 预算，profile 未指定时应用全局默认。"""
     cfg = _get_subagents_config()
     if ctx.max_turns is None:
-        default_turns = cfg.max_turns_default if cfg is not None else 4
+        # 配置缺失时与 SubagentsConfig 默认一致：0=不限轮次
+        default_turns = cfg.max_turns_default if cfg is not None else 0
         ctx.max_turns = default_turns if default_turns > 0 else None
     if ctx.token_budget is None:
         if agent_def.token_budget is not None:
