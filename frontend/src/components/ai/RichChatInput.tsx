@@ -98,14 +98,20 @@ interface RichChatInputProps {
   onKeyDown?: (e: ReactKeyboardEvent<HTMLDivElement>) => boolean
   onFocus?: () => void
   onBlur?: () => void
+  // 粘贴/拖拽得到图片文件时上抛（图片不进编辑区文本流，由外部管理待发附件）
+  onImageFiles?: (files: File[]) => void
 }
 
 // 对话输入框（富文本）：contentEditable 承载文本流，文件引用以不可编辑的
 // 内联 chip 混排在文字之间，发送时按位置序列化为 [文件名](./相对路径)
 // 的 Markdown 链接，让模型能把引用对应用户意图中的具体指称
 const RichChatInput = forwardRef<RichChatInputHandle, RichChatInputProps>(
-  function RichChatInput({ placeholder, disabled, onTextChange, onSubmit, onKeyDown, onFocus, onBlur }, ref) {
+  function RichChatInput({ placeholder, disabled, onTextChange, onSubmit, onKeyDown, onFocus, onBlur, onImageFiles }, ref) {
     const elRef = useRef<HTMLDivElement>(null)
+
+    // 从 DataTransfer 提取图片文件（剪贴板与拖拽共用）
+    const takeImageFiles = (dt: DataTransfer): File[] =>
+      Array.from(dt.files || []).filter(f => f.type.startsWith('image/'))
 
     const emitChange = () => {
       const el = elRef.current
@@ -166,11 +172,30 @@ const RichChatInput = forwardRef<RichChatInputHandle, RichChatInputProps>(
         onBlur={onBlur}
         onInput={emitChange}
         onPaste={(e) => {
+          // 剪贴板含图片：整体上抛给待发附件，不进文本流
+          const images = onImageFiles ? takeImageFiles(e.clipboardData) : []
+          if (images.length > 0) {
+            e.preventDefault()
+            onImageFiles?.(images)
+            return
+          }
           // 粘贴一律降级为纯文本，避免外部 HTML 混入编辑区
           e.preventDefault()
           const text = e.clipboardData.getData('text/plain')
           if (!text) return
           document.execCommand('insertText', false, text)
+        }}
+        onDragOver={(e) => {
+          if (onImageFiles && Array.from(e.dataTransfer?.types || []).includes('Files')) {
+            e.preventDefault()
+          }
+        }}
+        onDrop={(e) => {
+          const images = onImageFiles ? takeImageFiles(e.dataTransfer) : []
+          if (images.length > 0) {
+            e.preventDefault()
+            onImageFiles?.(images)
+          }
         }}
         onKeyDown={(e) => {
           if (onKeyDown?.(e)) return

@@ -7,10 +7,25 @@ import { llmApi } from '../../api/client'
 import type {
   CustomLLMProviderInfo,
   CustomLLMModelInfo,
+  ModelInputType,
   ApiFormat,
 } from '../../api/client'
 import { useSettingsStore } from '../../stores/useSettingsStore'
 import { TextInput, Select, StatusMessage } from '../ui'
+
+// 输入类型展示标签（存储用英文枚举值）
+const INPUT_TYPE_LABELS: Array<[ModelInputType, string]> = [
+  ['text', '文本'],
+  ['image', '图片'],
+  ['video', '视频'],
+  ['pdf', 'PDF'],
+]
+
+// 映射快捷填充：中性行为描述文案，内容为两种合法形态的示例
+const EFFORT_TEMPLATE = '{"reasoning_effort": "{reasoningLevel}"}'
+const THINKING_TEMPLATE =
+  '{"disabled": {"thinking": {"type": "disabled"}}, "low": {"thinking": {"type": "enabled"}, "reasoning_effort": "low"}, "max": {"thinking": {"type": "enabled"}, "reasoning_effort": "max"}}'
+const THINKING_TEMPLATE_LEVELS = ['disabled', 'low', 'max']
 
 // ---------------------------------------------------------------------------
 // 类型与常量
@@ -136,10 +151,38 @@ function LLMSettingsSection() {
       setError('Base URL 不能为空')
       return
     }
+    // 本地预检（服务端仍是最终裁判）：等级非空不重复、映射为合法非空 JSON 对象
+    for (const m of form.models.filter((x) => x.model_id.trim())) {
+      const levels = m.reasoning_levels ?? []
+      if (levels.some((l) => !l.trim())) {
+        setError(`模型 ${m.model_id}：推理等级存在空值`)
+        return
+      }
+      if (new Set(levels).size !== levels.length) {
+        setError(`模型 ${m.model_id}：推理等级存在重复值`)
+        return
+      }
+      const raw = (m.reasoning_params_map ?? '').trim()
+      if (raw) {
+        try {
+          const obj = JSON.parse(raw)
+          if (
+            typeof obj !== 'object' || obj === null || Array.isArray(obj) ||
+            Object.keys(obj).length === 0
+          ) {
+            setError(`模型 ${m.model_id}：推理参数映射必须是非空 JSON 对象`)
+            return
+          }
+        } catch {
+          setError(`模型 ${m.model_id}：推理参数映射不是合法 JSON`)
+          return
+        }
+      }
+    }
     setSaving(true)
     setError('')
     try {
-      // 组装提交数据，过滤掉没有 model_id 的空行
+      // 组装提交数据（models 为全量替换语义，恒携带全部字段），过滤空行
       const payload = {
         name: form.name.trim(),
         base_url: form.base_url.trim(),
@@ -150,6 +193,10 @@ function LLMSettingsSection() {
           .map((m) => ({
             model_id: m.model_id.trim(),
             context_window: Number(m.context_window) || 0,
+            max_output_tokens: Number(m.max_output_tokens) || 32768,
+            input_types: m.input_types?.length ? m.input_types : (['text'] as ModelInputType[]),
+            reasoning_levels: m.reasoning_levels ?? [],
+            reasoning_params_map: (m.reasoning_params_map ?? '').trim(),
           })),
       }
       if (editingId) {
@@ -589,6 +636,8 @@ function ProviderEditModal({
   onCancel,
 }: ProviderEditModalProps) {
   const [showKey, setShowKey] = useState(false)
+  // 高级配置展开状态：模型行下标 -> 是否展开
+  const [expandedRows, setExpandedRows] = useState<Record<number, boolean>>({})
 
   // 更新表单中某个字段
   const updateField = <K extends keyof ProviderFormData>(
@@ -598,20 +647,25 @@ function ProviderEditModal({
     setForm({ ...form, [key]: value })
   }
 
-  // 更新某个模型的字段
+  // 按补丁更新某个模型条目（基础行与高级面板共用）
+  const patchModel = (index: number, patch: Partial<CustomLLMModelInfo>) => {
+    setForm({
+      ...form,
+      models: form.models.map((m, i) => (i === index ? { ...m, ...patch } : m)),
+    })
+  }
+
+  // 更新某个模型的标量字段
   const updateModel = (
     index: number,
-    field: keyof CustomLLMModelInfo,
+    field: 'model_id' | 'context_window',
     value: string,
   ) => {
-    const models = form.models.map((m, i) => {
-      if (i !== index) return m
-      if (field === 'context_window') {
-        return { ...m, context_window: Number(value) || 0 }
-      }
-      return { ...m, [field]: value }
-    })
-    setForm({ ...form, models })
+    if (field === 'context_window') {
+      patchModel(index, { context_window: Number(value) || 0 })
+      return
+    }
+    patchModel(index, { model_id: value })
   }
 
   // 删除某个模型行
@@ -622,11 +676,21 @@ function ProviderEditModal({
     })
   }
 
-  // 添加一个空模型行
+  // 添加一个空模型行（新字段带默认值，保存时恒全量提交）
   const addModel = () => {
     setForm({
       ...form,
-      models: [...form.models, { model_id: '', context_window: 0 }],
+      models: [
+        ...form.models,
+        {
+          model_id: '',
+          context_window: 0,
+          max_output_tokens: 32768,
+          input_types: ['text'],
+          reasoning_levels: [],
+          reasoning_params_map: '',
+        },
+      ],
     })
   }
 
@@ -803,7 +867,7 @@ function ProviderEditModal({
                 <div
                   style={{
                     display: 'grid',
-                    gridTemplateColumns: '1fr 120px 32px',
+                    gridTemplateColumns: '1fr 120px 64px 32px',
                     gap: '6px',
                     fontSize: '11px',
                     color: 'var(--text-tertiary)',
@@ -813,46 +877,63 @@ function ProviderEditModal({
                   <span>模型 ID</span>
                   <span>上下文窗口</span>
                   <span />
+                  <span />
                 </div>
                 {form.models.map((m, i) => (
-                  <div
-                    key={i}
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: '1fr 120px 32px',
-                      gap: '6px',
-                      alignItems: 'center',
-                    }}
-                  >
-                    <TextInput
-                      value={m.model_id}
-                      onChange={(v) => updateModel(i, 'model_id', v)}
-                      placeholder="gpt-4o"
-                    />
-                    <input
-                      type="number"
-                      value={m.context_window || ''}
-                      onChange={(e) =>
-                        updateModel(i, 'context_window', e.target.value)
-                      }
-                      placeholder="128000"
-                      style={numberInputStyle}
-                    />
-                    <button
-                      onClick={() => removeModel(i)}
-                      title="删除此模型"
+                  <div key={i}>
+                    <div
                       style={{
-                        border: 'none',
-                        background: 'transparent',
-                        color: 'var(--error)',
-                        cursor: 'pointer',
-                        fontSize: '14px',
-                        padding: '4px',
-                        borderRadius: 'var(--radius-sm)',
+                        display: 'grid',
+                        gridTemplateColumns: '1fr 120px 64px 32px',
+                        gap: '6px',
+                        alignItems: 'center',
                       }}
                     >
-                      ✕
-                    </button>
+                      <TextInput
+                        value={m.model_id}
+                        onChange={(v) => updateModel(i, 'model_id', v)}
+                        placeholder="gpt-4o"
+                      />
+                      <input
+                        type="number"
+                        value={m.context_window || ''}
+                        onChange={(e) =>
+                          updateModel(i, 'context_window', e.target.value)
+                        }
+                        placeholder="128000"
+                        style={numberInputStyle}
+                      />
+                      <button
+                        onClick={() =>
+                          setExpandedRows((prev) => ({ ...prev, [i]: !prev[i] }))
+                        }
+                        style={{
+                          ...btnStyle('default'),
+                          padding: '4px 6px',
+                          fontSize: '11px',
+                        }}
+                      >
+                        {expandedRows[i] ? '▾ 高级' : '▸ 高级'}
+                      </button>
+                      <button
+                        onClick={() => removeModel(i)}
+                        title="删除此模型"
+                        style={{
+                          border: 'none',
+                          background: 'transparent',
+                          color: 'var(--error)',
+                          cursor: 'pointer',
+                          fontSize: '14px',
+                          padding: '4px',
+                          borderRadius: 'var(--radius-sm)',
+                        }}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                    {expandedRows[i] && (
+                      <ModelAdvancedPanel model={m} onPatch={(p) => patchModel(i, p)} />
+                    )}
                   </div>
                 ))}
               </div>
@@ -889,6 +970,241 @@ function ProviderEditModal({
         </div>
       </div>
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ModelAdvancedPanel - 模型高级配置（输出上限/输入类型/推理等级/参数映射）
+// ---------------------------------------------------------------------------
+
+interface ModelAdvancedPanelProps {
+  model: CustomLLMModelInfo
+  onPatch: (patch: Partial<CustomLLMModelInfo>) => void
+}
+
+function ModelAdvancedPanel({ model, onPatch }: ModelAdvancedPanelProps) {
+  // 等级编辑区的草稿输入与「+」展开态
+  const [levelDraft, setLevelDraft] = useState('')
+  const [addingLevel, setAddingLevel] = useState(false)
+  const levels = model.reasoning_levels ?? []
+  const inputTypes = model.input_types?.length ? model.input_types : (['text'] as ModelInputType[])
+
+  const toggleInputType = (t: ModelInputType, checked: boolean) => {
+    // text 恒选：取消勾选无效，服务端也会补正
+    if (t === 'text') return
+    const next = checked
+      ? [...inputTypes.filter((x) => x !== t), t]
+      : inputTypes.filter((x) => x !== t)
+    onPatch({ input_types: next })
+  }
+
+  // 新增等级：草稿非空且不重复才收录，收录后收起输入框
+  const commitLevel = () => {
+    const v = levelDraft.trim()
+    setAddingLevel(false)
+    setLevelDraft('')
+    if (!v || levels.includes(v)) return
+    onPatch({ reasoning_levels: [...levels, v] })
+  }
+
+  const removeLevel = (idx: number) => {
+    onPatch({ reasoning_levels: levels.filter((_, i) => i !== idx) })
+  }
+
+  return (
+    <div
+      style={{
+        margin: '6px 0 10px',
+        padding: '10px 12px',
+        backgroundColor: 'var(--bg-primary)',
+        border: '1px solid var(--border)',
+        borderRadius: 'var(--radius-sm)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '10px',
+      }}
+    >
+      {/* 最大输出 Token */}
+      <div>
+        <label style={fieldLabelStyle}>最大输出 Token</label>
+        <input
+          type="number"
+          value={model.max_output_tokens ?? ''}
+          onChange={(e) =>
+            onPatch({ max_output_tokens: Number(e.target.value) || 0 })
+          }
+          placeholder="32768"
+          style={numberInputStyle}
+        />
+      </div>
+
+      {/* 输入类型勾选组 */}
+      <div>
+        <label style={fieldLabelStyle}>输入类型</label>
+        <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+          {INPUT_TYPE_LABELS.map(([t, label]) => (
+            <label
+              key={t}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                fontSize: '12px',
+                color: 'var(--text-secondary)',
+                cursor: t === 'text' ? 'not-allowed' : 'pointer',
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={inputTypes.includes(t)}
+                disabled={t === 'text'}
+                onChange={(e) => toggleInputType(t, e.target.checked)}
+              />
+              {label}
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {/* 推理等级编辑区：等级胶囊按添加顺序从低到高，悬停出删除叉，「+」就地输入新增 */}
+      <div>
+        <label style={fieldLabelStyle}>推理等级（从低到高）</label>
+        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+          {levels.map((lv, i) => (
+            <LevelChip key={`${lv}-${i}`} label={lv} onRemove={() => removeLevel(i)} />
+          ))}
+          {addingLevel ? (
+            <input
+              autoFocus
+              type="text"
+              value={levelDraft}
+              onChange={(e) => setLevelDraft(e.target.value)}
+              onBlur={commitLevel}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') commitLevel()
+                if (e.key === 'Escape') { setAddingLevel(false); setLevelDraft('') }
+              }}
+              placeholder="等级名"
+              style={{
+                width: '96px',
+                padding: '3px 8px',
+                fontSize: '12px',
+                fontFamily: 'var(--font-mono)',
+                backgroundColor: 'var(--bg-secondary)',
+                border: '1px solid var(--border-strong)',
+                borderRadius: '999px',
+                color: 'var(--text-primary)',
+                outline: 'none',
+              }}
+            />
+          ) : (
+            <button
+              onClick={() => setAddingLevel(true)}
+              title="添加等级"
+              style={{
+                width: '26px',
+                height: '24px',
+                padding: 0,
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-sm)',
+                background: 'var(--bg-tertiary)',
+                color: 'var(--text-secondary)',
+                fontSize: '14px',
+                lineHeight: '22px',
+                cursor: 'pointer',
+              }}
+            >
+              +
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* 推理参数映射 */}
+      <div>
+        <label style={fieldLabelStyle}>推理参数映射</label>
+        <textarea
+          value={model.reasoning_params_map ?? ''}
+          onChange={(e) => onPatch({ reasoning_params_map: e.target.value })}
+          placeholder='{"reasoning_effort": "{reasoningLevel}"}'
+          rows={3}
+          style={{
+            ...numberInputStyle,
+            resize: 'vertical',
+            fontFamily: 'var(--font-mono)',
+            fontSize: '12px',
+          }}
+        />
+        <div style={{ display: 'flex', gap: '6px', marginTop: '6px' }}>
+          <button
+            onClick={() => onPatch({ reasoning_params_map: EFFORT_TEMPLATE })}
+            style={btnStyle('default')}
+          >
+            reasoning_effort 透传模板
+          </button>
+          <button
+            onClick={() =>
+              onPatch({
+                reasoning_params_map: THINKING_TEMPLATE,
+                // 等级为空时一并填入该模板配套的等级集，避免形态不匹配
+                ...(levels.length === 0
+                  ? { reasoning_levels: THINKING_TEMPLATE_LEVELS }
+                  : {}),
+              })
+            }
+            style={btnStyle('default')}
+          >
+            thinking 开关按等级模板
+          </button>
+        </div>
+        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px', lineHeight: 1.5 }}>
+          选中等级后，映射求值结果会合并进请求体（值为 null 的键表示删除）。
+          模板形态用 {'{reasoningLevel}'} 占位符；或按等级各写一组参数（顶层键与等级一致）。
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// 等级胶囊：常态只显示文本，悬停浮现删除叉（避免静态界面堆满操作按钮）
+function LevelChip({ label, onRemove }: { label: string; onRemove: () => void }) {
+  const [hover, setHover] = useState(false)
+  return (
+    <span
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '4px',
+        padding: '3px 10px',
+        backgroundColor: 'var(--bg-tertiary)',
+        border: '1px solid var(--border)',
+        borderRadius: 'var(--radius-sm)',
+        fontSize: '12px',
+        color: 'var(--text-primary)',
+        fontFamily: 'var(--font-mono)',
+      }}
+    >
+      {label}
+      {hover && (
+        <button
+          onClick={onRemove}
+          title="删除等级"
+          style={{
+            border: 'none',
+            background: 'transparent',
+            color: 'var(--text-tertiary)',
+            cursor: 'pointer',
+            fontSize: '11px',
+            padding: 0,
+            lineHeight: 1,
+          }}
+        >
+          ✕
+        </button>
+      )}
+    </span>
   )
 }
 

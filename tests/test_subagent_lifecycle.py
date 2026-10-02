@@ -315,7 +315,7 @@ async def test_token_budget_stops_loop():
         def get_uuid(self) -> str:
             return "u"
 
-        async def call_model(self, messages, tools, model, max_tokens, temperature):
+        async def call_model(self, **kwargs):
             self.calls += 1
             yield StreamEvent(type="content", content=f"输出{self.calls}")
             if self.calls <= 2:
@@ -371,7 +371,7 @@ async def test_no_budget_main_conversation_unaffected():
         def get_uuid(self) -> str:
             return "u"
 
-        async def call_model(self, messages, tools, model, max_tokens, temperature):
+        async def call_model(self, **kwargs):
             self.calls += 1
             yield StreamEvent(type="content", content="完成")
             yield StreamEvent(type="done", finish_reason="stop")

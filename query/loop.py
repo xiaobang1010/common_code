@@ -41,6 +41,7 @@ from query.utils.api import (
     insert_message_before_last_user,
     append_system_context,
 )
+from query.utils.reasoning import deep_merge_patch, resolve_reasoning_patch
 
 logger = logging.getLogger(__name__)
 
@@ -757,14 +758,33 @@ async def query_loop(
         # 扣留的上下文超限错误事件，恢复完才决定要不要暴露给调用方
         withheld_error: StreamEvent | None = None
 
+        # 实发参数在此收口：推理等级映射求值结果按 API 格式决定注入位置
+        # （OpenAI 兼容并入 extra_body，Anthropic 并入顶层 kwargs），
+        # 未选等级/无映射时不注入任何推理参数，行为与改造前一致
+        call_kwargs: dict[str, Any] = {
+            "messages": request["messages"],
+            "tools": engine_config.tools,
+            "model": engine_config.model,
+            "max_tokens": engine_config.max_tokens,
+            "temperature": engine_config.temperature,
+        }
         try:
-            async for event in deps.call_model(
-                messages=request["messages"],
-                tools=engine_config.tools,
-                model=engine_config.model,
-                max_tokens=engine_config.max_tokens,
-                temperature=engine_config.temperature,
-            ):
+            reasoning_patch = resolve_reasoning_patch(
+                engine_config.model, engine_config.reasoning_level
+            )
+            if reasoning_patch:
+                from query.services.api.client import get_active_api_format
+                if get_active_api_format() == "anthropic":
+                    deep_merge_patch(call_kwargs, reasoning_patch)
+                else:
+                    deep_merge_patch(
+                        call_kwargs.setdefault("extra_body", {}), reasoning_patch
+                    )
+        except Exception:
+            logger.warning("推理参数注入失败，按无推理参数请求继续", exc_info=True)
+
+        try:
+            async for event in deps.call_model(**call_kwargs):
                 # ---- 5. 流式输出 ----
                 # 上下文超限错误先扣下，等恢复流程走完再决定是否暴露
                 if (

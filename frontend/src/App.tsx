@@ -455,8 +455,13 @@ function App() {
       const data = (await resp.json()) as StateResponse
       // 后端已响应：刷新活动时间，避免切回后台任务时状态行误报「连接异常」
       lastActivityAtRef.current = Date.now()
-      const messages = Array.isArray(data.messages) ? data.messages : snapshot
-      const runningStartedAt = typeof data.started_at === 'number' ? data.started_at * 1000 : undefined
+      const running = typeof data.started_at === 'number'
+      // 无运行任务时优先 DB 快照：/api/state 的图片块是占位形态（不含 base64），
+      // 快照带完整 data URL 才能保证含图会话重开正确回显；运行中才取 state（更新鲜）
+      const messages = Array.isArray(data.messages)
+        ? (running || !snapshot ? data.messages : snapshot)
+        : snapshot
+      const runningStartedAt = running ? (data.started_at as number) * 1000 : undefined
       if (messages) loadMessages(messages, { runningStartedAt, lastTurn: data.last_turn ?? lastTurn })
       else clearMessages()
     } catch {

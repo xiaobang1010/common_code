@@ -53,12 +53,21 @@ class CustomLLMModel:
     model_id: str
     context_window: int = 200000
     max_output_tokens: int = 32768
+    # 输入模态集合，枚举 text/image/video/pdf；text 恒含由路由校验层补正
+    input_types: list[str] = field(default_factory=lambda: ["text"])
+    # 推理等级列表（从低到高），空列表表示该模型不启用推理等级配置
+    reasoning_levels: list[str] = field(default_factory=list)
+    # 推理参数映射 JSON 字符串（模板形态或按等级形态），空串表示不注入
+    reasoning_params_map: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "model_id": self.model_id,
             "context_window": self.context_window,
             "max_output_tokens": self.max_output_tokens,
+            "input_types": list(self.input_types),
+            "reasoning_levels": list(self.reasoning_levels),
+            "reasoning_params_map": self.reasoning_params_map,
         }
 
     @classmethod
@@ -67,6 +76,9 @@ class CustomLLMModel:
             model_id=data.get("model_id", ""),
             context_window=data.get("context_window", 200000),
             max_output_tokens=data.get("max_output_tokens", 32768),
+            input_types=list(data.get("input_types") or ["text"]),
+            reasoning_levels=list(data.get("reasoning_levels") or []),
+            reasoning_params_map=data.get("reasoning_params_map") or "",
         )
 
 

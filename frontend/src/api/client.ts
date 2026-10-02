@@ -18,10 +18,17 @@ export interface LLMConfig {
 /** API 格式 */
 export type ApiFormat = 'openai' | 'anthropic'
 
+/** 输入类型枚举（存储口径，界面展示用中文标签） */
+export type ModelInputType = 'text' | 'image' | 'video' | 'pdf'
+
 /** 自定义 LLM 模型 */
 export interface CustomLLMModelInfo {
   model_id: string
   context_window: number
+  max_output_tokens?: number
+  input_types?: ModelInputType[]
+  reasoning_levels?: string[]
+  reasoning_params_map?: string
 }
 
 /** 自定义 LLM 供应商 */

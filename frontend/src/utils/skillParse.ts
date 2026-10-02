@@ -13,6 +13,38 @@ export interface UserMessageParseResult {
 const SKILL_REWRITE_RE =
   /^Use the skill named `([^`\n]+)` for this turn\.\n[\s\S]*?\nUser request:[ \t]*([\s\S]*)$/
 
+// 多模态 content 拆解结果：text 为拼接后的纯文本，images 为图片块（按出现序）
+export interface ExtractedContent {
+  text: string
+  images: Array<{ name: string; mime: string; dataUrl: string }>
+}
+
+// 从消息 content（字符串或 OpenAI parts 数组）提取文本与图片附件。
+// /api/state 轮询形态下 dataUrl 为 `data:<mime>;base64,__omitted__` 占位，
+// 是否回落本地缓存由调用方决定
+export function extractContentParts(content: unknown): ExtractedContent {
+  if (typeof content === 'string') return { text: content, images: [] }
+  if (Array.isArray(content)) {
+    const texts: string[] = []
+    const images: ExtractedContent['images'] = []
+    for (const block of content) {
+      if (!block || typeof block !== 'object') continue
+      const b = block as Record<string, unknown>
+      if (b.type === 'text' && typeof b.text === 'string') {
+        texts.push(b.text)
+      } else if (b.type === 'image_url') {
+        const url = (b.image_url as { url?: unknown } | undefined)?.url
+        if (typeof url === 'string' && url.startsWith('data:')) {
+          const mime = url.slice(5, url.indexOf(';')) || 'image/png'
+          images.push({ name: '', mime, dataUrl: url })
+        }
+      }
+    }
+    return { text: texts.join('\n'), images }
+  }
+  return { text: '', images: [] }
+}
+
 // 解析一条 user 消息在历史加载时的展示形态：
 // 1. 新格式重写提示 → skill（徽章 + User request 段任务文本，空任务为空串）
 // 2. system-reminder 开头的其余消息 → skip 不建块。覆盖两类：Skill 工具
