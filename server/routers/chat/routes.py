@@ -16,10 +16,16 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from query.engine import QueryEngine, build_engine_config
 from query.loop import LoopResult
 from query.services.api.llm import StreamEvent
-from query.utils.messages import sanitize_dangling_tool_calls
+from query.utils.messages import extract_text_from_content, sanitize_dangling_tool_calls
 from server.paths import project_root
 from server.routers.sessions.routes import get_git_branch
 import server.state
+
+# 图片附件限额（与前端压缩目标同口径，度量以 data URL 解码后字节为准）
+_MAX_IMAGES_PER_MESSAGE = 4
+_MAX_IMAGE_DECODED_BYTES = 5 * 1024 * 1024
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -57,7 +63,8 @@ async def get_state() -> dict:
     last_turn = session_store.get_session_last_turn(view_session) if session_store is not None else {}
 
     return {
-        "messages": messages,
+        # 轮询高频回传：image_url 的 base64 在响应副本上替换为占位哨兵
+        "messages": _omit_image_payloads(messages),
         "started_at": started_at,
         "last_turn": last_turn,
         "model": state.model,
@@ -156,6 +163,115 @@ def _extract_session_title(prompt: str) -> str:
     return prompt.strip()[:40]
 
 
+def _validate_images(images_raw: Any) -> tuple[list[dict], str | None]:
+    """兜底校验附件：数量/大小/mime 一致性/模型能力，返回归一化列表或错误。
+
+    度量口径与前端一致按解码后字节（base64 长度×3/4 折算）；
+    以内嵌 media type 为准校验与 mime 字段一致（不一致按形态错误拒绝）。
+    """
+    if not isinstance(images_raw, list) or not images_raw:
+        return [], "images 必须是非空列表"
+    if len(images_raw) > _MAX_IMAGES_PER_MESSAGE:
+        return [], f"单条消息最多携带 {_MAX_IMAGES_PER_MESSAGE} 张图片"
+
+    import base64
+    import os
+
+    from query.services.api.client import get_default_model
+    from startup.model.config import get_model_config
+
+    model = os.environ.get("COMMON_CODE_MODEL") or get_default_model()
+    if "image" not in get_model_config(model).input_types:
+        return [], "当前模型不支持图片输入"
+
+    normalized: list[dict] = []
+    for i, item in enumerate(images_raw):
+        if not isinstance(item, dict):
+            return [], f"images[{i}] 必须是对象"
+        data_url = item.get("data_url")
+        mime = item.get("mime")
+        name = item.get("name") if isinstance(item.get("name"), str) else ""
+        if not isinstance(data_url, str) or not data_url.startswith("data:"):
+            return [], f"images[{i}] 缺少完整 data URL"
+        if not isinstance(mime, str) or not mime.startswith("image/"):
+            return [], f"images[{i}] mime 必须是 image/* 类型"
+        # 内嵌 media type 为准，与声明的 mime 必须一致
+        embedded = data_url[5:data_url.find(";")] if ";" in data_url[5:] else ""
+        if embedded != mime:
+            return [], f"images[{i}] 声明的 mime 与 data URL 内嵌类型不一致"
+        try:
+            decoded = base64.b64decode(data_url.split(",", 1)[1], validate=False)
+        except Exception:
+            return [], f"images[{i}] base64 解码失败"
+        if len(decoded) > _MAX_IMAGE_DECODED_BYTES:
+            return [], f"images[{i}] 超过单张 5MB 上限"
+        normalized.append({"name": name, "mime": mime, "data_url": data_url})
+    return normalized, None
+
+
+def _build_user_content(prompt: str, images: list[dict]):
+    """有图时构造 OpenAI 风格 content parts（落库格式即 provider 直传格式）；
+    无图保持纯字符串，行为与改造前一致。"""
+    if not images:
+        return prompt
+    parts: list[dict] = []
+    if prompt and prompt.strip():
+        parts.append({"type": "text", "text": prompt})
+    for img in images:
+        parts.append({"type": "image_url", "image_url": {"url": img["data_url"]}})
+    return parts
+
+
+def _omit_image_payloads(messages: Any) -> Any:
+    """/api/state 响应副本：image_url 的 base64 替换为 __omitted__ 哨兵。
+
+    轮询高频回传，完整 data URL 会拖住渲染；前端遇哨兵复用本地缓存，
+    历史接口（sessions get / switch）仍返回完整数据。不修改引擎原消息。
+    """
+    if not isinstance(messages, list):
+        return messages
+    out: list = []
+    for msg in messages:
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if isinstance(content, list) and any(
+            isinstance(b, dict) and b.get("type") == "image_url" for b in content
+        ):
+            new_blocks = []
+            for b in content:
+                if isinstance(b, dict) and b.get("type") == "image_url":
+                    url = (b.get("image_url") or {}).get("url", "")
+                    mime = url[5:url.find(";")] if url.startswith("data:") and ";" in url else "image/png"
+                    new_blocks.append(
+                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,__omitted__"}}
+                    )
+                else:
+                    new_blocks.append(b)
+            out.append({**msg, "content": new_blocks})
+        else:
+            out.append(msg)
+    return out
+
+
+def _resolve_reasoning_level(raw: Any) -> str:
+    """按活动模型等级列表校验请求携带的推理等级（get_model_config 单源）。
+
+    与 build_engine_config 的模型解析同口径（COMMON_CODE_MODEL 优先）；
+    非法/缺失返回空串（跟随模型默认）并记录告警，会话不中断。
+    """
+    if not isinstance(raw, str) or not raw:
+        return ""
+    import os
+
+    from query.services.api.client import get_default_model
+    from startup.model.config import get_model_config
+
+    model = os.environ.get("COMMON_CODE_MODEL") or get_default_model()
+    if raw in get_model_config(model).reasoning_levels:
+        return raw
+    logger.warning("推理等级 %s 不在模型 %s 的等级列表内，按未选择处理", raw, model)
+    return ""
+
+
 # 系统注入消息前缀：与前端 parseUserMessage（frontend/src/utils/skillParse.ts）
 # 的 startsWith 判定一致（不 strip），编辑重发的可见序号两侧必须同规则
 _SYSTEM_REMINDER_PREFIX = "<system-reminder>"
@@ -177,6 +293,10 @@ def _visible_user_indexes(messages: list[dict]) -> list[int]:
         if msg.get("_compact_summary"):
             continue
         content = msg.get("content", "")
+        # 三分支与前端 parseUserMessage + extractContentParts 同规则：
+        # str 原样判定 / list 提取拼接 text 块后判定 / 其他形态维持跳过
+        if isinstance(content, list):
+            content = extract_text_from_content(content)
         if not isinstance(content, str):
             continue
         if content.startswith(_SYSTEM_REMINDER_PREFIX):
@@ -192,10 +312,11 @@ def _visible_user_indexes(messages: list[dict]) -> list[int]:
 
 def _start_run(
     session_id: str,
-    prompt: str,
+    prompt: str | list,
     *,
     edit_user_index: int | None = None,
     take_view_pointer: bool = True,
+    reasoning_level: str = "",
 ) -> tuple[server.state.RunContext | None, str | None]:
     """创建会话运行任务：串行守卫 → 前缀快照 → 持久化 → 引擎 → 后台任务。
 
@@ -205,7 +326,8 @@ def _start_run(
 
     Args:
         session_id: 目标聊天会话 id
-        prompt: 本轮用户消息（唤起路径为合并后的通知正文）
+        prompt: 本轮用户消息，文本或 content parts（含图时为 parts 列表；
+            唤起路径为合并后的通知正文，恒为纯文本）
         edit_user_index: 编辑重发时按可见用户消息序号截断历史（仅用户路径）
         take_view_pointer: 是否把查看指针改写指向本会话。用户路径 True；
             唤起路径 False——后台唤起不得劫持用户正在查看的其他会话
@@ -252,13 +374,18 @@ def _start_run(
     task_workspace = session.workspace_path or project_root()
 
     # ---- 用户消息立即持久化（前缀 + 本条），标题即时生成 ----
+    # 标题与空文本判定以提取后的文本为准：纯图片 parts（无 text 块）回退固定文案
+    prompt_text = extract_text_from_content(prompt)
     if session_store is not None:
         try:
             session_store.save_messages(
                 run_session_id, [*prefix_messages, {"role": "user", "content": prompt, "_ts": time.time() * 1000}]
             )
-            if not session.title and prompt.strip():
-                session_store.update_session_title(run_session_id, _extract_session_title(prompt))
+            if not session.title:
+                if prompt_text.strip():
+                    session_store.update_session_title(run_session_id, _extract_session_title(prompt_text))
+                elif isinstance(prompt, list):
+                    session_store.update_session_title(run_session_id, "图片消息")
         except Exception:
             pass
 
@@ -278,6 +405,7 @@ def _start_run(
         permission_prompt=task_permission_prompt,
         question_prompt=task_question_prompt if question_bridge else None,
         abort_event=run_abort_event,
+        reasoning_level=reasoning_level,
     )
     config = replace(config, cwd=task_workspace)
     # 引擎绑定聊天会话 id：子代理注册表按父会话关联、通知按会话投递
@@ -513,7 +641,10 @@ def setup_wakeup_hook() -> None:
 
 
 async def chat_event_stream(
-    prompt: str, session_id: str = "", edit_user_index: int | None = None
+    prompt: str | list,
+    session_id: str = "",
+    edit_user_index: int | None = None,
+    reasoning_level: str = "",
 ):
     """SSE 事件生成器（订阅者角色）。
 
@@ -552,7 +683,10 @@ async def chat_event_stream(
         run_session_id = session.id
 
     # ---- 任务启动核心（与后台唤起路径共享） ----
-    run, error = _start_run(run_session_id, prompt, edit_user_index=edit_user_index)
+    run, error = _start_run(
+        run_session_id, prompt,
+        edit_user_index=edit_user_index, reasoning_level=reasoning_level,
+    )
     if error is not None:
         yield f"data: {json.dumps({'type': 'error', 'error': error}, ensure_ascii=False)}\n\n"
         return
@@ -611,18 +745,32 @@ async def chat_event_stream(
 
 
 @router.post("/api/chat")
-async def chat(body: dict) -> StreamingResponse:
+async def chat(body: dict):
     """SSE 流式对话接口。
 
-    请求体：{"prompt": "...", "session_id": "...", "edit_user_index": 0}
+    请求体：{"prompt": "...", "session_id": "...", "edit_user_index": 0,
+             "reasoning_level": "low", "images": [{name, mime, data_url}]}
     edit_user_index 可选，编辑重发时传目标可见用户消息序号（0 起）；
+    images 可选（仅首发携带），附件兜底校验在流开始前完成，
+    失败返回 JSONResponse(400, {"ok": false, "error": 文案})；
     返回：text/event-stream，每行 data: {JSON}\n\n
     """
     prompt = body.get("prompt", "")
+    if not isinstance(prompt, str):
+        return JSONResponse(status_code=400, content={"ok": False, "error": "prompt 必须是字符串"})
     session_id = body.get("session_id", "")
     edit_user_index = body.get("edit_user_index")
+    # 可选推理等级：非法值忽略并告警（跟随模型默认），不中断会话
+    reasoning_level = _resolve_reasoning_level(body.get("reasoning_level"))
+    # 附件兜底校验（数量/大小/mime 一致性/模型能力），有图时构造 parts 落库
+    images_raw = body.get("images")
+    if images_raw:
+        images, err = _validate_images(images_raw)
+        if err:
+            return JSONResponse(status_code=400, content={"ok": False, "error": err})
+        prompt = _build_user_content(prompt, images)
     return StreamingResponse(
-        chat_event_stream(prompt, session_id, edit_user_index),
+        chat_event_stream(prompt, session_id, edit_user_index, reasoning_level),
         media_type="text/event-stream",
     )
 

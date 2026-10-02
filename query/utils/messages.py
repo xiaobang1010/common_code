@@ -34,6 +34,28 @@ def is_compact_boundary_message(message: dict) -> bool:
     return content.startswith(_COMPACT_BOUNDARY_PREFIX)
 
 
+def extract_text_from_content(content, image_placeholder: str = "") -> str:
+    """从消息 content（字符串或 parts 数组）提取纯文本。
+
+    parts 形态拼接全部 text 块；image_placeholder 非空时图片块以该占位符计入
+    （供 hook 入参、标题提取等纯文本消费方使用）。
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "text" and isinstance(block.get("text"), str):
+                parts.append(block["text"])
+            elif btype in ("image", "image_url", "input_image") and image_placeholder:
+                parts.append(image_placeholder)
+        return "\n".join(parts)
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # 查找与切片
 # ---------------------------------------------------------------------------

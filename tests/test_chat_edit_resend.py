@@ -185,6 +185,34 @@ async def test_edit_middle_message_with_mixed_list(workspace, env):
 
 
 @pytest.mark.asyncio
+async def test_edit_after_image_parts_messages(workspace, env):
+    """含图 parts 消息（纯图片 / text+image）计入可见序号：
+    对其后的文本消息编辑重发定位正确、parts 历史原样保留。"""
+    engine, store = env
+    img = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}}
+    history = [
+        {"role": "user", "content": [img]},                      # 可见 0（纯图片）
+        {"role": "assistant", "content": "回复一"},
+        {"role": "user", "content": [{"type": "text", "text": "看这个"}, img]},  # 可见 1
+        {"role": "assistant", "content": "回复二"},
+        {"role": "user", "content": "第三条文本"},                # 可见 2 → 编辑目标
+        {"role": "assistant", "content": "回复三"},
+    ]
+    sid = _seed_history(store, workspace, history)
+    engine.release.set()
+
+    events = await collect(chat_event_stream("第三条（改）", sid, edit_user_index=2))
+
+    assert events[0]["type"] == "session_meta"
+    session = store.get_session(sid)
+    # 截断保留前两条含图消息（parts 原样），第三条被替换重跑
+    assert session.messages[0]["content"] == [img]
+    assert session.messages[2]["content"] == [{"type": "text", "text": "看这个"}, img]
+    assert session.messages[4] == {"role": "user", "content": "第三条（改）"}
+    assert session.messages[-1] == {"role": "assistant", "content": "回复内容"}
+
+
+@pytest.mark.asyncio
 async def test_edit_invalid_index_keeps_history(workspace, env):
     """越界编辑：yield error 事件，历史与引擎都不被修改。"""
     engine, store = env

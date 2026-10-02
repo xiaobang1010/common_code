@@ -7,7 +7,7 @@
 
 import { create } from 'zustand'
 import { permissionsApi, questionApi, type PermissionMode, type TurnExitInfo } from '../api/client'
-import { parseUserMessage } from '../utils/skillParse'
+import { parseUserMessage, extractContentParts } from '../utils/skillParse'
 import { openFilesInPanel } from './panelBridge'
 
 // 时间线事件：任务轨迹的三类一等事件，按 SSE 到达的真实时序入列
@@ -38,11 +38,20 @@ export interface TimelineItem {
   endTime?: number
 }
 
+// 用户消息携带的图片附件（dataUrl 为完整 data URL，解码后 ≤5MB）
+export interface UserImage {
+  name: string
+  mime: string
+  dataUrl: string
+}
+
 // 工作块：一次 agentic 循环的轨迹聚合
 export interface WorkBlock {
   id: string
   // 用户输入
   userMessage: string
+  // 用户消息附带的图片（无图时缺省）：气泡渲染缩略图，含图块隐藏编辑重发
+  userImages?: UserImage[]
   // 轨迹时间线：正文、思考、工具调用按真实时序交错排列
   timeline: TimelineItem[]
   // 状态：工作中 / 已工作（含正常结束和中断）
@@ -171,6 +180,10 @@ let flushTimer: number | null = null
 // 不在每个 heartbeat 上 setState，避免 0.2s 一次的高频重渲
 export const lastActivityAtRef = { current: Date.now() }
 
+// 最近一次随消息发送的图片附件：/api/state 轮询重建时 image_url 为占位形态
+// （base64 已剥离），按序用这里的缓存补回 data URL 渲染；任务结束走全量历史接口
+const lastSentImagesRef = { current: [] as UserImage[] }
+
 interface ChatState {
   // 规范化工作块：id 列表 + id 索引（未变 block 对象引用稳定，局部订阅才能生效）
   blockIds: string[]
@@ -186,7 +199,13 @@ interface ChatState {
   questionRequest: QuestionRequest | null
   permissionMode: PermissionMode
 
-  sendMessage: (prompt: string) => Promise<boolean>
+  // 会话所选推理等级（null=跟随模型默认，不注入推理参数）；切换模型时重置
+  reasoningLevel: string | null
+  setReasoningLevel: (level: string | null) => void
+  // 流前被服务端拒绝时的可读文案（sendMessage 返回 false 时由输入区消费并清除）
+  lastSendError: string | null
+  clearSendError: () => void
+  sendMessage: (prompt: string, images?: UserImage[]) => Promise<boolean>
   // 编辑历史用户消息并从该处重发：截断后续块与 DB 历史，用新文本重建该轮
   editAndResend: (blockId: string, newText: string) => Promise<boolean>
   abort: () => Promise<void>
@@ -607,7 +626,11 @@ export const useChatStore = create<ChatState>((set, get) => {
       // 上下文分类估算：重进会话时经 state 恢复面板数据
       if (data.context_breakdown) set({ contextBreakdown: data.context_breakdown })
       if (typeof data.total_cost_usd === 'number') set({ totalCost: data.total_cost_usd })
-      if (data.model) set({ model: data.model })
+      if (data.model) {
+        // 活动模型变化时重置推理等级选择（等级列表按新模型重新渲染）
+        if (data.model !== get().model) set({ model: data.model, reasoningLevel: null })
+        else set({ model: data.model })
+      }
       if (data.permission_mode === 'default' || data.permission_mode === 'full_access') {
         set({ permissionMode: data.permission_mode })
       }
@@ -618,21 +641,39 @@ export const useChatStore = create<ChatState>((set, get) => {
 
   // 发起 /api/chat SSE 并驱动工作块渲染。
   // editUserIndex 非 null 时走编辑重发通道（后端截断该可见用户消息之后的历史）。
-  // sendMessage 普通路径与 editAndResend 共用，catch/finally 语义保持一致
-  const runChatSSE = async (prompt: string, editUserIndex: number | null = null) => {
+  // images 仅首发路径传入（编辑重发恒空）；reasoning_level 随会话所选等级携带。
+  // 返回 {ok:false,error} 表示流前被服务端拒绝（400），调用方回滚本轮工作块；
+  // 流中断等异常仍按原语义把失败提示写进块内并返回 ok:true
+  const runChatSSE = async (
+    prompt: string,
+    editUserIndex: number | null = null,
+    images: UserImage[] = [],
+  ): Promise<{ ok: boolean; error?: string }> => {
     try {
       sseAbortRef.current = new AbortController()
+      const body: Record<string, unknown> = { prompt, session_id: sessionIdRef.current }
+      if (editUserIndex !== null) body.edit_user_index = editUserIndex
+      const level = get().reasoningLevel
+      if (level) body.reasoning_level = level
+      if (images.length > 0) {
+        body.images = images.map((im) => ({ name: im.name, mime: im.mime, data_url: im.dataUrl }))
+      }
       const resp = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(
-          editUserIndex === null
-            ? { prompt, session_id: sessionIdRef.current }
-            : { prompt, session_id: sessionIdRef.current, edit_user_index: editUserIndex }
-        ),
+        body: JSON.stringify(body),
         signal: sseAbortRef.current.signal,
       })
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      if (!resp.ok) {
+        // 流前拒绝：解析服务端 ok/error 文案上抛，不改动块（由调用方回滚）
+        let msg = `HTTP ${resp.status}`
+        try {
+          const j = await resp.json()
+          if (j && typeof j.error === 'string') msg = j.error
+        } catch { /* 非 JSON 响应保留状态码文案 */ }
+        return { ok: false, error: msg }
+      }
+      lastSentImagesRef.current = images
       await parseSSEStream(resp)
     } catch (e) {
       const blockId = currentBlockId.current
@@ -676,11 +717,24 @@ export const useChatStore = create<ChatState>((set, get) => {
         currentBlockId.current = null
       }
     }
+    return { ok: true }
   }
 
-  // 发送消息。返回 false 表示消息被拒收（任务运行中 / 空内容），调用方可据此提示
-  const sendMessage = async (prompt: string): Promise<boolean> => {
-    if (!prompt.trim()) return false
+  // 回滚删除工作块：流前被拒时 DB 无对应消息，必须移除幽灵块保证 1:1
+  const removeBlock = (id: string) => {
+    if (currentBlockId.current === id) currentBlockId.current = null
+    set(state => {
+      const next = { ...state.blocksById }
+      delete next[id]
+      return { blockIds: state.blockIds.filter(x => x !== id), blocksById: next }
+    })
+  }
+
+  // 发送消息。返回 false 表示消息被拒收（任务运行中 / 空内容 / 流前被服务端拒绝），
+  // 调用方可据此保留待发附件并用 lastSendError 提示
+  const sendMessage = async (prompt: string, images: UserImage[] = []): Promise<boolean> => {
+    // 空文本守卫在存在待发附件时放开（纯图片消息允许发送）
+    if (!prompt.trim() && images.length === 0) return false
     if (get().isStreaming) return false
 
     // 斜杠命令走同步接口
@@ -700,10 +754,14 @@ export const useChatStore = create<ChatState>((set, get) => {
           const taskText = prompt.replace(/^\/\S+\s*/, '').trim() || prompt
           updateBlock(blockId, b => ({ ...b, userMessage: taskText, skillName: data.skill_name }))
           sseAbortRef.current = new AbortController()
+          const skillBody: Record<string, unknown> = { prompt: data.skill_prompt, session_id: sessionIdRef.current }
+          // 技能续跑同样携带会话所选推理等级（与 runChatSSE 口径一致）
+          const level = get().reasoningLevel
+          if (level) skillBody.reasoning_level = level
           const chatResp = await fetch('/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ prompt: data.skill_prompt, session_id: sessionIdRef.current }),
+            body: JSON.stringify(skillBody),
             signal: sseAbortRef.current.signal,
           })
           if (!chatResp.ok) throw new Error(`HTTP ${chatResp.status}`)
@@ -749,10 +807,20 @@ export const useChatStore = create<ChatState>((set, get) => {
       return true
     }
 
-    // 普通对话：创建工作块走 SSE 流
+    // 普通对话：创建工作块走 SSE 流；附件即时挂到气泡，流式期间即可见缩略图
     set({ isStreaming: true })
-    createBlock(prompt)
-    await runChatSSE(prompt)
+    const blockId = createBlock(prompt)
+    if (images.length > 0) {
+      updateBlock(blockId, b => ({ ...b, userImages: images }))
+    }
+    const res = await runChatSSE(prompt, null, images)
+    if (!res.ok) {
+      // 流前被拒：回滚本轮工作块、文案交输入区提示，附件由调用方保留重试
+      removeBlock(blockId)
+      set({ lastSendError: res.error || '发送失败' })
+      await fetchState()
+      return false
+    }
     await fetchState()
     return true
   }
@@ -777,6 +845,10 @@ export const useChatStore = create<ChatState>((set, get) => {
       .filter(id => state.blocksById[id]?.exitReason === 'command').length
     const editUserIndex = idx - commandsBefore
 
+    // 截断前快照：流前被服务端拒绝时整体还原，避免本地序号与 DB 错位
+    const prevBlockIds = state.blockIds
+    const prevBlocksById = state.blocksById
+
     // 本地截断：丢弃该块及其后所有块，blocksById 同步清理避免脏块残留
     const keptIds = state.blockIds.slice(0, idx)
     const keptById: Record<string, WorkBlock> = {}
@@ -798,13 +870,24 @@ export const useChatStore = create<ChatState>((set, get) => {
       : text
 
     set({ isStreaming: true })
-    createBlock(text)
+    const newBlockId = createBlock(text)
     // 重写提示不以 / 开头、不会命中 sendMessage 的技能分流，徽章在此补挂
     if (skillName) {
       const bid = currentBlockId.current
       if (bid) updateBlock(bid, b => ({ ...b, skillName }))
     }
-    await runChatSSE(prompt, editUserIndex)
+    // 编辑重发恒不携带待发附件（images 缺省为空）
+    const res = await runChatSSE(prompt, editUserIndex)
+    if (!res.ok) {
+      removeBlock(newBlockId)
+      set({
+        blockIds: prevBlockIds,
+        blocksById: prevBlocksById,
+        lastSendError: res.error || '发送失败',
+      })
+      await fetchState()
+      return false
+    }
     await fetchState()
     return true
   }
@@ -942,7 +1025,18 @@ export const useChatStore = create<ChatState>((set, get) => {
 
     for (const raw of rawMessages) {
       const role = raw.role as string
-      const content = (raw.content as string) || ''
+      // content 兼容字符串与 parts 数组；占位图片回落最近一次发送的缓存：
+      // 数量对齐时按序号取（多图同 mime 不会错配），否则退到 mime 匹配
+      const parts = extractContentParts(raw.content)
+      const cache = lastSentImagesRef.current
+      const images = parts.images.map((im, i) => {
+        if (!im.dataUrl.includes('__omitted__')) return im
+        const cached = cache.length === parts.images.length
+          ? cache[i]
+          : cache.find((c) => c.mime === im.mime)
+        return cached ? { ...im, dataUrl: cached.dataUrl } : im
+      })
+      const content = parts.text
 
       // 压缩边界（role=system，[Compact Boundary …]）→ 重建分隔线，
       // 解析 pre-compact tokens 展示压缩前规模
@@ -976,6 +1070,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         currentBlock = {
           id: `${sessionId}:b${userMsgIndex++}`,
           userMessage: parsed.text,
+          userImages: images.length > 0 ? images : undefined,
           // skill：渐进披露重写提示 → 「技能徽章 + 任务描述」展示
           skillName: parsed.kind === 'skill' ? parsed.skillName : undefined,
           timeline: [],
@@ -1129,6 +1224,10 @@ export const useChatStore = create<ChatState>((set, get) => {
     permissionRequest: null,
     questionRequest: null,
     permissionMode: 'default',
+    reasoningLevel: null,
+    setReasoningLevel: (level: string | null) => set({ reasoningLevel: level }),
+    lastSendError: null,
+    clearSendError: () => set({ lastSendError: null }),
     sendMessage,
     editAndResend,
     abort,

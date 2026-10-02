@@ -33,6 +33,7 @@ class QueryEngineConfig:
         model: 模型名称
         max_tokens: 最大输出 token 数
         temperature: 采样温度
+        reasoning_level: 本会话所选推理等级（空串=跟随模型默认，不注入推理参数）
         permission_mode: 权限模式
         tools: 可用工具列表
         system_prompt_sections: 系统提示词段落
@@ -52,6 +53,8 @@ class QueryEngineConfig:
     model: str = ""  # 空字符串表示用 get_default_model() 解析，避免硬编码错误模型
     max_tokens: int = 8192
     temperature: float = 1.0
+    # 本会话所选推理等级（空串=跟随模型默认，不注入任何推理参数）
+    reasoning_level: str = ""
     permission_mode: str = "default"
     tools: list[Any] = field(default_factory=get_tools)
     system_prompt_sections: list[Any] = field(default_factory=list)
@@ -340,7 +343,7 @@ class QueryEngine:
 
     async def submitMessage(
         self,
-        prompt: str,
+        prompt: str | list,
         user_context: dict[str, str] | None = None,
         system_context: dict[str, str] | None = None,
     ) -> AsyncGenerator[Any, None]:
@@ -350,7 +353,8 @@ class QueryEngine:
         调 query_loop，循环结束后 turn_count + 1。
 
         Args:
-            prompt: 用户输入文本
+            prompt: 用户输入文本，或 OpenAI 风格 content parts 列表
+                （含图时为 [{"type":"text"...},{"type":"image_url"...}]）
             user_context: 用户上下文字典
             system_context: 系统上下文字典
 
@@ -366,6 +370,14 @@ class QueryEngine:
         from startup.hooks import run_user_prompt_submit_hooks
         from startup.setup import get_hooks_snapshot
         from query.services.api.llm import StreamEvent
+        from query.utils.messages import extract_text_from_content
+
+        # hook 入参口径保持纯文本：parts 时拼接 text 块、图片以 [image] 占位，
+        # 外部脚本的 prompt 字段形态不因多模态而变
+        hook_prompt = (
+            prompt if isinstance(prompt, str)
+            else extract_text_from_content(prompt, image_placeholder="[image]")
+        )
 
         hook_snapshot = get_hooks_snapshot()
         hook_result = None
@@ -373,12 +385,10 @@ class QueryEngine:
             try:
                 hook_result = await run_user_prompt_submit_hooks(
                     hook_snapshot,
-                    prompt,
+                    hook_prompt,
                     self._session_id,
                     effective_root(),
                 )
-            except Exception:
-                hook_result = None
             except Exception:
                 hook_result = None
 

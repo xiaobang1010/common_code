@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import type { PermissionRequest, QuestionRequest } from '../../stores/useChatStore'
+import type { PermissionRequest, QuestionRequest, UserImage } from '../../stores/useChatStore'
 import { useChatStore } from '../../stores/useChatStore'
 import { llmApi, type PermissionMode, type CustomLLMProviderInfo } from '../../api/client'
 import { useSettingsStore } from '../../stores/useSettingsStore'
@@ -10,8 +10,67 @@ import RichChatInput, { type RichChatInputHandle } from './RichChatInput'
 // ChatInput 监听后在输入框内插入内联引用 chip
 export const CHAT_INSERT_REF_EVENT = 'chat-insert-ref'
 
+// 图片附件限额：单条 4 张、解码后 5MB、长边 2000px（与服务端口径一致）
+const MAX_PENDING_IMAGES = 4
+const MAX_IMAGE_DECODED_BYTES = 5 * 1024 * 1024
+const MAX_IMAGE_DIMENSION = 2000
+
+// 待发图片条目：dataUrl 为压缩后的完整 data URL
+interface PendingImage extends UserImage {
+  id: string
+}
+
+// base64 段长度折算解码字节数（近似 编码长度×3/4，最终以服务端解码判定兜底）
+function decodedBytesOfDataUrl(dataUrl: string): number {
+  const b64 = dataUrl.slice(dataUrl.indexOf(',') + 1)
+  const padding = b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0
+  return (b64.length / 4) * 3 - padding
+}
+
+// 读文件为 data URL
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = () => reject(new Error('读取图片失败'))
+    reader.readAsDataURL(file)
+  })
+}
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => resolve(img)
+    img.onerror = () => reject(new Error('图片解码失败'))
+    img.src = src
+  })
+}
+
+// 本地压缩：长边超 2000px 等比缩小后重编码（png 保透明、其余走 jpeg）；
+// 压缩后仍超解码 5MB 上限返回 null 由调用方拒绝
+async function compressImageFile(file: File): Promise<PendingImage | null> {
+  const original = await readFileAsDataUrl(file)
+  let dataUrl = original
+  const img = await loadImage(original)
+  const longSide = Math.max(img.naturalWidth, img.naturalHeight)
+  if (longSide > MAX_IMAGE_DIMENSION) {
+    const scale = MAX_IMAGE_DIMENSION / longSide
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.round(img.naturalWidth * scale)
+    canvas.height = Math.round(img.naturalHeight * scale)
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return null
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+    const isPng = file.type === 'image/png'
+    dataUrl = isPng ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', 0.92)
+  }
+  if (decodedBytesOfDataUrl(dataUrl) > MAX_IMAGE_DECODED_BYTES) return null
+  const mime = dataUrl.slice(5, dataUrl.indexOf(';')) || file.type
+  return { id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: file.name, mime, dataUrl }
+}
+
 interface Props {
-  onSend: (prompt: string) => boolean | Promise<boolean>
+  onSend: (prompt: string, images?: UserImage[]) => boolean | Promise<boolean>
   // 是否正在流式输出（用于显示停止按钮）
   isStreaming: boolean
   // 停止当前对话
@@ -177,22 +236,94 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
     return () => window.removeEventListener(CHAT_INSERT_REF_EVENT, handler)
   }, [])
 
-  // 任务运行中发送被拒收的提示：transient 显示，超时自动消失
-  const [rejectHint, setRejectHint] = useState(false)
+  // 拒收提示（任务运行中 / 附件问题 / 服务端流前拒绝）：transient 显示，超时消失
+  const [rejectHint, setRejectHint] = useState<string | null>(null)
   const rejectTimerRef = useRef<number | undefined>(undefined)
+  const showHint = (msg: string) => {
+    setRejectHint(msg)
+    if (rejectTimerRef.current) window.clearTimeout(rejectTimerRef.current)
+    rejectTimerRef.current = window.setTimeout(() => setRejectHint(null), 3000)
+  }
+
+  // ---- 图片附件状态 ----
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([])
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  // 活动模型能力：输入类型含 image 才允许添加附件；等级列表驱动推理等级选择器显隐
+  const activeModelInfo = providers
+    .find(p => p.id === activeProvider)
+    ?.models.find(m => m.model_id === activeModel)
+  const canAttachImage = !!activeModelInfo?.input_types?.includes('image')
+
+  // ---- 推理等级选择器状态（会话级，存于 chat store，切换模型自动重置） ----
+  const reasoningLevel = useChatStore(s => s.reasoningLevel)
+  const setReasoningLevel = useChatStore(s => s.setReasoningLevel)
+  const reasoningLevels = activeModelInfo?.reasoning_levels ?? []
+  const [showLevelMenu, setShowLevelMenu] = useState(false)
+  const levelMenuRef = useRef<HTMLDivElement>(null)
+
+  // 点击下拉外部时关闭推理等级菜单
+  useEffect(() => {
+    if (!showLevelMenu) return
+    const handleClick = (e: MouseEvent) => {
+      if (levelMenuRef.current && !levelMenuRef.current.contains(e.target as Node)) {
+        setShowLevelMenu(false)
+      }
+    }
+    document.addEventListener('click', handleClick)
+    return () => document.removeEventListener('click', handleClick)
+  }, [showLevelMenu])
+
+  // 添加图片文件（粘贴/拖拽/选择共用入口）：能力门控 + 数量上限 + 压缩与大小校验
+  const addImageFiles = async (files: File[]) => {
+    const imageFiles = files.filter(f => f.type.startsWith('image/'))
+    if (imageFiles.length === 0) return
+    if (!canAttachImage) {
+      showHint('当前模型不支持图片输入')
+      return
+    }
+    if (pendingImages.length + imageFiles.length > MAX_PENDING_IMAGES) {
+      showHint(`单条消息最多携带 ${MAX_PENDING_IMAGES} 张图片`)
+      return
+    }
+    const added: PendingImage[] = []
+    for (const f of imageFiles) {
+      try {
+        const item = await compressImageFile(f)
+        if (!item) showHint(`图片 ${f.name} 压缩后仍超过 5MB，请更换`)
+        else added.push(item)
+      } catch {
+        showHint(`图片 ${f.name} 处理失败`)
+      }
+    }
+    if (added.length > 0) setPendingImages(prev => [...prev, ...added])
+  }
 
   const handleSend = () => {
     const trimmed = text.trim()
-    if (!trimmed || taskActive) return
-    const showHint = () => {
-      setRejectHint(true)
-      if (rejectTimerRef.current) window.clearTimeout(rejectTimerRef.current)
-      rejectTimerRef.current = window.setTimeout(() => setRejectHint(false), 3000)
+    // 存在待发附件时空文本也允许发送
+    if ((!trimmed && pendingImages.length === 0) || taskActive) return
+    if (trimmed.startsWith('/') && pendingImages.length > 0) {
+      showHint('命令消息不支持携带图片')
+      return
     }
+    const images = pendingImages.map(({ name, mime, dataUrl }) => ({ name, mime, dataUrl }))
+    // 提交即清空待发附件（附件已随本轮消息移交）；被拒时整体还原供重试
+    setPendingImages([])
     // 序列化文本已含内联 [文件名](./路径) 引用，直接发送
-    Promise.resolve(onSend(trimmed)).then(sent => {
-      if (sent) richInputRef.current?.clear()
-      else showHint()
+    Promise.resolve(onSend(trimmed, images)).then(sent => {
+      if (sent) {
+        richInputRef.current?.clear()
+      } else {
+        setPendingImages(prev => (prev.length > 0 ? prev : images.map((im, i) => ({ id: `restore-${i}-${Date.now()}`, ...im }))))
+        // 被拒：服务端流前拒绝的文案优先展示
+        const err = useChatStore.getState().lastSendError
+        if (err) {
+          showHint(err)
+          useChatStore.getState().clearSendError()
+        } else {
+          showHint('当前任务正在运行中，消息未发送——请等待完成或点击「停止」后再发送')
+        }
+      }
     })
   }
 
@@ -301,7 +432,7 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
 
   return (
     <div style={{ position: 'relative' }}>
-      {/* 任务运行中发送被拒收的提示条 */}
+      {/* 发送被拒收的提示条（任务运行中 / 附件问题 / 服务端拒绝） */}
       {rejectHint && (
         <div
           style={{
@@ -315,7 +446,7 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
             fontFamily: 'var(--font-ui)',
           }}
         >
-          当前任务正在运行中，消息未发送——请等待完成或点击「停止」后再发送
+          {rejectHint}
         </div>
       )}
 
@@ -559,6 +690,56 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
           transition: 'all var(--transition)',
         }}
       >
+        {/* 待发图片预览条：缩略图 + 删除（附件由本组件持有，发送成功才清空） */}
+        {pendingImages.length > 0 && (
+          <div
+            style={{
+              display: 'flex',
+              gap: '8px',
+              flexWrap: 'wrap',
+              padding: '10px 12px 0',
+            }}
+          >
+            {pendingImages.map(img => (
+              <div key={img.id} style={{ position: 'relative' }}>
+                <img
+                  src={img.dataUrl}
+                  alt={img.name}
+                  style={{
+                    width: '56px',
+                    height: '56px',
+                    objectFit: 'cover',
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--border)',
+                    display: 'block',
+                  }}
+                />
+                <button
+                  onClick={() => setPendingImages(prev => prev.filter(p => p.id !== img.id))}
+                  title="移除图片"
+                  style={{
+                    position: 'absolute',
+                    top: '-6px',
+                    right: '-6px',
+                    width: '18px',
+                    height: '18px',
+                    borderRadius: '50%',
+                    border: 'none',
+                    background: 'var(--error)',
+                    color: '#fff',
+                    fontSize: '11px',
+                    lineHeight: '18px',
+                    cursor: 'pointer',
+                    padding: 0,
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* 富文本输入：文件引用以 chip 内联在文字流中，随文本一起序列化发送 */}
         <RichChatInput
           ref={richInputRef}
@@ -568,13 +749,27 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
           onKeyDown={handleKeyDown}
           onFocus={() => setIsFocused(true)}
           onBlur={() => setIsFocused(false)}
+          onImageFiles={addImageFiles}
           placeholder={
             taskActive
               ? 'AI 正在思考...'
               : currentTaskSessionId && currentSessionId !== currentTaskSessionId
                 ? '当前有任务运行中，可继续输入草稿'
-                : '描述你想做什么，或输入 / 命令'
+                : '描述你想做什么，或输入 / 命令（支持粘贴/拖拽图片）'
           }
+        />
+        {/* 隐藏的图片选择输入：由工具栏「+」按钮触发 */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          style={{ display: 'none' }}
+          onChange={(e) => {
+            const files = Array.from(e.target.files || [])
+            if (files.length > 0) void addImageFiles(files)
+            e.target.value = ''
+          }}
         />
 
         {/* 底部工具栏 - 发送按钮和提示 */}
@@ -714,8 +909,35 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
               </span>
             )}
           </div>
-          {/* 右侧组：进度圈 + 模型 + 发送/停止（整组靠右，圈在组首） */}
+          {/* 右侧组：附件 + 进度圈 + 模型 + 等级 + 发送/停止（整组靠右） */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', pointerEvents: 'auto' }}>
+            {/* 「+」添加图片附件（隐藏 file input 触发） */}
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={taskActive}
+              title={canAttachImage ? '添加图片附件（也支持粘贴/拖拽）' : '当前模型不支持图片输入'}
+              aria-label="添加图片"
+              style={{
+                width: '26px',
+                height: '26px',
+                padding: 0,
+                border: 'none',
+                borderRadius: '50%',
+                background: 'transparent',
+                color: 'var(--text-tertiary)',
+                cursor: taskActive ? 'not-allowed' : 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--text-secondary)' }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-tertiary)' }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+            </button>
             {/* 上下文用量：悬停进度圈即显示「上下文容量」面板（右缘锚定，防溢出窗口） */}
             <div
               style={{ position: 'relative', display: 'flex', alignItems: 'center' }}
@@ -1050,6 +1272,83 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
                 </div>
               )}
             </div>
+            {/* 推理等级选择器：仅当活动模型配置了等级列表时显示 */}
+            {reasoningLevels.length > 0 && (
+              <div ref={levelMenuRef} style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                <button
+                  onClick={() => setShowLevelMenu(v => !v)}
+                  title="推理等级"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '3px',
+                    padding: '4px 10px',
+                    border: 'none',
+                    borderRadius: '999px',
+                    background: 'transparent',
+                    color: 'var(--text-tertiary)',
+                    fontSize: '11px',
+                    fontFamily: 'var(--font-ui)',
+                    fontWeight: 500,
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--text-secondary)' }}
+                  onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-tertiary)' }}
+                >
+                  {reasoningLevel || '跟随默认'}
+                  <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="m6 9 6 6 6-6" />
+                  </svg>
+                </button>
+                {showLevelMenu && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      bottom: '100%',
+                      right: 0,
+                      marginBottom: '8px',
+                      minWidth: '140px',
+                      backgroundColor: 'var(--bg-elevated)',
+                      border: '1px solid var(--border-strong)',
+                      borderRadius: 'var(--radius-md)',
+                      boxShadow: 'var(--shadow-md)',
+                      zIndex: 20,
+                      padding: '4px',
+                    }}
+                  >
+                    {[null, ...reasoningLevels].map(lv => {
+                      const isActive = reasoningLevel === lv
+                      return (
+                        <div
+                          key={lv ?? '__default__'}
+                          onClick={() => {
+                            setReasoningLevel(lv)
+                            setShowLevelMenu(false)
+                          }}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: '8px',
+                            padding: '6px 10px',
+                            cursor: 'pointer',
+                            borderRadius: 'var(--radius-sm)',
+                            backgroundColor: isActive ? 'var(--selected-bg)' : 'transparent',
+                            color: 'var(--text-primary)',
+                            fontSize: '12px',
+                            fontFamily: 'var(--font-mono)',
+                          }}
+                        >
+                          <span>{lv ?? '跟随模型默认'}</span>
+                          {isActive && <span style={{ fontSize: '11px' }}>✓</span>}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
             {taskActive ? (
             // 任务进行中（前台流式或本会话后台任务）：圆形停止钮，与发送钮同构（实心圆 + 对比色图形）
             <button
@@ -1085,10 +1384,10 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
               </svg>
             </button>
           ) : (
-            // 非流式：圆形发送钮（↑ 图标），空内容时降为三级灰不可点
+            // 非流式：圆形发送钮（↑ 图标），空内容且无待发附件时降为三级灰不可点
             <button
               onClick={handleSend}
-              disabled={!text.trim()}
+              disabled={!text.trim() && pendingImages.length === 0}
               title="发送"
               aria-label="发送"
               style={{
@@ -1098,9 +1397,9 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
                 padding: 0,
                 border: 'none',
                 borderRadius: '50%',
-                background: text.trim() ? 'var(--button-primary-bg)' : 'transparent',
-                color: text.trim() ? 'var(--button-primary-text)' : 'var(--text-tertiary)',
-                cursor: text.trim() ? 'pointer' : 'default',
+                background: (text.trim() || pendingImages.length > 0) ? 'var(--button-primary-bg)' : 'transparent',
+                color: (text.trim() || pendingImages.length > 0) ? 'var(--button-primary-text)' : 'var(--text-tertiary)',
+                cursor: (text.trim() || pendingImages.length > 0) ? 'pointer' : 'default',
                 transition: 'all var(--transition-fast)',
                 display: 'inline-flex',
                 alignItems: 'center',
@@ -1108,10 +1407,10 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
                 flexShrink: 0,
               }}
               onMouseEnter={(e) => {
-                if (text.trim()) e.currentTarget.style.background = 'var(--button-primary-bg-hover)'
+                if (text.trim() || pendingImages.length > 0) e.currentTarget.style.background = 'var(--button-primary-bg-hover)'
               }}
               onMouseLeave={(e) => {
-                if (text.trim()) e.currentTarget.style.background = 'var(--button-primary-bg)'
+                if (text.trim() || pendingImages.length > 0) e.currentTarget.style.background = 'var(--button-primary-bg)'
               }}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">

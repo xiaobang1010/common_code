@@ -8,9 +8,11 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 
 from query.services.api.client import get_default_model, reset_client
 from query.services.api.providers import get_registry
+from query.utils.reasoning import validate_params_map
 import server.state
 from startup.config import (
     CustomLLMModel,
@@ -20,6 +22,58 @@ from startup.config import (
 )
 
 router = APIRouter()
+
+# 输入类型合法枚举（存储口径，中文仅作界面展示标签）
+_VALID_INPUT_TYPES = {"text", "image", "video", "pdf"}
+
+
+def _validate_and_fix_models(models_raw: list) -> str | None:
+    """校验模型条目并就地补正 input_types 缺 text 的情况。
+
+    Returns:
+        错误信息字符串；None 表示全部合法。models 为全量替换语义，
+        前端提交时必须携带全部字段。
+    """
+    for i, m in enumerate(models_raw):
+        if not isinstance(m, dict):
+            return f"models[{i}] 必须是对象"
+        mid = str(m.get("model_id") or f"models[{i}]")
+
+        # input_types：枚举子集，缺 text 补正；未提供时不写键（from_dict 走默认）
+        if "input_types" in m:
+            it = m["input_types"]
+            if not isinstance(it, list) or any(
+                not isinstance(t, str) or t not in _VALID_INPUT_TYPES for t in it
+            ):
+                return f"模型 {mid} 的输入类型取值非法，仅允许 text/image/video/pdf"
+            if "text" not in it:
+                it.insert(0, "text")
+
+        # reasoning_levels：非空字符串、不重复
+        levels_raw = m.get("reasoning_levels") or []
+        if not isinstance(levels_raw, list):
+            return f"模型 {mid} 的推理等级必须是列表"
+        levels: list[str] = []
+        for lv in levels_raw:
+            if not isinstance(lv, str) or not lv.strip():
+                return f"模型 {mid} 的推理等级存在空值"
+            if lv in levels:
+                return f"模型 {mid} 的推理等级存在重复值: {lv}"
+            levels.append(lv)
+
+        # reasoning_params_map：形态判定与 query/utils/reasoning 求值共用同一规则
+        pm = m.get("reasoning_params_map") or ""
+        if not isinstance(pm, str):
+            return f"模型 {mid} 的推理参数映射必须是字符串"
+        err = validate_params_map(pm, levels)
+        if err:
+            return f"模型 {mid}: {err}"
+    return None
+
+
+def _bad_request(error: str) -> JSONResponse:
+    """校验失败的统一响应形态（与本文件既有 ok/error 口径一致）。"""
+    return JSONResponse(status_code=400, content={"ok": False, "error": error})
 
 
 # ---------------------------------------------------------------------------
@@ -161,9 +215,22 @@ def set_subagents_config(body: dict) -> dict:
 
 @router.get("/api/llm-providers")
 def list_custom_llm_providers() -> dict:
-    """列出自定义 LLM 供应商。"""
+    """列出自定义 LLM 供应商。
+
+    模型条目未配置推理等级时合并内置预设（与运行时 get_model_config 同源），
+    保证前端等级选择器与配置对话框对已知模型开箱即显示预设档位。
+    """
+    from startup.model.config import get_model_config
+
     config = get_global_config()
     providers = [CustomLLMProvider.from_dict(p).to_dict() for p in config.llm_providers]
+    for p in providers:
+        for m in p.get("models", []):
+            if not m.get("reasoning_levels"):
+                resolved = get_model_config(m.get("model_id", ""))
+                if resolved.reasoning_levels:
+                    m["reasoning_levels"] = list(resolved.reasoning_levels)
+                    m["reasoning_params_map"] = resolved.reasoning_params_map
     return {
         "providers": providers,
         "active_provider": config.active_provider,
@@ -190,8 +257,14 @@ def add_custom_llm_provider(body: dict) -> dict:
     # 生成唯一 ID
     provider_id = str(uuid.uuid4())
 
+    # 模型条目校验（含 input_types 缺 text 的补正）
+    models_raw = body.get("models", [])
+    err = _validate_and_fix_models(models_raw)
+    if err:
+        return _bad_request(err)
+
     # 解析模型列表
-    models = [CustomLLMModel.from_dict(m) for m in body.get("models", [])]
+    models = [CustomLLMModel.from_dict(m) for m in models_raw]
 
     # 创建供应商对象
     provider = CustomLLMProvider(
@@ -265,6 +338,10 @@ def update_custom_llm_provider(provider_id: str, body: dict) -> dict:
     old_provider.api_key = body.get("api_key", old_provider.api_key)
     old_provider.api_format = body.get("api_format", old_provider.api_format)
     if "models" in body:
+        # models 为全量替换语义：校验通过后整体重建
+        err = _validate_and_fix_models(body["models"])
+        if err:
+            return _bad_request(err)
         old_provider.models = [
             CustomLLMModel.from_dict(m) for m in body["models"]
         ]

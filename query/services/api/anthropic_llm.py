@@ -275,6 +275,33 @@ def _build_openai_messages(messages: list[Any]) -> list[dict[str, Any]]:
     return to_openai_messages(messages)
 
 
+def _convert_user_content(content: Any) -> Any:
+    """user 消息 content 转换：字符串原样；OpenAI parts 数组转 Anthropic 块。
+
+    image_url 的 data URL 拆为 {type:"image",source:{type:"base64",media_type,data}}；
+    无法识别的块跳过（防御异常形态，不让单条脏块炸掉整个请求）。
+    """
+    if not isinstance(content, list):
+        return content
+    blocks: list[dict[str, Any]] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "text" and isinstance(block.get("text"), str):
+            blocks.append({"type": "text", "text": block["text"]})
+        elif btype == "image_url":
+            url = (block.get("image_url") or {}).get("url", "")
+            if isinstance(url, str) and url.startswith("data:") and "," in url:
+                header, _, payload = url.partition(",")
+                media_type = header[5:].split(";")[0] or "image/png"
+                blocks.append({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": media_type, "data": payload},
+                })
+    return blocks
+
+
 def _to_anthropic_messages(
     openai_messages: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]]]:
@@ -309,9 +336,10 @@ def _to_anthropic_messages(
             i += 1
 
         elif role == "user":
+            # parts 数组（含图）转 Anthropic 块；字符串维持原样透传
             anthropic_messages.append({
                 "role": "user",
-                "content": content if content is not None else "",
+                "content": _convert_user_content(content) if content is not None else "",
             })
             i += 1
 

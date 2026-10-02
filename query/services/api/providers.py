@@ -128,6 +128,7 @@ class LLMProviderRegistry:
                 "models": [...],      # 模型列表
                 "api_format": "openai" | "anthropic",
                 "source": "custom" | "plugin",
+                "active_model_config": {...} | None,  # 当前模型完整配置快照
             }
         """
         with self._lock:
@@ -141,6 +142,13 @@ class LLMProviderRegistry:
                     model = self._active_model
                 elif model_ids:
                     model = model_ids[0]
+                # 当前模型的完整配置快照（供既有调用方取全量字段）；
+                # 模型级字段的运行时消费以 get_model_config 单源为准
+                active_model_config: dict[str, Any] | None = None
+                for m in p.models:
+                    if m.model_id == model:
+                        active_model_config = m.to_dict()
+                        break
                 return {
                     "id": p.id,
                     "name": p.name,
@@ -150,6 +158,7 @@ class LLMProviderRegistry:
                     "models": model_ids,
                     "api_format": p.api_format,
                     "source": "custom",
+                    "active_model_config": active_model_config,
                 }
             # 然后查找插件供应商
             if self._active and self._active in self._providers:
@@ -163,6 +172,7 @@ class LLMProviderRegistry:
                     "models": p.models,
                     "api_format": "openai",
                     "source": "plugin",
+                    "active_model_config": None,
                 }
             return None
 

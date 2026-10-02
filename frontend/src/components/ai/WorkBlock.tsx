@@ -35,6 +35,37 @@ function renderUserMessage(text: string): ReactNode[] {
   return nodes
 }
 
+// 用户消息图片条：缩略图渲染，点击在原尺寸/缩略间切换（预览不弹新窗）
+function UserImageStrip({ images }: { images: Array<{ name: string; mime: string; dataUrl: string }> }) {
+  const [expandedIdx, setExpandedIdx] = useState<number | null>(null)
+  return (
+    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: blockImageGap }}>
+      {images.map((img, i) => (
+        <img
+          key={i}
+          src={img.dataUrl}
+          alt={img.name || '图片'}
+          title="点击放大/还原"
+          onClick={() => setExpandedIdx(v => (v === i ? null : i))}
+          style={{
+            width: expandedIdx === i ? '100%' : 96,
+            height: expandedIdx === i ? 'auto' : 96,
+            objectFit: expandedIdx === i ? 'contain' : 'cover',
+            borderRadius: 'var(--radius-sm)',
+            border: '1px solid var(--border)',
+            cursor: 'zoom-in',
+            display: 'block',
+            background: 'var(--bg-primary)',
+          }}
+        />
+      ))}
+    </div>
+  )
+}
+
+// 图片与文本之间的间隙
+const blockImageGap = '8px'
+
 interface Props {
   // 只订阅自己的工作块：流式更新只触发本组件重渲
   blockId: string
@@ -781,6 +812,8 @@ function WorkBlockView({ blockId }: Props) {
                   <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
                 </svg>
               </button>
+              {/* 含图消息不支持编辑重发（编辑通路只承载文本） */}
+              {!(block.userImages && block.userImages.length > 0) && (
               <button
                 type="button"
                 className="msg-action-btn"
@@ -803,6 +836,7 @@ function WorkBlockView({ blockId }: Props) {
                   <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
                 </svg>
               </button>
+              )}
             </div>
           )}
           <div
@@ -843,6 +877,9 @@ function WorkBlockView({ blockId }: Props) {
               </span>
             )}
             {renderUserMessage(block.userMessage)}
+            {block.userImages && block.userImages.length > 0 && (
+              <UserImageStrip images={block.userImages} />
+            )}
           </div>
         </div>
       )}
