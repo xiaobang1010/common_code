@@ -5,6 +5,7 @@ import {
   reportTabState,
   reportTabActive,
   reportTabClosed,
+  reportTeardown,
 } from '../../utils/browserBridge'
 import { normalizeAddress } from '../../utils/browserLogic'
 
@@ -119,11 +120,16 @@ export default function BrowserPane() {
   const activateTab = useBrowserStore((s) => s.activateTab)
 
   const [address, setAddress] = useState('')
+  const [devToolsOpen, setDevToolsOpen] = useState(false)
   // 地址栏只在切换标签或页面导航时同步，用户输入中途不被覆盖
   const activeTab = tabs.find((t) => t.tabId === activeTabId) ?? null
   useEffect(() => {
     setAddress(activeTab?.url ?? '')
   }, [activeTabId, activeTab?.url])
+
+  // 卸载即回收（双路之一，与 App 层「状态移出」effect 幂等互补）：
+  // 产物区折叠时本组件随 ArtifactPanel 早退卸载，主进程注册表与 guest 一并清账
+  useEffect(() => () => reportTeardown(), [])
 
   const activeEl = (): WebviewEl | null =>
     document.querySelector<WebviewEl>(`webview[data-tab-id="${activeTabId}"]`)
@@ -268,10 +274,14 @@ export default function BrowserPane() {
             onClick={() => {
               const el = activeEl()
               if (!el) return
-              // 再点一次关闭：devtools 无同步状态可读，切换语义足够
-              try {
-                el.openDevTools()
-              } catch { /* 已打开时忽略 */ }
+              // devtools 无同步状态可读，用本地开关量实现开/关切换
+              setDevToolsOpen((prev) => {
+                try {
+                  if (prev) el.closeDevTools()
+                  else el.openDevTools()
+                } catch { /* guest 已销毁等场景忽略 */ }
+                return !prev
+              })
             }}
             title="开发者工具"
             style={toolBtnStyle}

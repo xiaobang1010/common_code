@@ -32,67 +32,6 @@
       }
     },
     {
-      "path": "tab-claiming-iab.md",
-      "title": "User Tab Claiming",
-      "name": "tab-claiming-iab",
-      "mode": "included",
-      "when": {
-        "browserTypes": [
-          "iab"
-        ],
-        "requiredApiMembers": [
-          "BrowserUser.openTabs",
-          "BrowserUser.claimTab"
-        ]
-      }
-    },
-    {
-      "path": "tab-cleanup-iab.md",
-      "title": "Tab Cleanup",
-      "name": "tab-cleanup-iab",
-      "mode": "included",
-      "when": {
-        "browserTypes": [
-          "iab"
-        ],
-        "requiredApiMembers": [
-          "Tabs.finalize"
-        ]
-      }
-    },
-    {
-      "path": "tab-cleanup-iab-internal.md",
-      "title": "Tab Lifecycle Marks",
-      "name": "tab-cleanup-iab-internal",
-      "mode": "included",
-      "when": {
-        "browserTypes": [
-          "iab"
-        ],
-        "requiredApiMembers": [
-          "Tab.markDeliverable",
-          "Tab.markHandoff"
-        ]
-      }
-    },
-    {
-      "path": "all-tabs-cleanup.md",
-      "title": "All-Tabs Cleanup Guidance",
-      "name": "all-tabs-cleanup",
-      "mode": "included",
-      "when": {
-        "browserTypes": [
-          "iab"
-        ],
-        "requiredApiMembers": [
-          "BrowserUser.openTabs",
-          "BrowserUser.claimTab",
-          "Tab.close",
-          "Tabs.list"
-        ]
-      }
-    },
-    {
       "path": "viewport.md",
       "title": "Browser Viewport Guidance",
       "name": "viewport",

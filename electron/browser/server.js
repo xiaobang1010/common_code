@@ -94,11 +94,16 @@ class BrowserControlServer {
       let body = ''
       let overflow = false
       req.on('data', (chunk) => {
+        if (overflow) return
         body += chunk
-        if (body.length > MAX_BODY_BYTES) { overflow = true; req.destroy() }
+        if (body.length > MAX_BODY_BYTES) {
+          overflow = true
+          this.json(res, 413, { ok: false, error: { code: 'payload_too_large', message: '请求体过大' } })
+          req.destroy()
+        }
       })
       req.on('end', async () => {
-        if (overflow) return this.json(res, 413, { ok: false, error: { code: 'payload_too_large', message: '请求体过大' } })
+        if (overflow) return
         let payload
         try {
           payload = JSON.parse(body)
@@ -197,6 +202,12 @@ class BrowserControlServer {
       case 'evaluate': {
         const value = await this.cdp.evaluate(tabId, command.expression)
         return { ok: true, value }
+      }
+
+      case 'elementInfo': {
+        // 裸 wire 命令与 playwright 动作共用页内实现，负载键按协议为 element
+        const r = await this.runInPage(tabId, { name: 'elementInfo', x: command.x, y: command.y })
+        return { ok: true, element: r ? r.value : undefined }
       }
 
       case 'playwright':
