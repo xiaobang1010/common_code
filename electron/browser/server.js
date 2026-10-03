@@ -1,7 +1,7 @@
 // 内置浏览器 HTTP 控制服务：仅监听 127.0.0.1，随机端口 + Bearer 令牌鉴权。
 // 技能侧的 runner 经桥接文件发现端口与令牌，把控制命令 POST 进来，由主进程转译执行。
 // 响应包裹与参考实现 SDK 的解包逻辑逐字对齐：{ok:true, <命令对应顶层字段>} /
-// {ok:false, error:{code,message}}，负载键随命令而定（tabs/tab/state/image/value/snapshot），
+// {ok:false, error:{code,message}}，负载键随命令而定（tabs/tab/state/image/value/element），
 // 绝不统一包成 {ok,value}——否则原样移植的 SDK 每个命令都会解包失败。
 const http = require('http')
 const crypto = require('crypto')
