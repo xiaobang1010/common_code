@@ -16,6 +16,9 @@ import { useSessions } from './hooks/useSessions'
 import { useBranches } from './hooks/useBranches'
 import { useRunsWatcher } from './hooks/useRunsWatcher'
 import { TOOL_META, type ToolId } from './components/editor/toolMeta'
+import { useBrowserStore } from './stores/useBrowserStore'
+import { onBrowserCommand, reportTeardown, reportVisibility } from './utils/browserBridge'
+import { panelToggleDecision } from './utils/browserLogic'
 import { gitApi, sessionsApi, type StateResponse, type TurnExitInfo } from './api/client'
 
 // 布局宽度预算：对话区是主角，有最小宽度保护；编辑区宽度设上下限
@@ -40,10 +43,10 @@ const LAYOUT_KEYS = {
   sidebarView: 'layout.sidebarView',
 } as const
 
-// 默认工具标签集：右侧产物区默认只呈现 概要。
-// 不在工具标签体系内的两例：终端（会话区底部独立面板，入口在标题栏开关）、
+// 默认工具标签集：空集——展开产物区后默认落在「打开标签页」选择页，由用户点卡片开标签。
+// 不在工具标签体系内的两例：终端（会话区底部独立面板，入口在标题栏开关与选择页卡片）、
 // 文件视图（面板无工具激活时的基础视图，打开文件即切过去，无需标签占位）
-const DEFAULT_TOOL_TABS: ToolId[] = ['summary']
+const DEFAULT_TOOL_TABS: ToolId[] = []
 
 // 初始化工具标签开关集：已存记录按当前 TOOL_META 过滤（已被移除的标签在此自然消失），
 // 全新安装采用默认集；用户主动「关闭全部」得到的空集保持为空（面板全隐藏）
@@ -64,7 +67,7 @@ function App() {
   const [sidebarView, setSidebarView] = useState<SidebarView>(() =>
     localStorage.getItem(LAYOUT_KEYS.sidebarView) === 'groups' ? 'groups' : 'projects',
   )
-  // 右侧面板（产物区）：默认收起；展开后默认呈现概要产物视图，打开文件不再是唯一展开时机
+  // 右侧面板（产物区）：默认收起；展开后无工具标签激活时呈现「打开标签页」选择页
   const [editorCollapsed, setEditorCollapsed] = useState(true)
 
   // 底部终端面板：默认收起。首次展开才挂载终端组件（没用过终端就不白起 shell 进程），
@@ -72,11 +75,12 @@ function App() {
   const [terminalOpen, setTerminalOpen] = useState(false)
   const [terminalMounted, setTerminalMounted] = useState(false)
 
-  // 工具标签（概要/搜索/审查）开关状态：由 App 持有，标题栏开关/入口卡片/快捷键共用
+  // 工具标签（搜索/审查/智能体/浏览器）开关状态：由 App 持有，标题栏开关/入口卡片/快捷键共用
   const [toolTabsOpen, setToolTabsOpen] = useState<ToolId[]>(() => loadInitialToolTabs())
   const [activeToolId, setActiveToolId] = useState<ToolId | null>(() => {
     const v = localStorage.getItem(LAYOUT_KEYS.activeToolId)
-    return v && TOOL_META.some((t) => t.id === v) ? (v as ToolId) : 'summary'
+    // 无记录或记录指向已下线标签（如概要）时回退 null：产物区落在选择页
+    return v && TOOL_META.some((t) => t.id === v) ? (v as ToolId) : null
   })
   // 最近使用的工具标签：标题栏开关展开编辑区时聚焦它
   const lastToolIdRef = useRef<ToolId | null>(activeToolId)
@@ -200,7 +204,7 @@ function App() {
     setEditorWidth(0)
     setTerminalHeight(TERMINAL_DEFAULT)
     setToolTabsOpen(DEFAULT_TOOL_TABS)
-    setActiveToolId('summary')
+    setActiveToolId(null)
     setSidebarCollapsed(false)
     setEditorCollapsed(true)
     // 终端面板只收起不复位挂载闩锁：重置布局不该把正在跑的 shell 杀掉
@@ -296,6 +300,49 @@ function App() {
     setActiveToolId(null)
   }, [])
 
+  // ---- 内置浏览器 ----
+  // openTool/activateFile 经 ref 转发给命令订阅，避免订阅随回调重建
+  const openToolRef = useRef(openTool)
+  openToolRef.current = openTool
+  const activateFileRef = useRef(activateFile)
+  activateFileRef.current = activateFile
+
+  // 主进程命令接收：订阅放常驻 App 层——产物区折叠时 ArtifactPanel 早退不挂载，
+  // BrowserPane 非常驻，折叠态的 tab-add 只有这里能接住（先展开面板再建标签）
+  useEffect(() => {
+    return onBrowserCommand((cmd) => {
+      const store = useBrowserStore.getState()
+      if (cmd.type === 'tab-add') {
+        openToolRef.current('browser')
+        store.ensureTab(cmd.tabId, cmd.url)
+      } else if (cmd.type === 'tab-remove' && cmd.tabId) {
+        store.closeTab(cmd.tabId)
+      } else if (cmd.type === 'tab-activate' && cmd.tabId) {
+        openToolRef.current('browser')
+        store.activateTab(cmd.tabId)
+      } else if (cmd.type === 'pane-visibility') {
+        // 显示=打开并激活浏览器标签；隐藏=切回文件视图（标签保持挂载，网页不销毁）
+        if (cmd.visible) openToolRef.current('browser')
+        else activateFileRef.current()
+      }
+    })
+  }, [])
+
+  // 回收：browser 移出工具标签集或面板折叠即销毁 guest 并清空注册表。
+  // 首启即折叠会空跑一次 teardown，主进程对空注册表幂等，无副作用
+  const browserTabOpen = toolTabsOpen.includes('browser')
+  useEffect(() => {
+    if (!browserTabOpen || editorCollapsed) {
+      reportTeardown()
+      useBrowserStore.getState().reset()
+    }
+  }, [browserTabOpen, editorCollapsed])
+
+  // 面板可见性回报：browser 标签处于激活显示状态才算可见（控制服务 visibility 命令读取）
+  useEffect(() => {
+    reportVisibility(!editorCollapsed && activeToolId === 'browser')
+  }, [editorCollapsed, activeToolId])
+
   // ---- 智能体轨迹标签 ----
 
   // 选中任务 id：内存态不持久化（重启后由标签内列表重选）；会话切换时重置防旧选中悬空
@@ -313,16 +360,16 @@ function App() {
     [openTool]
   )
 
-  // 标题栏面板开关：展开编辑区并聚焦最近工具标签；已展开则收起
+  // 标题栏面板开关：展开编辑区并聚焦最近工具标签；已展开则收起。
+  // 无最近工具标签（首启或概要下线后）时只展开面板、保持选择页，不强行激活任何标签
   const togglePanel = useCallback(() => {
-    if (!editorCollapsed) {
-      toggleEditor()
-      return
-    }
-    const last = lastToolIdRef.current ?? 'summary'
+    const decision = panelToggleDecision(!editorCollapsed, lastToolIdRef.current)
     toggleEditor()
-    setToolTabsOpen((prev) => (prev.includes(last) ? prev : [...prev, last]))
-    setActiveToolId(last)
+    if (decision.action === 'expand' && decision.focusTool) {
+      const last = decision.focusTool
+      setToolTabsOpen((prev) => (prev.includes(last) ? prev : [...prev, last]))
+      setActiveToolId(last)
+    }
   }, [editorCollapsed, toggleEditor])
 
   // ---- 会话管理相关回调 ----
@@ -781,7 +828,7 @@ function App() {
           )}
         </div>
 
-        {/* 右侧面板（产物区）：默认收起，展开后默认呈现概要产物视图；打开文件不再是唯一展开时机。
+        {/* 右侧面板（产物区）：默认收起，展开后无工具标签激活时呈现「打开标签页」选择页。
             树位置保持恒定（折叠时仅隐藏分隔条、宽度交给内容），
             避免折叠/展开切换导致 ArtifactPanel 重建丢失已打开标签 */}
         <div style={{ display: editorCollapsed ? 'none' : 'flex', height: '100%', flexShrink: 0 }}>
@@ -806,6 +853,7 @@ function App() {
             onActivateFile={activateFile}
             agentTraceId={agentTraceId}
             onSelectAgentTrace={setAgentTraceId}
+            onOpenTerminal={toggleTerminal}
           />
         </div>
       </div>

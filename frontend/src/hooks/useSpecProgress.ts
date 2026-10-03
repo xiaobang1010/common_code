@@ -24,7 +24,7 @@ export interface SpecProgressData {
 }
 
 // 共享进展口径：优先任务清单，任务为空回退验证清单，两者皆空返回 null。
-// 胶囊卡收起态与概要卡共用此函数，保证两处「进展」数字口径一致；
+// 胶囊卡收起态与展开态共用此函数，保证「进展」数字口径一致；
 // 展开态卡头不走这里（跟随「任务|验证」分组切换显示当前分组）
 export function deriveProgress(
   data: SpecProgressData | null,

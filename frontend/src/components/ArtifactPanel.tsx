@@ -6,12 +6,12 @@ import Breadcrumb from './editor/Breadcrumb'
 import CodeEditor from './editor/CodeEditor'
 import TabContextMenu from './editor/TabContextMenu'
 import SearchPanel from './sidebar/SearchPanel'
-import SummaryCard from './inspector/cards/SummaryCard'
 import ReviewCard from './inspector/cards/ReviewCard'
 import AgentTraceCard from './inspector/cards/AgentTraceCard'
+import BrowserPane from './browser/BrowserPane'
+import TabPicker from './editor/TabPicker'
 import QuickOpen from './editor/QuickOpen'
 import Markdown from './ai/Markdown'
-import { useChatStore } from '../stores/useChatStore'
 import { TOOL_META, type ToolId } from './editor/toolMeta'
 import { filesApi, type FileWriteError } from '../api/client'
 
@@ -95,10 +95,12 @@ interface ArtifactPanelProps {
   // 智能体标签：选中任务 id 由 App 持有（胶囊卡点入与标签内切换共用一处状态）
   agentTraceId: string | null
   onSelectAgentTrace: (id: string) => void
+  // 初始选择页「终端」卡片：终端面板开关在 App 层，这里只转发
+  onOpenTerminal: () => void
 }
 
 const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
-  ({ collapsed, onToggleCollapse, toolTabsOpen, activeToolId, onOpenTool, onCloseTool, onActivateFile, agentTraceId, onSelectAgentTrace }, ref) => {
+  ({ collapsed, onToggleCollapse, toolTabsOpen, activeToolId, onOpenTool, onCloseTool, onActivateFile, agentTraceId, onSelectAgentTrace, onOpenTerminal }, ref) => {
     const [openTabs, setOpenTabs] = useState<OpenTab[]>([])
     const [activePath, setActivePath] = useState('')
     const [conflict, setConflict] = useState<ConflictInfo | null>(null)
@@ -814,7 +816,7 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
       </div>
     ) : null
 
-    // 文件空态节点：无打开文件时的占位（含最近打开入口）
+    // 初始选择页：无打开文件且无工具激活时呈现——「打开标签页」卡片网格 + 最近打开列表
     const filesEmptyNode = !activeTab ? (
       <div
         style={{
@@ -828,9 +830,12 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
           userSelect: 'none',
         }}
       >
-        <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-secondary)', fontFamily: 'var(--font-ui)' }}>Files</span>
-        <span style={{ fontSize: '12px', fontFamily: 'var(--font-ui)' }}>本次任务生成·修改的文件</span>
-        <span style={{ fontSize: '12px', fontFamily: 'var(--font-ui)' }}>没有已打开的文件</span>
+        <TabPicker
+          onAction={(action) => {
+            if (action.kind === 'terminal') onOpenTerminal()
+            else onOpenTool(action.toolId)
+          }}
+        />
         {recentFiles.length > 0 && (
           <div
             style={{
@@ -883,9 +888,7 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
     // 工具面板内容：全部保持挂载（非激活用 display:none 隐藏）。
     // 「文件」不再是工具标签：面板无工具激活时的基础视图就是文件视图
     // 终端已迁至会话区底部独立面板，不再是右侧工具标签
-    const sessionId = useChatStore((s) => s.sessionId)
     const toolContents: Record<ToolId, ReactNode> = {
-      summary: <SummaryCard sessionId={sessionId} onOpenFile={openFile} />,
       search: <SearchPanel onFileOpen={openFile} />,
       review: <ReviewCard />,
       agent: (
@@ -895,6 +898,7 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
           active={activeToolId === 'agent'}
         />
       ),
+      browser: <BrowserPane />,
     }
 
     // 折叠时不渲染任何形态（入口由右上角状态胶囊卡承接）

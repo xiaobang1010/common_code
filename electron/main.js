@@ -2,6 +2,14 @@ const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const pty = require('node-pty')
+const { BrowserTabManager } = require('./browser/tabs')
+const { CdpExecutor } = require('./browser/cdp')
+const { BrowserControlServer } = require('./browser/server')
+
+// 内置浏览器：标签注册表 + CDP 执行器 + 本地控制服务（技能经桥接文件连入）
+const browserTabs = new BrowserTabManager()
+const browserCdp = new CdpExecutor(browserTabs)
+const browserServer = new BrowserControlServer(browserTabs, browserCdp)
 
 // 主窗口引用
 let win = null
@@ -81,6 +89,8 @@ function createWindow(port) {
     backgroundColor: '#0f1115',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
+      // 内置浏览器标签页用 <webview> 渲染 guest 页面
+      webviewTag: true,
     },
   }
 
@@ -205,6 +215,10 @@ app.whenReady().then(() => {
   }
   createWindow(port)
 
+  // 内置浏览器：注册表 IPC 与 guest 守护先装配，控制服务随后启动（写桥接文件）
+  browserTabs.init(() => win)
+  browserServer.start().catch((e) => console.error('浏览器控制服务启动失败:', e.message))
+
   // 终端 IPC
   ipcMain.handle('terminal:create', (_event, cwd) => createTerminal(cwd))
   ipcMain.on('terminal:input', (_event, { id, data }) => {
@@ -244,8 +258,10 @@ app.on('window-all-closed', () => {
   app.quit()
 })
 
-// 应用退出前清理终端进程，避免残留 pwsh
+// 应用退出前清理终端进程与浏览器 guest，避免残留进程
 app.on('before-quit', () => {
   for (const [, t] of terminals) { t.kill() }
   terminals.clear()
+  browserTabs.teardown()
+  browserServer.stop()
 })

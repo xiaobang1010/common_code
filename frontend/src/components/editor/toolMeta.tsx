@@ -1,9 +1,9 @@
 import type { ReactNode } from 'react'
 
-// 工具标签标识（概要/搜索/审查/智能体）：开关状态由 App 层持有，供标题栏开关与入口卡片共用。
-// 不在表内两例：终端是会话区底部的独立面板（入口在标题栏终端开关）；「文件」不是标签——
-// 面板在没有工具激活时的基础视图就是文件视图，打开文件也会自动切过去
-export type ToolId = 'summary' | 'search' | 'review' | 'agent'
+// 工具标签标识（搜索/审查/智能体/浏览器）：开关状态由 App 层持有，供标题栏开关与入口卡片共用。
+// 不在表内两例：终端是会话区底部的独立面板（入口在标题栏终端开关与初始选择页卡片）；
+// 「文件」不是标签——面板在没有工具激活时的基础视图就是文件视图，打开文件也会自动切过去
+export type ToolId = 'search' | 'review' | 'agent' | 'browser'
 
 // 图标统一样式参数
 const iconProps = {
@@ -16,16 +16,6 @@ const iconProps = {
   strokeLinecap: 'round' as const,
   strokeLinejoin: 'round' as const,
 }
-
-// 概要图标：列表文档
-const SummaryIcon = (
-  <svg {...iconProps}>
-    <path d="M8 6h13M8 12h13M8 18h13" />
-    <circle cx="3.5" cy="6" r="0.5" fill="currentColor" />
-    <circle cx="3.5" cy="12" r="0.5" fill="currentColor" />
-    <circle cx="3.5" cy="18" r="0.5" fill="currentColor" />
-  </svg>
-)
 
 // 搜索图标：文档 + 放大镜
 const SearchIcon = (
@@ -55,11 +45,21 @@ const AgentIcon = (
   </svg>
 )
 
+// 浏览器图标：地球（与初始选择页「浏览器」卡片同款语义）
+const BrowserIcon = (
+  <svg {...iconProps}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M3 12h18" />
+    <path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18" />
+  </svg>
+)
+
 // 工具标签元信息：顺序即标签栏的展示顺序（默认标签集 + 按需打开）。
 // 不能随意从表中删除条目：标签渲染、面板映射与 localStorage 恢复均依赖此表
+// （删除条目需同步所有 ToolId 消费方；localStorage 旧值经 TOOL_META 过滤自然消失）
 export const TOOL_META: { id: ToolId; title: string; icon: ReactNode }[] = [
-  { id: 'summary', title: '概要', icon: SummaryIcon },
   { id: 'search', title: '搜索', icon: SearchIcon },
   { id: 'review', title: '审查', icon: ReviewIcon },
   { id: 'agent', title: '智能体', icon: AgentIcon },
+  { id: 'browser', title: '浏览器', icon: BrowserIcon },
 ]
