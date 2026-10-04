@@ -1,4 +1,4 @@
-"""files 路由测试：读/写/新建接口的正常与异常路径，列目录的可见口径与忽略标记。"""
+"""files 路由测试：读/写/新建/原始图片接口的正常与异常路径，列目录的可见口径与忽略标记。"""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from server.routers.files.routes import (
     create_file,
     list_files,
     read_file,
+    read_file_raw,
     write_file,
 )
 
@@ -72,6 +73,40 @@ async def test_read_path_traversal_403(workspace):
 async def test_read_not_found_404(workspace):
     result = read_file("missing.txt")
     assert result.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_raw_png_and_svg_200(workspace):
+    (workspace / "fig").mkdir()
+    (workspace / "fig" / "a.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (workspace / "fig" / "b.svg").write_text("<svg/>", encoding="utf-8")
+    png = read_file_raw("fig/a.png")
+    assert png.status_code == 200
+    assert png.media_type == "image/png"
+    svg = read_file_raw("fig/b.svg")
+    assert svg.status_code == 200
+    assert svg.media_type == "image/svg+xml"
+
+
+@pytest.mark.asyncio
+async def test_raw_path_traversal_403(workspace):
+    assert read_file_raw("../secret.png").status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_raw_unsupported_ext_415(workspace):
+    # 白名单外扩展名在探文件存在性之前拦截：不泄露「文件是否存在」
+    (workspace / "note.txt").write_text("hi", encoding="utf-8")
+    assert read_file_raw("note.txt").status_code == 415
+    assert read_file_raw("missing.png").status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_raw_too_large_413(workspace):
+    big = workspace / "big.png"
+    with open(big, "wb") as f:
+        f.truncate(20 * 1024 * 1024 + 1)
+    assert read_file_raw("big.png").status_code == 413
 
 
 @pytest.mark.asyncio
