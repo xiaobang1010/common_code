@@ -4,11 +4,21 @@ interface BranchSelectorProps {
   currentBranch: string
   branches: string[]
   onCheckout: (branch: string) => void
+  // 下拉展开时触发重取：覆盖终端等外部途径刚建的分支
+  onRefresh?: () => void
 }
 
-function BranchSelector({ currentBranch, branches, onCheckout }: BranchSelectorProps) {
+function BranchSelector({ currentBranch, branches, onCheckout, onRefresh }: BranchSelectorProps) {
   const [open, setOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
+
+  // 展开下拉：先重取列表再展开，收起只关菜单
+  const toggleOpen = () => {
+    setOpen(prev => {
+      if (!prev) onRefresh?.()
+      return !prev
+    })
+  }
 
   // 点击外部关闭下拉菜单
   useEffect(() => {
@@ -28,7 +38,7 @@ function BranchSelector({ currentBranch, branches, onCheckout }: BranchSelectorP
   return (
     <div ref={menuRef} style={{ position: 'relative' }}>
       <button
-        onClick={() => setOpen(!open)}
+        onClick={toggleOpen}
         title="切换分支"
         style={{
           display: 'flex',

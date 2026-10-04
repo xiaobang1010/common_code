@@ -190,27 +190,28 @@ background: true
 
     launched = {}
 
-    from tools.subagent import background as bg_mod
-
-    def fake_launch(ctx, tools, system_prompt, *, description="", parent_session_id=None):
-        launched["agent_id"] = ctx.agent_id
-        from tools.subagent.registry import SubagentTaskRegistry, SubagentTask
-        return SubagentTask(agent_id=ctx.agent_id)
-
-    monkeypatch.setattr(bg_mod, "launch_background_subagent", fake_launch)
-
     import tools.subagent.agent_tool as agent_tool_mod
-    monkeypatch.setattr(
-        "tools.subagent.agent_tool.launch_background_subagent", None, raising=False
-    )
-    # agent_tool 内部是函数级导入 from tools.subagent.background import launch_background_subagent
-    # 打在 background 模块上即可
-    agent_tool_mod_ref = agent_tool_mod
+    import tools.subagent.lifecycle as lifecycle_mod
+
+    async def fake_spawn(request):
+        from tools.subagent.lifecycle import SpawnResult
+        from tools.subagent.registry import SubagentTask
+        launched["agent_id"] = "agent_batch"
+        launched["background"] = request.run_in_background
+        return SpawnResult(
+            kind="async_launched",
+            agent_id="agent_batch",
+            task=SubagentTask(agent_id="agent_batch"),
+        )
+
+    # agent_tool 内部是函数级导入，打在 lifecycle 模块上即可
+    monkeypatch.setattr(lifecycle_mod, "spawn_subagent", fake_spawn)
 
     from tools.protocol import ToolUseContext
-    result = await agent_tool_mod_ref._execute(
+    result = await agent_tool_mod._execute(
         agent_tool_mod.AgentInput(description="批处理", prompt="跑", subagent_type="batcher"),
         ToolUseContext(),
     )
-    assert "agent_id" in launched
+    assert launched.get("agent_id") == "agent_batch"
+    assert launched.get("background") is True
     assert result.metadata["status"] == "async_launched"

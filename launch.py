@@ -32,6 +32,11 @@ ELECTRON_DIR = PROJECT_ROOT / "electron"
 
 # 传给 Electron 的后端端口环境变量名（与 electron/main.js 约定）
 BACKEND_PORT_ENV = "COMMON_CODE_BACKEND_PORT"
+# 内置浏览器桥接文件（{port,token}）路径的环境变量名：
+# Electron 主进程启动控制服务后写入，技能侧 runner 经后端继承的环境变量读取
+BROWSER_BRIDGE_ENV = "COMMON_CODE_BROWSER_BRIDGE_FILE"
+# 稳定于用户目录、与工作区无关，保证切换工作区后技能仍能定位桥接文件
+BROWSER_BRIDGE_FILE = Path.home() / ".common-code" / "browser-bridge.json"
 # 端口握手超时（秒）：超时判定后端启动失败
 PORT_HANDSHAKE_TIMEOUT = 60.0
 # TCP 就绪探测超时（秒）
@@ -104,7 +109,8 @@ class Launcher:
         uv = shutil.which("uv")
         if uv is None:
             raise StartupError("找不到 uv，请先安装 uv 并确认其在 PATH 中")
-        env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+        env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8",
+               BROWSER_BRIDGE_ENV: str(BROWSER_BRIDGE_FILE)}
         # 无 shell 派生：Popen 的 pid 就是 uv 进程本身，进程树根明确，
         # kill_tree（taskkill /T / killpg）才能收干净 uv 链下的 python 孙进程
         self.backend = subprocess.Popen(
@@ -198,7 +204,8 @@ class Launcher:
         npx = shutil.which("npx.cmd") if sys.platform == "win32" else shutil.which("npx")
         if npx is None:
             raise StartupError("找不到 npx，请确认 Node.js 已安装并在 PATH 中")
-        env = {**os.environ, BACKEND_PORT_ENV: str(port)}
+        env = {**os.environ, BACKEND_PORT_ENV: str(port),
+               BROWSER_BRIDGE_ENV: str(BROWSER_BRIDGE_FILE)}
         # stdout/stderr 不接管，直接继承终端
         self.electron = subprocess.Popen(
             [npx, "electron", "."],

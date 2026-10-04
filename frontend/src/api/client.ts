@@ -18,10 +18,17 @@ export interface LLMConfig {
 /** API 格式 */
 export type ApiFormat = 'openai' | 'anthropic'
 
+/** 输入类型枚举（存储口径，界面展示用中文标签） */
+export type ModelInputType = 'text' | 'image' | 'video' | 'pdf'
+
 /** 自定义 LLM 模型 */
 export interface CustomLLMModelInfo {
   model_id: string
   context_window: number
+  max_output_tokens?: number
+  input_types?: ModelInputType[]
+  reasoning_levels?: string[]
+  reasoning_params_map?: string
 }
 
 /** 自定义 LLM 供应商 */
@@ -320,6 +327,22 @@ export const agentsApi = {
     }),
 }
 
+/** 子智能体执行底座配置（全局 subagents 段） */
+export interface SubagentsConfig {
+  modelOverrides: Record<string, string>
+  defaultModel: string
+  autoBackgroundMs: number
+  inactivityTimeoutMs: number
+  maxTurnsDefault: number
+  tokenBudgetDefault: number
+}
+
+export const subagentsConfigApi = {
+  get: () => apiGet<{ ok: boolean; subagents?: SubagentsConfig; error?: string }>('/api/config/subagents'),
+  set: (data: Partial<SubagentsConfig>) =>
+    apiPost<{ ok: boolean; subagents?: SubagentsConfig; error?: string }>('/api/config/subagents', data),
+}
+
 /** 技能管理 */
 export const skillsApi = {
   list: () => apiGet<{ skills: SkillInfo[] }>('/api/skills'),
@@ -355,6 +378,25 @@ export const questionApi = {
 // 会话 / 工作区 / Git 分支
 // ---------------------------------------------------------------------------
 
+/** 最近一回合退出信息（后端 last_turn 列透出，供历史重建恢复真实退出原因） */
+export interface TurnExitInfo {
+  /** completed / model_error / prompt_too_long / max_output_tokens_exhausted / aborted / error */
+  reason: string
+  /** 错误类原因的摘要（截断 500 字符），仅供排查，前端展示暂不消费 */
+  error?: string
+  /** 回合结束时刻（毫秒） */
+  finished_at?: number
+  /** 本回合落库 user 消息的 _ts（毫秒），与重建块 startTime 精确相等才可信；缺失即不可用 */
+  user_ts?: number
+}
+
+/** /api/state 响应（App.tsx 两处 raw fetch 消费；fetchState 不读 last_turn 不在本类型范围） */
+export interface StateResponse {
+  messages?: Record<string, unknown>[]
+  started_at?: number | null
+  last_turn?: TurnExitInfo
+}
+
 /** 会话信息 */
 export interface SessionInfo {
   id: string
@@ -367,6 +409,8 @@ export interface SessionInfo {
   pinned: boolean
   /** 所属自定义任务分组 id，空串表示未分组 */
   group_id: string
+  /** 最近一回合退出信息：详情接口返回；列表接口手拼 dict 不返回，故可选 */
+  last_turn?: TurnExitInfo
 }
 
 /** 会话详情（含消息） */
@@ -417,7 +461,7 @@ export const sessionsApi = {
   setGroup: (session_id: string, group_id: string) =>
     apiPatch<{ ok: boolean }>(`/api/sessions/${session_id}`, { group_id }),
   switch: (session_id: string) =>
-    apiPost<{ ok: boolean; messages: Record<string, unknown>[]; workspace_path: string }>(`/api/sessions/${session_id}/switch`),
+    apiPost<{ ok: boolean; messages: Record<string, unknown>[]; workspace_path: string; last_turn?: TurnExitInfo }>(`/api/sessions/${session_id}/switch`),
   grouped: () =>
     apiGet<{ groups: SessionGroup[]; task_groups: TaskGroupInfo[]; current_tasks: Array<{ session_id: string; state: string }> }>('/api/sessions/grouped'),
 }
@@ -454,6 +498,21 @@ export const gitApi = {
     apiGet<{ branches: string[]; current: string }>(`/api/git/branches?path=${encodeURIComponent(path)}`),
   checkout: (branch: string) =>
     apiPost<{ ok: boolean; branch: string }>('/api/git/checkout', { branch }),
+  /** 单文件前后对比（HEAD 版本 vs 工作区当前版本），path 为仓库根相对口径 */
+  diff: (path: string) =>
+    apiGet<FileDiffResult>(`/api/git/diff?path=${encodeURIComponent(path)}`),
+}
+
+/** 单文件 diff 返回：前后全文供 DiffEditor 直接渲染，error 非空表示未取到内容 */
+export interface FileDiffResult {
+  path: string
+  oldText: string
+  newText: string
+  binary: boolean
+  tooLarge: boolean
+  additions: number
+  deletions: number
+  error: string
 }
 
 // ---------------------------------------------------------------------------

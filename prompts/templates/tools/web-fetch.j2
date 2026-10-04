@@ -1,0 +1,15 @@
+
+- Fetches content from a specified URL and processes it using an AI model
+- Takes a URL and a prompt as input
+- Fetches the URL content, converts HTML to markdown
+- Returns the page body as markdown (scripts/styles stripped)
+- Use this tool when you need to retrieve and analyze web content
+
+Usage notes:
+  - The URL must be a fully-formed valid URL
+  - The prompt should describe what information you want to extract from the page
+  - This tool is read-only and does not modify any files
+  - Results may be summarized if the content is very large
+  - Includes a self-cleaning 15-minute cache for faster responses when repeatedly accessing the same URL
+  - When a URL redirects to a different host, the tool will inform you and provide the redirect URL in a special format. You should then make a new WebFetch request with the redirect URL to fetch the content.
+  - IMPORTANT: WebFetch is for text-based web content. For direct media or binary URLs, download with Bash, preserve the real extension (infer it from curl's `%{content_type}` if needed), then open with Read.

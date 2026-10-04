@@ -50,11 +50,15 @@ class FakeAppState:
                 output_tokens=0,
                 cache_read_input_tokens=0,
                 cache_creation_input_tokens=0,
+                total_input_tokens=0,
                 last_prompt_tokens=0,
                 last_cache_creation=0,
             ),
             model="test-model",
             total_cost_usd=0.0,
+            # /api/state 新增字段：与真实 AppState 保持一致
+            context_breakdown=None,
+            total_input_tokens=0,
         )
 
 

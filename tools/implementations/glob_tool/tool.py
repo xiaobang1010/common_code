@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from prompts.loader import load_tool_prompt
 from tools.implementations.glob_tool.handler import (
     format_model_content,
     handle_glob,
@@ -23,15 +24,6 @@ from tools.protocol import (
     build_tool,
 )
 
-GLOB_PROMPT = """\
-快速文件模式匹配工具，适用于任何代码库大小。
-
-使用说明：
-- 支持 glob 模式，如 "**/*.js" 或 "src/**/*.ts"
-- 返回按修改时间排序的匹配文件路径
-- 当需要按名称模式查找文件时使用此工具
-- path 支持绝对路径或相对工作区的路径，默认搜索整个工作区
-"""
 
 
 async def _execute(inp: GlobInput, context: ToolUseContext) -> ToolResult:
@@ -60,7 +52,7 @@ def get_glob_tool() -> Tool:
         description="文件模式匹配",
         input_schema=GlobInput,
         execute=_execute,
-        prompt=GLOB_PROMPT,
+        prompt=load_tool_prompt("glob"),
         is_read_only=True,
         is_concurrent=True,
         requires_permission=False,

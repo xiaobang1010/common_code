@@ -37,7 +37,7 @@ from startup.config.constants import (
     PROJECT_CONFIG_DIR,
     PROJECT_SETTINGS_FILENAME,
 )
-from startup.config.types import Permissions, PermissionRule, Settings
+from startup.config.types import Permissions, PermissionRule, Settings, SubagentsConfig
 
 logger = logging.getLogger(__name__)
 
@@ -52,15 +52,33 @@ class CustomLLMModel:
     """自定义 LLM 模型配置。"""
     model_id: str
     context_window: int = 200000
+    max_output_tokens: int = 32768
+    # 输入模态集合，枚举 text/image/video/pdf；text 恒含由路由校验层补正
+    input_types: list[str] = field(default_factory=lambda: ["text"])
+    # 推理等级列表（从低到高），空列表表示该模型不启用推理等级配置
+    reasoning_levels: list[str] = field(default_factory=list)
+    # 推理参数映射 JSON 字符串（模板形态或按等级形态），空串表示不注入
+    reasoning_params_map: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {"model_id": self.model_id, "context_window": self.context_window}
+        return {
+            "model_id": self.model_id,
+            "context_window": self.context_window,
+            "max_output_tokens": self.max_output_tokens,
+            "input_types": list(self.input_types),
+            "reasoning_levels": list(self.reasoning_levels),
+            "reasoning_params_map": self.reasoning_params_map,
+        }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CustomLLMModel:
         return cls(
             model_id=data.get("model_id", ""),
             context_window=data.get("context_window", 200000),
+            max_output_tokens=data.get("max_output_tokens", 32768),
+            input_types=list(data.get("input_types") or ["text"]),
+            reasoning_levels=list(data.get("reasoning_levels") or []),
+            reasoning_params_map=data.get("reasoning_params_map") or "",
         )
 
 
@@ -113,6 +131,9 @@ class GlobalConfig:
     terminal_progress_bar_enabled: bool = True
     respect_gitignore: bool = True
     copy_full_response: bool = False
+    # 提示词缓存总开关：Anthropic 协议请求是否发出 cache_control 断点。
+    # 默认开启；遇到不识别该字段的兼容网关时可关闭回退
+    prompt_cache_enabled: bool = True
     env: dict[str, str] = field(default_factory=dict)
     projects: dict[str, dict[str, Any]] = field(default_factory=dict)
     mcp_servers: dict[str, Any] = field(default_factory=dict)
@@ -132,6 +153,8 @@ class GlobalConfig:
     memory: dict[str, Any] = field(default_factory=dict)
     # 记忆功能总开关：默认关闭。关闭时启动不加载记忆插件与向量化模型
     memory_enabled: bool = False
+    # 子智能体执行底座配置（模型覆盖、自动转后台、活性超时、默认预算）
+    subagents: SubagentsConfig = field(default_factory=SubagentsConfig)
 
     def to_dict(self) -> dict[str, Any]:
         """转换为 JSON 友好的字典，使用 camelCase 键名。"""
@@ -150,6 +173,7 @@ class GlobalConfig:
             "terminal_progress_bar_enabled": "terminalProgressBarEnabled",
             "respect_gitignore": "respectGitignore",
             "copy_full_response": "copyFullResponse",
+            "prompt_cache_enabled": "promptCacheEnabled",
             "has_completed_onboarding": "hasCompletedOnboarding",
             "llm_base_url": "llm_base_url",
             "llm_api_key": "llm_api_key",
@@ -161,6 +185,8 @@ class GlobalConfig:
         }
         for k, v in d.items():
             result[key_map.get(k, k)] = v
+        # subagents 段按自身 to_dict 输出（camelCase 键），覆盖 asdict 展平的蛇形键
+        result["subagents"] = self.subagents.to_dict()
         return result
 
     @classmethod
@@ -183,6 +209,7 @@ class GlobalConfig:
             ),
             respect_gitignore=data.get("respectGitignore", True),
             copy_full_response=data.get("copyFullResponse", False),
+            prompt_cache_enabled=data.get("promptCacheEnabled", True),
             env=data.get("env", {}),
             projects=data.get("projects", {}),
             mcp_servers=data.get("mcpServers", {}),
@@ -195,6 +222,7 @@ class GlobalConfig:
             active_model=data.get("active_model"),
             memory=data.get("memory", {}),
             memory_enabled=data.get("memoryEnabled", False),
+            subagents=SubagentsConfig.from_dict(data.get("subagents", {})),
         )
 
 
@@ -662,9 +690,6 @@ def _merge_settings(base: Settings, override: Settings) -> Settings:
         override.llm_api_key if override.llm_api_key is not None else base.llm_api_key
     )
     result.auto_compact = override.auto_compact if not base.auto_compact else override.auto_compact
-    result.context_collapse = (
-        override.context_collapse if override.context_collapse else base.context_collapse
-    )
     result.verbose = override.verbose if override.verbose else base.verbose
     result.theme = override.theme if override.theme != "dark" else base.theme
     result.output_style = override.output_style if override.output_style else base.output_style

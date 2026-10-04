@@ -13,6 +13,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from prompts.loader import load_tool_prompt
 from tools.protocol import Tool, ToolResult, ToolUseContext, build_tool
 
 logger = logging.getLogger(__name__)
@@ -159,7 +160,7 @@ def get_task_create_tool() -> Tool:
         description="Create a task in a team's shared task list",
         input_schema=TaskCreateInput,
         execute=_task_create_execute,
-        prompt="在团队共享任务列表中创建新任务",
+        prompt=load_tool_prompt("team-task-create"),
         is_read_only=True,
     )
 
@@ -246,7 +247,7 @@ def get_task_update_tool() -> Tool:
         description="Update a task's status, owner, or other fields",
         input_schema=TaskUpdateInput,
         execute=_task_update_execute,
-        prompt="更新团队任务的状态/owner/标题等",
+        prompt=load_tool_prompt("team-task-update"),
         is_read_only=True,
     )
 
@@ -292,7 +293,7 @@ def get_task_list_tool() -> Tool:
         description="List tasks in a team, optionally filtered by status/owner",
         input_schema=TaskListInput,
         execute=_task_list_execute,
-        prompt="列出团队任务列表，可按状态/owner过滤",
+        prompt=load_tool_prompt("team-task-list"),
         is_read_only=True,
     )
 
@@ -337,7 +338,7 @@ def get_task_get_tool() -> Tool:
         description="Get details of a single task",
         input_schema=TaskGetInput,
         execute=_task_get_execute,
-        prompt="查询单个任务详情",
+        prompt=load_tool_prompt("team-task-get"),
         is_read_only=True,
     )
 

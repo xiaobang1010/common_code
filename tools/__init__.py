@@ -9,21 +9,20 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from tools.protocol import Tool
-
-logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# 内置工具导入
-# ---------------------------------------------------------------------------
-
 from tools.implementations.bash_tool import get_bash_tool
-from tools.implementations.file_read_tool import get_file_read_tool
 from tools.implementations.file_edit_tool import get_file_edit_tool
+from tools.implementations.file_read_tool import get_file_read_tool
 from tools.implementations.file_write_tool import get_file_write_tool
 from tools.implementations.glob_tool import get_glob_tool
 from tools.implementations.grep_tool import get_grep_tool
+from tools.implementations.present_files_tool import get_present_files_tool
+from tools.implementations.show_widget_tool import get_show_widget_tool
+from tools.implementations.todo_write_tool import get_todo_write_tool
+from tools.implementations.web_fetch_tool import get_web_fetch_tool
+from tools.implementations.widget_guidelines_tool import get_widget_guidelines_tool
+from tools.protocol import Tool
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +79,7 @@ def get_tools(context_filter: ToolContextFilter | None = None) -> list[Tool]:
     """
     tools: list[Tool] = []
 
-    # 1. 内置 6 个工具
+    # 1. 内置 11 个工具
     tools.extend([
         get_bash_tool(),
         get_file_read_tool(),
@@ -88,6 +87,11 @@ def get_tools(context_filter: ToolContextFilter | None = None) -> list[Tool]:
         get_file_write_tool(),
         get_glob_tool(),
         get_grep_tool(),
+        get_web_fetch_tool(),
+        get_todo_write_tool(),
+        get_present_files_tool(),
+        get_widget_guidelines_tool(),
+        get_show_widget_tool(),
     ])
 
     # 2. Skill 工具

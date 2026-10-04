@@ -1,0 +1,6 @@
+{
+  "name": "browser-use",
+  "version": "0.1.0",
+  "description": "内置浏览器自动化运行时与操作指引：打开、导航、检查、点击、输入、截图并验证网页与本地开发目标。",
+  "author": { "name": "common_code" }
+}

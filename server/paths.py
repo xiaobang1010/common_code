@@ -5,8 +5,23 @@ from __future__ import annotations
 import os
 
 
-# 这些目录不展示给前端
-EXCLUDED_DIRS = {"__pycache__", "node_modules", "dist", ".git"}
+# 文件树列目录的目录跳过口径，按列举模式分两份：
+# ALWAYS_HIDDEN_DIRS 是任何模式都不列出的（git 内部数据，展开没有浏览意义）；
+# RECURSIVE_SKIP_DIRS 只在一次性递归列举时排除——那条路径服务搜索过滤与快速
+# 打开，条目有总量上限，依赖/缓存/构建产物一旦展开就会把上限吃满
+ALWAYS_HIDDEN_DIRS = {".git"}
+
+RECURSIVE_SKIP_DIRS = {
+    ".git",
+    "node_modules",
+    "__pycache__",
+    "dist",
+    ".venv",
+    "venv",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+}
 
 # 统一可编辑文件大小上限（字节）：人侧可编辑上限与 AI 写回上限共用同一套数字
 MAX_EDITABLE_BYTES = 5 * 1024 * 1024
@@ -57,13 +72,18 @@ def set_project_root(path: str) -> None:
     同步更新 startup.bootstrap.state 的 cwd（UserPromptSubmit hooks、
     engine 构造读取的就是它），保证切换后文件沙箱、Bash、hooks 与 UI
     指向同一工作区，避免三处根分叉。
+
+    path 必须先 normpath 归一：DB/前端可能传入正斜杠风格（D:/x/y），
+    而 is_within_root 用 os.path.commonpath 做前缀比较，斜杠方向不一致
+    会让文件接口全部误判「越出工作区」（空列表 / path traversal denied）。
     """
     global _project_root_value
-    _project_root_value = path
+    normalized = os.path.normpath(path) if path else path
+    _project_root_value = normalized
     try:
         from startup.bootstrap.state import set_cwd_state
 
-        set_cwd_state(path)
+        set_cwd_state(normalized)
     except Exception:
         # 状态同步失败不阻断切换
         pass

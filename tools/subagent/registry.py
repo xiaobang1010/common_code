@@ -50,10 +50,12 @@ class SubagentTask:
         agent_id: 子代理唯一标识
         session_id: 子代理自身会话标识（当前等于 agent_id）
         parent_session_id: 父会话标识（主对话会话），未知时为 None
+        child_session_id: 子会话 id（会话化绑定结果，空串表示降级模式）
         agent_type: 代理类型（如 general-purpose / Explore）
         description: 任务简述
         status: pending/running/completed/failed/aborted/stopped
         mode: foreground / background
+        promoted: 是否由前台自动提升为后台
         created_at / updated_at: 时间戳（秒）
         output_file: 结果落盘文件路径（截断时才有）
         usage: {"total_tokens": int, "tool_uses": int, "duration_ms": int}
@@ -68,8 +70,10 @@ class SubagentTask:
     description: str = ""
     session_id: str = ""
     parent_session_id: str | None = None
+    child_session_id: str = ""
     status: str = STATUS_PENDING
     mode: str = MODE_FOREGROUND
+    promoted: bool = False
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     output_file: str | None = None
@@ -87,10 +91,12 @@ class SubagentTask:
             "agent_id": self.agent_id,
             "session_id": self.session_id,
             "parent_session_id": self.parent_session_id,
+            "child_session_id": self.child_session_id,
             "agent_type": self.agent_type,
             "description": self.description,
             "status": self.status,
             "mode": self.mode,
+            "promoted": self.promoted,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "output_file": self.output_file,
@@ -127,6 +133,7 @@ class SubagentTaskRegistry:
         mode: str = MODE_FOREGROUND,
         session_id: str | None = None,
         parent_session_id: str | None = None,
+        child_session_id: str = "",
     ) -> SubagentTask:
         """注册一个子代理任务，初始状态 running。"""
         task = SubagentTask(
@@ -135,6 +142,7 @@ class SubagentTaskRegistry:
             description=description,
             session_id=session_id or agent_id,
             parent_session_id=parent_session_id,
+            child_session_id=child_session_id or getattr(ctx, "child_session_id", ""),
             status=STATUS_RUNNING,
             mode=mode,
             ctx=ctx,
@@ -157,6 +165,17 @@ class SubagentTaskRegistry:
             if error is not None:
                 task.error = error
         logger.info("子代理 %s 状态 -> %s", agent_id, status)
+
+    def mark_promoted(self, agent_id: str) -> None:
+        """标记任务由前台自动提升为后台（模式随之切换为 background）。"""
+        with self._lock:
+            task = self._tasks.get(agent_id)
+            if task is None:
+                return
+            task.promoted = True
+            task.mode = MODE_BACKGROUND
+            task.updated_at = time.time()
+        logger.info("子代理 %s 前台自动转后台", agent_id)
 
     def set_result(
         self,
@@ -235,6 +254,26 @@ class SubagentTaskRegistry:
     def running_count(self, session_id: str | None = None) -> int:
         """运行中任务数。session_id 非 None 时按父会话统计。"""
         return len(self.list_tasks(session_id=session_id, include_terminal=False))
+
+    async def wait_for_terminal(self, agent_id: str, timeout_ms: int = 30000) -> bool:
+        """异步等待任务到达终态（供 GetSubagentOutput block 模式使用）。
+
+        Args:
+            agent_id: 子代理标识
+            timeout_ms: 等待上限（毫秒）
+
+        Returns:
+            True 已终态（或任务不存在，视为不再运行）；False 超时仍在运行
+        """
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout_ms / 1000.0
+        while loop.time() < deadline:
+            task = self.get(agent_id)
+            if task is None or task.status in TERMINAL_STATUSES:
+                return True
+            await asyncio.sleep(0.1)
+        task = self.get(agent_id)
+        return task is None or task.status in TERMINAL_STATUSES
 
     # -- 消息投递 --
 

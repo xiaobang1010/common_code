@@ -63,7 +63,12 @@ class SessionStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     messages TEXT DEFAULT '[]',
-                    pinned INTEGER DEFAULT 0
+                    pinned INTEGER DEFAULT 0,
+                    spec_name TEXT DEFAULT '',
+                    parent_session_id TEXT,
+                    origin TEXT DEFAULT 'chat',
+                    agent_meta TEXT DEFAULT '{}',
+                    last_turn TEXT DEFAULT '{}'
                 )
                 """
             )
@@ -121,6 +126,18 @@ class SessionStore:
         session_cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()}
         if "group_id" not in session_cols:
             conn.execute("ALTER TABLE sessions ADD COLUMN group_id TEXT DEFAULT ''")
+        if "spec_name" not in session_cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN spec_name TEXT DEFAULT ''")
+        # 子代理执行底座：子会话三列（父会话指针 / 来源 / 代理元数据）
+        if "parent_session_id" not in session_cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT")
+        if "origin" not in session_cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN origin TEXT DEFAULT 'chat'")
+        if "agent_meta" not in session_cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN agent_meta TEXT DEFAULT '{}'")
+        # 回合退出原因持久化：最近一回合的退出信息（reason/error/finished_at/user_ts）
+        if "last_turn" not in session_cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN last_turn TEXT DEFAULT '{}'")
 
     # ------------------------------------------------------------------
     # 行转换辅助
@@ -148,6 +165,26 @@ class SessionStore:
             except (json.JSONDecodeError, TypeError):
                 message_count = 0
 
+        # agent_meta 列存 JSON 文本，坏值容错为空 dict
+        agent_meta: dict = {}
+        if "agent_meta" in row.keys() and row["agent_meta"]:
+            try:
+                parsed = json.loads(row["agent_meta"])
+                if isinstance(parsed, dict):
+                    agent_meta = parsed
+            except (json.JSONDecodeError, TypeError):
+                agent_meta = {}
+
+        # last_turn 列存最近回合退出信息 JSON，坏值容错为空 dict
+        last_turn: dict = {}
+        if "last_turn" in row.keys() and row["last_turn"]:
+            try:
+                parsed_turn = json.loads(row["last_turn"])
+                if isinstance(parsed_turn, dict):
+                    last_turn = parsed_turn
+            except (json.JSONDecodeError, TypeError):
+                last_turn = {}
+
         return Session(
             id=row["id"],
             workspace_path=row["workspace_path"],
@@ -160,6 +197,18 @@ class SessionStore:
             pinned=bool(row["pinned"]) if "pinned" in row.keys() else False,
             # 旧库迁移前可能缺列，按列存在性兼容读取，避免读出恒为空串
             group_id=row["group_id"] if "group_id" in row.keys() else "",
+            parent_session_id=(
+                row["parent_session_id"]
+                if "parent_session_id" in row.keys()
+                else None
+            ),
+            origin=(
+                row["origin"]
+                if "origin" in row.keys() and row["origin"]
+                else "chat"
+            ),
+            agent_meta=agent_meta,
+            last_turn=last_turn,
         )
 
     @staticmethod
@@ -189,20 +238,30 @@ class SessionStore:
     # ------------------------------------------------------------------
 
     def create_session(
-        self, workspace_path: str, title: str = "", branch: str = ""
+        self,
+        workspace_path: str,
+        title: str = "",
+        branch: str = "",
+        session_id: str | None = None,
+        origin: str = "chat",
+        parent_session_id: str | None = None,
     ) -> Session:
-        """创建新会话，生成 UUID，同时确保工作区已登记。
+        """创建新会话，同时确保工作区已登记。
 
         Args:
             workspace_path: 工作区路径
             title: 会话标题，可留空（后续自动生成）
             branch: 创建时的 git 分支
+            session_id: 显式会话 id（子会话按确定值创建；缺省生成 UUID）
+            origin: 会话来源（"chat" / "subagent"）
+            parent_session_id: 父会话 id（子会话指向主对话会话）
 
         Returns:
             新建的 Session 对象
         """
         now = datetime.now().isoformat()
-        session_id = str(uuid.uuid4())
+        if not session_id:
+            session_id = str(uuid.uuid4())
 
         with self._lock:
             conn = self._get_conn()
@@ -219,8 +278,9 @@ class SessionStore:
                 conn.execute(
                     """
                     INSERT INTO sessions
-                        (id, workspace_path, title, branch, created_at, updated_at, messages)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                        (id, workspace_path, title, branch, created_at, updated_at,
+                         messages, origin, parent_session_id, agent_meta)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}')
                     """,
                     (
                         session_id,
@@ -230,6 +290,8 @@ class SessionStore:
                         now,
                         now,
                         "[]",
+                        origin,
+                        parent_session_id,
                     ),
                 )
                 conn.commit()
@@ -245,7 +307,121 @@ class SessionStore:
             updated_at=now,
             messages=[],
             message_count=0,
+            origin=origin,
+            parent_session_id=parent_session_id,
         )
+
+    def session_exists(self, session_id: str) -> bool:
+        """检查会话是否存在（子会话 upsert 判定用）。"""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+
+    def update_session_agent_meta(self, session_id: str, meta: dict) -> bool:
+        """更新子会话的代理元数据（JSON 整段覆盖），同时刷新 updated_at。
+
+        Args:
+            session_id: 会话 ID
+            meta: agent_meta 字典（七字段：agent_id、agent_type、status、
+                usage、output_file、promoted、updated_at）
+
+        Returns:
+            True 更新成功，False 表示会话不存在
+        """
+        now = datetime.now().isoformat()
+        meta_json = json.dumps(meta, ensure_ascii=False, default=str)
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    """
+                    UPDATE sessions SET agent_meta = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (meta_json, now, session_id),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    def merge_session_agent_meta(self, session_id: str, partial: dict) -> bool:
+        """合并更新子会话代理元数据（读改写在本方法锁内原子完成）。
+
+        Args:
+            session_id: 会话 ID
+            partial: 要合并进 agent_meta 的部分字段
+
+        Returns:
+            True 更新成功，False 表示会话不存在
+        """
+        now = datetime.now().isoformat()
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT agent_meta FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                if row is None:
+                    return False
+                meta: dict = {}
+                try:
+                    parsed = json.loads(row["agent_meta"] or "{}")
+                    if isinstance(parsed, dict):
+                        meta = parsed
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+                meta.update(partial)
+                meta["updated_at"] = now
+                conn.execute(
+                    """
+                    UPDATE sessions SET agent_meta = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (json.dumps(meta, ensure_ascii=False, default=str), now, session_id),
+                )
+                conn.commit()
+                return True
+            finally:
+                conn.close()
+
+    def list_child_sessions(self, parent_session_id: str) -> list[Session]:
+        """列出某主对话会话派生的全部子会话（按 updated_at 降序）。"""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                """
+                SELECT * FROM sessions
+                WHERE parent_session_id = ? AND COALESCE(origin, 'chat') = 'subagent'
+                ORDER BY updated_at DESC
+                """,
+                (parent_session_id,),
+            ).fetchall()
+            return [self._row_to_session(row, include_messages=False) for row in rows]
+        finally:
+            conn.close()
+
+    def list_terminal_subagent_sessions(self, limit: int = 100) -> list[Session]:
+        """列出全部子代理子会话（历史重建用，按 updated_at 降序取前 limit 条）。"""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                """
+                SELECT * FROM sessions
+                WHERE COALESCE(origin, 'chat') = 'subagent'
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return [self._row_to_session(row, include_messages=False) for row in rows]
+        finally:
+            conn.close()
 
     def get_session(self, session_id: str) -> Session | None:
         """按 ID 获取单个会话（含完整 messages 反序列化）。
@@ -269,6 +445,7 @@ class SessionStore:
         """列出指定工作区的所有会话。
 
         按 updated_at 降序排列，不返回 messages（太大），只返回 message_count。
+        子代理子会话（origin=subagent）不混入主会话列表。
 
         Args:
             workspace_path: 工作区路径
@@ -282,6 +459,7 @@ class SessionStore:
                 """
                 SELECT * FROM sessions
                 WHERE workspace_path = ?
+                  AND COALESCE(origin, 'chat') != 'subagent'
                 ORDER BY updated_at DESC
                 """,
                 (workspace_path,),
@@ -358,6 +536,98 @@ class SessionStore:
             finally:
                 conn.close()
 
+    def update_session_spec(self, session_id: str, spec_name: str) -> bool:
+        """记录会话归属的 spec 目录名（胶囊卡「进展」按会话取数的数据源）。
+
+        AI 往 .agent/specs/<名字>/ 写盘时由文件事件钩子调用。幂等：同名
+        重复记录不产生写库；改判归属（换 spec）时直接覆盖。只写元信息，
+        不动 updated_at——每次勾选清单都重排会话列表太吵。
+
+        Args:
+            session_id: 会话 ID
+            spec_name: spec 目录名（.agent/specs/ 下一级目录名）
+
+        Returns:
+            True 本次有实际写入，False 表示无变化或会话不存在
+        """
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    """
+                    UPDATE sessions SET spec_name = ?
+                    WHERE id = ? AND (spec_name IS NULL OR spec_name != ?)
+                    """,
+                    (spec_name, session_id, spec_name),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    def get_session_spec(self, session_id: str) -> str | None:
+        """读取会话归属的 spec 目录名，未记录或会话不存在返回 None。"""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT spec_name FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            return row["spec_name"] or None
+        finally:
+            conn.close()
+
+    def set_session_last_turn(self, session_id: str, meta: dict) -> bool:
+        """记录最近一回合的退出信息（JSON 整段覆盖），同时刷新 updated_at。
+
+        Args:
+            session_id: 会话 ID
+            meta: 退出信息字典（reason/error/finished_at/user_ts，
+                user_ts 可为缺失——归属确认未通过时不写该键）
+
+        Returns:
+            True 更新成功，False 表示会话不存在
+        """
+        now = datetime.now().isoformat()
+        meta_json = json.dumps(meta, ensure_ascii=False, default=str)
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    """
+                    UPDATE sessions SET last_turn = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (meta_json, now, session_id),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    def get_session_last_turn(self, session_id: str | None) -> dict:
+        """单列读取会话的最近回合退出信息（不反序列化 messages 大字段）。
+
+        会话不存在、未装载查看会话（session_id 为 None）或坏值均返回 {}。
+        """
+        if not session_id:
+            return {}
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT last_turn FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if row is None or not row["last_turn"]:
+                return {}
+            try:
+                parsed = json.loads(row["last_turn"])
+                return parsed if isinstance(parsed, dict) else {}
+            except (json.JSONDecodeError, TypeError):
+                return {}
+        finally:
+            conn.close()
+
     def save_messages(
         self, session_id: str, messages: list[dict]
     ) -> bool:
@@ -387,6 +657,26 @@ class SessionStore:
             finally:
                 conn.close()
 
+    def export_transcript(
+        self, session_id: str, messages: list[dict]
+    ) -> str:
+        """把会话全量消息导出为 JSONL 转录（压缩逃生门）。
+
+        与会话库同根（~/.agent/transcripts/<session_id>.jsonl），覆盖式全量
+        重写；供压缩续写消息引用，模型/用户可回查被边界移出活跃窗口的细节。
+
+        Returns:
+            转录文件路径字符串
+        """
+        transcript_dir = self.db_path.parent / "transcripts"
+        transcript_dir.mkdir(parents=True, exist_ok=True)
+        path = transcript_dir / f"{session_id}.jsonl"
+        with open(path, "w", encoding="utf-8") as f:
+            for msg in messages:
+                f.write(json.dumps(msg, ensure_ascii=False, default=str))
+                f.write("\n")
+        return str(path)
+
     # ------------------------------------------------------------------
     # 工作区 CRUD
     # ------------------------------------------------------------------
@@ -404,7 +694,9 @@ class SessionStore:
             rows = conn.execute(
                 """
                 SELECT w.*,
-                       (SELECT COUNT(*) FROM sessions s WHERE s.workspace_path = w.path) as session_count
+                       (SELECT COUNT(*) FROM sessions s
+                        WHERE s.workspace_path = w.path
+                          AND COALESCE(s.origin, 'chat') != 'subagent') as session_count
                 FROM workspaces w
                 ORDER BY w.last_used_at DESC
                 """
@@ -666,11 +958,13 @@ class SessionStore:
 
             result: list[tuple[Workspace, list[Session]]] = []
             for ws in workspaces:
-                # 查该工作区下的会话，按更新时间降序，不反序列化 messages
+                # 查该工作区下的会话，按更新时间降序，不反序列化 messages；
+                # 子代理子会话不混入分组视图
                 session_rows = conn.execute(
                     """
                     SELECT * FROM sessions
                     WHERE workspace_path = ?
+                      AND COALESCE(origin, 'chat') != 'subagent'
                     ORDER BY updated_at DESC
                     """,
                     (ws.path,),

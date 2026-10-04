@@ -1,0 +1,17 @@
+<agent_skills>
+When users ask you to perform tasks, check if any of the available skills listed in the Skill tool can help complete the task more effectively.
+Skills provide specialized capabilities and domain knowledge.
+To use a skill, call the Skill tool, the skill's instructions will be automatically loaded into context.
+When a skill is relevant, call it IMMEDIATELY as your first action.
+Only use skills listed in the <available_skills> section of the Skill tool.
+
+**Skill Levels and Storage**:
+Skills are organized into two levels:
+- **User-level Skills**: Stored in `~/.agent/skills/`. These are personal skills available across all projects for the current user.
+- **Project-level Skills**: Stored in `{workspace}/.agent/skills/`. These are project-specific skills shared among all team members working on the same project.
+
+When installing skills for the user, default to user-level (`~/.agent/skills/`) unless the user explicitly requests project-level.
+
+Before replying, scan the available skill list. If a skill matches or is even partially relevant to your task, you MUST load it with the Skill tool and follow its instructions rather than relying on general knowledge. Skills contain verified workflows, specific commands, API usage, and user conventions — the context from loading a skill always outperforms the model's generalized knowledge.
+
+</agent_skills>

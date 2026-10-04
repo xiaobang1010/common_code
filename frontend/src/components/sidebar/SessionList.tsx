@@ -13,6 +13,8 @@ interface SessionListProps {
   onDelete: (sessionId: string) => void
   onRemoveWorkspace: (workspacePath: string) => void
   onOpenWorkspace: () => void
+  // 工作区行「文件树」按钮：打开该工作区的侧栏文件树视图（非当前工作区先切换）
+  onOpenFileTree: (workspacePath: string) => void
   onRename: (sessionId: string, title: string) => void
   onTogglePin: (sessionId: string, pinned: boolean) => void
   onUpdateWorkspace: (path: string, data: { alias?: string; pinned?: boolean }) => void
@@ -324,6 +326,7 @@ function WorkspaceGroup({
   onSwitchInWorkspace,
   onDelete,
   onRemoveWorkspace,
+  onOpenFileTree,
   onRename,
   onTogglePin,
   onUpdateWorkspace,
@@ -337,6 +340,7 @@ function WorkspaceGroup({
   onSwitchInWorkspace: (sessionId: string, workspacePath: string) => void
   onDelete: (sessionId: string) => void
   onRemoveWorkspace: (workspacePath: string) => void
+  onOpenFileTree: (workspacePath: string) => void
   onRename: (sessionId: string, title: string) => void
   onTogglePin: (sessionId: string, pinned: boolean) => void
   onUpdateWorkspace: (path: string, data: { alias?: string; pinned?: boolean }) => void
@@ -353,9 +357,12 @@ function WorkspaceGroup({
   const [aliasDraft, setAliasDraft] = useState(group.workspace.alias || '')
   // 「+」按钮悬停态：控制「新建任务」提示气泡显隐
   const [plusHovered, setPlusHovered] = useState(false)
+  // 「文件树」按钮悬停态：控制「打开文件树」提示气泡显隐
+  const [treeHovered, setTreeHovered] = useState(false)
   // 提示气泡锚点：悬停时记录的按钮视口坐标。气泡用 fixed 定位挂在锚点上，
   // 恒显示于按钮上方，且不受列表滚动容器 overflow 裁剪
   const [plusAnchor, setPlusAnchor] = useState<{ right: number; bottom: number } | null>(null)
+  const [treeAnchor, setTreeAnchor] = useState<{ right: number; bottom: number } | null>(null)
   const headerRef = useRef<HTMLDivElement>(null)
 
   // 菜单打开期间点击分组行外任意区域关闭（防止菜单悬空残留）
@@ -518,6 +525,76 @@ function WorkspaceGroup({
               <circle cx="19" cy="12" r="1.5" />
             </svg>
           </button>
+        )}
+        {/* 文件树：悬停浮现的气泡按钮，打开该工作区的侧栏文件树视图；非当前工作区先切换再展示 */}
+        {headerHovered && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              onOpenFileTree(ws.path)
+            }}
+            style={{
+              flexShrink: 0,
+              width: '18px',
+              height: '18px',
+              marginLeft: '4px',
+              padding: 0,
+              border: '1px solid var(--border-strong)',
+              borderRadius: 'var(--radius-sm)',
+              background: 'transparent',
+              color: 'var(--text-secondary)',
+              cursor: 'pointer',
+              transition: 'all var(--transition-fast)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)'
+              e.currentTarget.style.color = 'var(--text-primary)'
+              const r = e.currentTarget.getBoundingClientRect()
+              setTreeAnchor({
+                right: window.innerWidth - r.right,
+                bottom: window.innerHeight - r.top + 4,
+              })
+              setTreeHovered(true)
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = 'transparent'
+              e.currentTarget.style.color = 'var(--text-secondary)'
+              setTreeHovered(false)
+            }}
+          >
+            {/* 树形连接图标：父目录分叉到子节点 */}
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="7" height="7" rx="1" />
+              <rect x="14" y="14" width="7" height="7" rx="1" />
+              <path d="M6.5 10v7.5H14" />
+            </svg>
+          </button>
+        )}
+        {/* 「打开文件树」提示气泡：与「新建任务」气泡同一套 fixed 锚点机制 */}
+        {treeHovered && headerHovered && treeAnchor && (
+          <div
+            style={{
+              position: 'fixed',
+              right: treeAnchor.right,
+              bottom: treeAnchor.bottom,
+              padding: '3px 8px',
+              backgroundColor: 'var(--bg-elevated)',
+              border: '1px solid var(--border-strong)',
+              borderRadius: 'var(--radius-sm)',
+              boxShadow: 'var(--shadow-lg)',
+              color: 'var(--text-primary)',
+              fontSize: '11px',
+              fontFamily: 'var(--font-ui)',
+              whiteSpace: 'nowrap',
+              zIndex: 100,
+              pointerEvents: 'none',
+            }}
+          >
+            打开文件树
+          </div>
         )}
         {/* 新建任务：悬停任意工作区行时浮现的气泡按钮；非当前工作区点击 = 先切过去再建 */}
         {headerHovered && (
@@ -750,6 +827,7 @@ function SessionList({
   onDelete,
   onRemoveWorkspace,
   onOpenWorkspace,
+  onOpenFileTree,
   onRename,
   onTogglePin,
   onUpdateWorkspace,
@@ -835,6 +913,7 @@ function SessionList({
               onSwitchInWorkspace={onSwitchInWorkspace}
               onDelete={onDelete}
               onRemoveWorkspace={onRemoveWorkspace}
+              onOpenFileTree={onOpenFileTree}
               onRename={onRename}
               onTogglePin={onTogglePin}
               onUpdateWorkspace={onUpdateWorkspace}

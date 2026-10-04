@@ -29,12 +29,10 @@ class QueryConfig:
     Attributes:
         session_id: 会话标识，每次 submitMessage 时生成
         auto_compact_enabled: 是否启用自动压缩，从环境变量快照
-        context_collapse_enabled: 是否启用上下文折叠，从环境变量快照
     """
 
     session_id: str = ""
     auto_compact_enabled: bool = True
-    context_collapse_enabled: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -45,12 +43,11 @@ class QueryConfig:
 def build_query_config(session_id: str = "", **overrides: Any) -> QueryConfig:
     """构建循环级配置快照。
 
-    从环境变量快照 auto_compact_enabled 和 context_collapse_enabled，
+    从环境变量快照 auto_compact_enabled，
     session_id 默认空字符串，可被 overrides 覆盖。
 
     环境变量映射：
       - COMMON_CODE_DISABLE_AUTO_COMPACT → auto_compact_enabled（取反）
-      - COMMON_CODE_CONTEXT_COLLAPSE → context_collapse_enabled
 
     Args:
         session_id: 会话标识，默认空字符串
@@ -63,9 +60,6 @@ def build_query_config(session_id: str = "", **overrides: Any) -> QueryConfig:
         "session_id": session_id,
         "auto_compact_enabled": not _is_env_truthy(
             os.environ.get("COMMON_CODE_DISABLE_AUTO_COMPACT", "")
-        ),
-        "context_collapse_enabled": _is_env_truthy(
-            os.environ.get("COMMON_CODE_CONTEXT_COLLAPSE", "")
         ),
     }
 

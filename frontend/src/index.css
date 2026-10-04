@@ -1,3 +1,59 @@
+/* 层顺序声明：base（全局重置）< utilities（Tailwind 工具类）。
+   未分层规则永远压过层内规则，故全局重置必须入 base 层，
+   否则 * 的 margin/padding 清零会压过 streamdown 的 my-4 等间距类 */
+@layer theme, base, utilities;
+
+/* ============================================================
+ * Tailwind v4 模块化导入（streamdown 渲染依赖）：
+ * 只导 theme + utilities，跳过 preflight —— 全局基线由下方 base 层重置承担，
+ * 避免 Tailwind preflight 覆盖现有内联样式体系；utilities 进 layer，
+ * 未分层的项目样式优先级天然更高
+ * ============================================================ */
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+/* streamdown 动画关键帧与 KaTeX 公式字体（katex 由 @streamdown/math 依赖提供） */
+@import "streamdown/styles.css";
+@import "katex/dist/katex.min.css";
+
+/* 应用深色-only：html 常驻 .dark，激活 dark: 变体
+   （streamdown 代码块的深色配色经 dark:bg-[var(--shiki-dark-bg)] 等类切换） */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* node_modules 被 gitignore，需显式扫描 streamdown 产物里的 Tailwind 类；
+   四个插件包 dist 为 headless 逻辑不含类名，无需扫描 */
+@source "../node_modules/streamdown/dist/*.js";
+
+/* streamdown 组件树使用 shadcn 风格语义 token，这里映射到项目设计变量。
+   inline 模式让 utilities 直接引用项目变量：sidebar-lifted 等运行时作用域
+   覆盖仍然生效；圆角不在此映射——项目 :root 的 --radius-sm/md/lg 与
+   Tailwind 同名，utilities 引用 var(--radius-*) 时自然取到项目值 */
+@theme inline {
+  --color-background: var(--bg-primary);
+  --color-foreground: var(--text-primary);
+  --color-card: var(--bg-elevated);
+  --color-card-foreground: var(--text-primary);
+  --color-muted: var(--bg-tertiary);
+  --color-muted-foreground: var(--text-secondary);
+  --color-border: var(--border-strong);
+  --color-input: var(--border);
+  --color-primary: var(--accent);
+  --color-primary-foreground: #ffffff;
+  --color-sidebar: var(--bg-secondary);
+  --font-sans: var(--font-ui);
+}
+
+/* streamdown 容器内的 button（代码块复制按钮等）自带类不含背景/边框重置，
+   无 preflight 时 Chromium 原生按钮样式会露出，统一压平；重置入 base 层，
+   其 hover:bg-* 等 utilities 才能生效 */
+@layer base {
+  [data-streamdown] button {
+    background: transparent;
+    border: none;
+    color: inherit;
+  }
+}
+
 /* ============================================================
  * Common Code 设计系统
  * 美学方向：现代深色 VSCode 风（Dark Modern），全应用统一深色
@@ -39,12 +95,16 @@
   --selected-bg: rgba(0, 120, 212, 0.26);     /* 选中 - 强调蓝浸染 */
   --focus-ring: rgba(0, 120, 212, 0.65);      /* 键盘焦点环 - 强调蓝 */
 
-  /* 内容元素 - 行内代码灰底 chip */
+  /* 内容元素 - 行内代码灰底 chip（设置页等处引用；聊天正文用下方 --md-code-*，两者刻意分离） */
   --code-bg: rgba(255, 255, 255, 0.08);
-  --code-border: rgba(255, 255, 255, 0.10);
   --code-text: #d4d4d4;
 
-  /* 对话区限宽可读列：消息列与底部输入区共用的宽度基准与横向留白 */
+  /* 聊天正文行内代码：无边框、随正文字号的半透明 chip，与正文视觉融合 */
+  --md-code-bg: rgba(255, 255, 255, 0.10);
+  --md-code-radius: 4px;
+
+  /* 对话区内容列宽度基准与横向留白：消息列与底部输入区共用。
+     此值为静态回退，实际由 AIPanel 的 ResizeObserver 按分档规则写入内联变量覆盖 */
   --content-max-width: 880px;
   --content-pad-x: 24px;
 
@@ -52,6 +112,11 @@
   --button-primary-bg: #0078d4;
   --button-primary-bg-hover: #1187ce;
   --button-primary-text: #ffffff;
+
+  /* 停止钮 - 白色实心圆 + 深色方块，与发送钮同构，靠形状而非红色语义区分状态 */
+  --button-stop-bg: #ffffff;
+  --button-stop-bg-hover: #dcdcdc;
+  --button-stop-fg: #1a1a1a;
 
   /* 强调色 - VSCode 蓝，仅关键交互位使用 */
   --accent: #0078d4;
@@ -76,6 +141,14 @@
   --syntax-comment: #5c6370;
   --syntax-function: #61afef;
 
+  /* git 状态色 - 文件树专用：文件名默认中性色，颜色只表达变更状态；
+     徽标/圆点的不透明度变体在组件内经 color-mix 从这些基色派生 */
+  --git-modified: #ff8a30;
+  --git-added: #46bf72;
+  --git-untracked: #46bf72;
+  --git-deleted: #ff5c5c;
+  --git-renamed: #4099ff;
+
   /* 阴影 - 营造深度，中性黑 */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
@@ -96,10 +169,46 @@
   --radius-sm: 4px;
   --radius-md: 6px;
   --radius-lg: 10px;
+  --radius-input: 24px;   /* 输入卡片大圆角，浮在对话底部的「下巴」形态 */
+
+  /* 输入卡片投影：常态轻悬浮，聚焦时阴影加深替代焦点环（靠深度而非描边强调） */
+  --shadow-input: 0 16px 32px -8px rgba(0, 0, 0, 0.28), 0 2px 4px -4px rgba(0, 0, 0, 0.4);
+  --shadow-input-focus: 0 16px 32px -8px rgba(0, 0, 0, 0.4), 0 2px 4px -4px rgba(0, 0, 0, 0.5);
 
   /* 过渡 */
   --transition-fast: 120ms cubic-bezier(0.4, 0, 0.2, 1);
   --transition: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* 可视化 widget 主题契约（iframe 沙箱收集后推入，使图形无缝继承对话面板配色）。
+     语义色取深底可读的浅档（参考调色板 100/200 级），与九色带体系同源 */
+  --cc-panel-bg: var(--bg-primary);
+  --color-background-primary: var(--bg-primary);
+  --color-background-secondary: var(--bg-elevated);
+  --color-background-tertiary: var(--bg-tertiary);
+  --color-background-info: rgba(55, 138, 221, 0.16);
+  --color-background-danger: rgba(226, 75, 74, 0.14);
+  --color-background-success: rgba(99, 153, 34, 0.16);
+  --color-background-warning: rgba(186, 117, 23, 0.16);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-tertiary: var(--text-tertiary);
+  --color-text-info: #85B7EB;
+  --color-text-danger: #F09595;
+  --color-text-success: #97C459;
+  --color-text-warning: #EF9F27;
+  --color-border-primary: rgba(255, 255, 255, 0.4);
+  --color-border-secondary: rgba(255, 255, 255, 0.3);
+  --color-border-tertiary: rgba(255, 255, 255, 0.15);
+  --color-border-info: rgba(55, 138, 221, 0.5);
+  --color-border-danger: rgba(226, 75, 74, 0.5);
+  --color-border-success: rgba(99, 153, 34, 0.5);
+  --color-border-warning: rgba(186, 117, 23, 0.5);
+  --font-sans: var(--font-ui);
+  --font-serif: Georgia, 'Times New Roman', serif;
+  --border-radius-sm: 4px;
+  --border-radius-md: 8px;
+  --border-radius-lg: 12px;
+  --border-radius-xl: 16px;
 }
 
 /* ============================================================
@@ -118,10 +227,13 @@
   --border-subtle: #2e2e2e;
 }
 
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+/* 全局重置入 base 层：保持原重置效果，同时让 utilities 层的间距类可以覆盖它 */
+@layer base {
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
 }
 
 html, body {
@@ -168,24 +280,7 @@ body {
   background: var(--selection-bg);
 }
 
-/* 内容区链接 - 中性浅色 + 下划线，hover 提亮；长 URL 允许在任意字符处换行，不撑破限宽列 */
-.markdown-link {
-  color: var(--text-primary);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  text-decoration-color: var(--border-strong);
-  overflow-wrap: anywhere;
-}
-.markdown-link:hover {
-  color: #ffffff;
-  text-decoration-color: currentColor;
-}
-
-/* 流式输出时的闪烁光标 */
-@keyframes blink {
-  0%, 50% { opacity: 1; }
-  51%, 100% { opacity: 0; }
-}
+/* 流式输出光标由 streamdown 的 caret prop 提供，不再需要自定义闪烁动画 */
 
 /* AI 面板顶部光晕动画 */
 @keyframes pulse-glow {
@@ -228,10 +323,258 @@ body {
   outline-offset: 1px;
 }
 
+/* 用户气泡悬停操作组（复制/编辑）：默认隐藏，悬停气泡容器时淡入 */
+.msg-bubble-wrap .msg-actions {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+.msg-bubble-wrap:hover .msg-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* 悬停时抬升气泡容器：下方 work-block 自成层叠上下文（content-visibility），
+   会按 DOM 顺序盖住操作组，抬升后操作组才能接收悬停与点击 */
+.msg-bubble-wrap:hover {
+  z-index: 6;
+}
+
+/* 操作按钮：裸图标无底板，悬停时才显浅色高亮
+   （底色走 CSS，内联样式会赢过 CSS 规则） */
+.msg-action-btn {
+  background: transparent;
+  transition: background var(--transition-fast);
+}
+.msg-action-btn:hover {
+  background: var(--hover-bg);
+}
+
 /* 减弱动效：spinner 与呼吸点静止 */
 @media (prefers-reduced-motion: reduce) {
   .work-spin,
   .work-pulse {
     animation: none !important;
   }
+}
+
+/* ============================================================
+ * 对话区 Markdown 排版覆盖（.md-body 作用域，见 Markdown.tsx）
+ * streamdown 默认类是通用文档风：标题 30/24/20px 过大、块间距 16px 松散、
+ * 代码块「外卡+内框」双层描边、表格带底色表头，聊天场景阅读体验差。
+ * 本块为未分层规则，天然压过 utilities 层里的 streamdown 类，
+ * 按 data-streamdown 语义节点逐项收敛到紧凑克制的对话排印
+ * ============================================================ */
+
+/* 块间距：默认 space-y-4（16px）收紧到 12px，段落/列表更连贯 */
+.md-body > div > * + * {
+  margin-top: 12px;
+}
+/* 首块贴顶：标题自带 margin-top 会压过 streamdown 的 first-child 清零（同为未分层，靠顺序取胜） */
+.md-body [data-streamdown]:first-child {
+  margin-top: 0;
+}
+
+/* 标题：字号阶梯压缩到 18/16/15/14px，层级靠字重与上下留白表达，不再靠放大 */
+.md-body [data-streamdown="heading-1"] { margin: 24px 0 8px; font-size: 18px; line-height: 1.4; }
+.md-body [data-streamdown="heading-2"] { margin: 20px 0 8px; font-size: 16px; line-height: 1.4; }
+.md-body [data-streamdown="heading-3"] { margin: 16px 0 6px; font-size: 15px; line-height: 1.5; }
+.md-body [data-streamdown="heading-4"] { margin: 14px 0 4px; font-size: 14px; line-height: 1.5; }
+.md-body [data-streamdown="heading-5"],
+.md-body [data-streamdown="heading-6"] {
+  margin: 12px 0 4px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+/* 行内代码：无边框、字号随正文的半透明 chip——缩号加描边会让 chip 像贴上去的补丁，
+   与正文融为一体才不抢阅读节奏（等宽字体由 streamdown 默认提供） */
+.md-body [data-streamdown="inline-code"] {
+  padding: 1px 4px;
+  border-radius: var(--md-code-radius);
+  background: var(--md-code-bg);
+  color: inherit;
+  /* 显式压掉 streamdown 默认的 text-sm，字号严格跟随正文 */
+  font-size: inherit;
+}
+
+/* 列表：行距收紧，列表符号弱化为三级灰 */
+.md-body [data-streamdown="list-item"] { padding: 2px 0; }
+.md-body [data-streamdown="list-item"]::marker { color: var(--text-tertiary); }
+
+/* 分隔线与引用块：细线、弱色，只做段落分组不抢版面 */
+.md-body [data-streamdown="horizontal-rule"] { margin: 20px 0; border-color: var(--border); }
+.md-body [data-streamdown="blockquote"] {
+  margin: 12px 0;
+  padding-left: 12px;
+  border-color: var(--border-strong);
+  color: var(--text-secondary);
+}
+
+/* 代码块：拍平「外卡+内框」双层描边——外层单卡承载背景与圆角，
+   语言标签行与右上操作钮同处一栏，代码直接铺在卡上（行号已在组件层关闭） */
+.md-body [data-streamdown="code-block"] {
+  position: relative;
+  margin: 14px 0;
+  padding: 0;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-tertiary);
+}
+.md-body [data-streamdown="code-block-header"] {
+  height: 38px;
+  padding: 0 14px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+/* 无语言标注的代码块（如命令输出）不保留空标签行，避免卡片顶部一段死空白 */
+.md-body [data-streamdown="code-block-header"]:has(> span:empty) { display: none; }
+/* 内层 body 去框去底：描边与背景统一收敛到外层单卡 */
+.md-body [data-streamdown="code-block-body"] {
+  padding: 2px 16px 14px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  font-size: 13px;
+  line-height: 1.65;
+}
+/* 标签行隐藏时补一点顶距，让首行代码与悬浮的操作钮行垂直居中对齐 */
+.md-body [data-streamdown="code-block"]:not(:has([data-streamdown="code-block-header"] > span:not(:empty))) [data-streamdown="code-block-body"] {
+  padding-top: 10px;
+}
+/* shiki 主题自带的 pre 底色与外层卡冲突，压平为透明让代码铺在卡背景上 */
+.md-body [data-streamdown="code-block-body"] pre { background: transparent; }
+/* 操作钮容器：streamdown 用 sticky + 负边距把它拉进标签行，负值按默认 32px 头高写死，
+   改头高后会拽出卡片边界；这里改为绝对定位钉在卡内右上角，与标签行同高 */
+.md-body [data-streamdown="code-block"] > div:has([data-streamdown="code-block-actions"]) {
+  position: absolute;
+  top: 0;
+  right: 14px;
+  height: 38px;
+  margin-top: 0;
+}
+/* 操作钮去底板描边：与参考效果一致，裸图标贴右上角 */
+.md-body [data-streamdown="code-block-actions"] {
+  gap: 12px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  backdrop-filter: none;
+}
+
+/* 表格：去外层卡与表头底色填充，只保留细行分隔线；
+   内层滚动框无 data 属性，经 :has 定位其直系容器 */
+.md-body [data-streamdown="table-wrapper"] {
+  margin: 14px 0;
+  padding: 0;
+  gap: 8px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+.md-body [data-streamdown="table-wrapper"] > div:has(> [data-streamdown="table"]) {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: transparent;
+}
+.md-body [data-streamdown="table-header"] { background: transparent; }
+.md-body [data-streamdown="table-header-cell"] {
+  padding: 9px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.md-body [data-streamdown="table-cell"] { padding: 10px 14px; font-size: 13.5px; }
+
+/* ============================================================
+ * 文档阅读排印（.md-doc 作用域，文件预览全屏挂此类）
+ * .md-body 的压缩排印是为对话流设计的（正文 13px、标题 18/16/15），
+ * 整篇阅读会显得字小、行挤、层级扁；文档态按同段落折行点对齐实测：
+ * 正文 14px（150% 下每行约 46 个汉字）、行高 1.85，标题阶梯 20/17/15/14
+ * 靠字重与留白分层，列宽由容器侧给 1100px
+ * ============================================================ */
+.md-doc .md-body { font-size: 14px; line-height: 1.85; }
+.md-doc .md-body > div > * + * { margin-top: 16px; }
+.md-doc .md-body [data-streamdown="heading-1"] { margin: 32px 0 12px; font-size: 20px; line-height: 1.4; }
+.md-doc .md-body [data-streamdown="heading-2"] { margin: 26px 0 10px; font-size: 17px; line-height: 1.45; }
+.md-doc .md-body [data-streamdown="heading-3"] { margin: 20px 0 8px; font-size: 15px; line-height: 1.5; }
+.md-doc .md-body [data-streamdown="heading-4"] { margin: 16px 0 6px; font-size: 14px; line-height: 1.5; }
+.md-doc .md-body [data-streamdown="list-item"] { padding: 4px 0; }
+/* 列表悬挂缩进：渲染层默认 list-inside（符号挤进首行、换行顶到符号列），
+   文档态改 outside + 左缩进，换行与条目文字对齐 */
+.md-doc .md-body [data-streamdown="unordered-list"],
+.md-doc .md-body [data-streamdown="ordered-list"] { padding-left: 1.75em; }
+.md-doc .md-body [data-streamdown="list-item"] { list-style-position: outside; }
+.md-doc .md-body [data-streamdown="blockquote"] { margin: 16px 0; }
+.md-doc .md-body [data-streamdown="code-block-body"] { font-size: 13px; }
+
+/* ---- 对话输入框（富文本 contentEditable + 内联文件引用 chip） ---- */
+
+/* 编辑器本体：高度与原两行 textarea 相当，内容过高时内部滚动；
+   白空格保留策略与 textarea 对齐（连续空格/换行可见） */
+.chat-rich-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 130px;
+  max-height: 240px;
+  overflow-y: auto;
+  background: transparent;
+  border: none;
+  /* 底部多留一行工具栏高度，发送圆钮与文字不重叠 */
+  padding: 16px 16px 52px;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-family: var(--font-ui);
+  line-height: 1.5;
+  outline: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* 占位符：编辑区为空时显示（残留空节点在 onInput 里清掉保证 :empty 命中） */
+.chat-rich-input:empty::before {
+  content: attr(data-placeholder);
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+/* 文件引用 chip：文字流中的不可编辑元素 */
+.chat-ref-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 240px;
+  margin: 0 3px;
+  padding: 1px 4px 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  vertical-align: middle;
+  user-select: none;
+}
+.chat-ref-chip > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-ref-chip-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0;
+}
+.chat-ref-chip-close:hover {
+  color: var(--text-primary);
 }

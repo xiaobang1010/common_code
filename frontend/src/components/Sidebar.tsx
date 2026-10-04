@@ -1,10 +1,12 @@
 import { useState } from 'react'
 import SessionList from './sidebar/SessionList'
 import TaskGroupList, { GROUP_PALETTE } from './sidebar/TaskGroupList'
+import FileTreePanel from './sidebar/FileTreePanel'
 import type { SessionGroup, TaskGroupInfo } from '../api/client'
 
-// 侧栏视图：项目（按工作区分组，现状）| 分组（自定义任务分组聚合）
-export type SidebarView = 'projects' | 'groups'
+// 侧栏视图：项目（按工作区分组）| 分组（自定义任务分组聚合）| 文件树（临时视图，
+// 由工作区行「文件树」按钮进入，不持久化，重启回到项目/分组）
+export type SidebarView = 'projects' | 'groups' | 'files'
 
 // 入口区按钮统一样式（竖排：图标 + 文字居左，快捷键居右，无边框）
 const entryButtonStyle: React.CSSProperties = {
@@ -52,8 +54,7 @@ function tabStyle(active: boolean): React.CSSProperties {
   }
 }
 
-// 会话栏：左侧唯一的侧边区域，承载视图切换（分组/项目）与会话列表
-// 文件视图在编辑区右缘树窄列、搜索/审查为编辑区工具标签，此处不再有视图切换
+// 会话栏：左侧唯一的侧边区域，承载视图切换（分组/项目/文件树）与会话列表
 interface SidebarProps {
   collapsed: boolean
   onToggleCollapse: () => void
@@ -81,6 +82,14 @@ interface SidebarProps {
   onDeleteSession: (sessionId: string) => void
   onRemoveWorkspace: (workspacePath: string) => void
   onOpenWorkspace: () => void
+  // 工作区行「文件树」按钮：进入该工作区的侧栏文件树视图（非当前工作区先切换）
+  onOpenFileTree: (workspacePath: string) => void
+  // 文件树视图「返回任务」：恢复进入前的视图
+  onBackFromFileTree: () => void
+  // 文件树点击文件：右侧面板打开（面板折叠时自动展开）
+  onOpenFileFromTree: (path: string) => void
+  // 当前工作区显示名（文件树头部标题行）
+  workspaceName: string
   // 打开搜索：打开搜索工具标签
   onOpenSearch: () => void
   onRenameSession: (sessionId: string, title: string) => void
@@ -88,7 +97,7 @@ interface SidebarProps {
   onUpdateWorkspace: (path: string, data: { alias?: string; pinned?: boolean }) => void
 }
 
-function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, currentSessionId, runningSessionIds, view, onViewChange, taskGroups, onCreateTaskGroup, onRenameTaskGroup, onDeleteTaskGroup, onSetSessionGroup, onCreateSessionInGroup, onCreateSession, onCreateSessionInWorkspace, onSwitchSession, onSwitchInWorkspace, onDeleteSession, onRemoveWorkspace, onOpenWorkspace, onOpenSearch, onRenameSession, onToggleSessionPin, onUpdateWorkspace }: SidebarProps) {
+function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, currentSessionId, runningSessionIds, view, onViewChange, taskGroups, onCreateTaskGroup, onRenameTaskGroup, onDeleteTaskGroup, onSetSessionGroup, onCreateSessionInGroup, onCreateSession, onCreateSessionInWorkspace, onSwitchSession, onSwitchInWorkspace, onDeleteSession, onRemoveWorkspace, onOpenWorkspace, onOpenFileTree, onBackFromFileTree, onOpenFileFromTree, workspaceName, onOpenSearch, onRenameSession, onToggleSessionPin, onUpdateWorkspace }: SidebarProps) {
   // 新建分组的内联输入态
   const [creatingGroup, setCreatingGroup] = useState(false)
   const [groupNameDraft, setGroupNameDraft] = useState('')
@@ -227,7 +236,9 @@ function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, cu
           </svg>
         </button>
       </div>
-      {/* 常驻入口区：新建任务 / 搜索 / 打开工作区（竖排，分组折叠与否均可见） */}
+      {/* 常驻入口区：新建任务 / 搜索 / 打开工作区（竖排，分组折叠与否均可见）。
+          文件树视图下隐藏，还原图3 的纯文件树形态 */}
+      {view !== 'files' && (
       <div
         style={{
           display: 'flex',
@@ -296,7 +307,9 @@ function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, cu
           打开工作区
         </button>
       </div>
+      )}
       {/* 视图切换 tab：「# 分组」/「项目」（文件夹图标），右侧 + 新建分组（仅分组视图） */}
+      {view !== 'files' && (
       <div
         style={{
           display: 'flex',
@@ -372,6 +385,7 @@ function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, cu
           </button>
         )}
       </div>
+      )}
       {/* 新建分组内联输入行 */}
       {creatingGroup && (
         <div style={{ padding: '6px 8px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
@@ -404,7 +418,7 @@ function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, cu
           />
         </div>
       )}
-      {/* 列表区：项目视图（工作区分组）或分组视图（自定义分组聚合） */}
+      {/* 列表区：文件树视图 / 项目视图（工作区分组）/ 分组视图（自定义分组聚合） */}
       <div
         style={{
           flex: 1,
@@ -413,7 +427,13 @@ function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, cu
           flexDirection: 'column',
         }}
       >
-        {view === 'projects' ? (
+        {view === 'files' ? (
+          <FileTreePanel
+            onBack={onBackFromFileTree}
+            onFileOpen={onOpenFileFromTree}
+            workspaceName={workspaceName}
+          />
+        ) : view === 'projects' ? (
           <SessionList
             groups={groups}
             currentWorkspacePath={currentWorkspacePath}
@@ -425,6 +445,7 @@ function Sidebar({ collapsed, onToggleCollapse, groups, currentWorkspacePath, cu
             onDelete={onDeleteSession}
             onRemoveWorkspace={onRemoveWorkspace}
             onOpenWorkspace={onOpenWorkspace}
+            onOpenFileTree={onOpenFileTree}
             onRename={onRenameSession}
             onTogglePin={onToggleSessionPin}
             onUpdateWorkspace={onUpdateWorkspace}

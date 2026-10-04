@@ -1,9 +1,10 @@
 // 子智能体区 - 展示内置 + 自定义代理，用户级可增删改
 // 接 GET/POST/DELETE /api/agents；项目级与内置只读
+// 顶部为执行底座全局配置（/api/config/subagents）：模型、自动转后台、活性超时、默认预算
 
 import { useEffect, useState, useCallback } from 'react'
-import { agentsApi } from '../../api/client'
-import type { AgentInfo, AgentDiagnostic, AgentCreateInput } from '../../api/client'
+import { agentsApi, subagentsConfigApi } from '../../api/client'
+import type { AgentInfo, AgentDiagnostic, AgentCreateInput, SubagentsConfig } from '../../api/client'
 
 // 工具列表的展示：通配符显示"全部工具"
 function formatTools(tools: string[] | null, disallowed: string[]): string {
@@ -211,6 +212,150 @@ function AgentForm({
   )
 }
 
+// ---------------------------------------------------------------------------
+// 执行底座全局配置面板
+// ---------------------------------------------------------------------------
+
+
+function RuntimeConfigPanel() {
+  const [cfg, setCfg] = useState<SubagentsConfig | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [msg, setMsg] = useState('')
+
+  useEffect(() => {
+    subagentsConfigApi
+      .get()
+      .then((res) => {
+        if (res.ok && res.subagents) setCfg(res.subagents)
+      })
+      .catch(() => {
+        /* 加载失败保留空表单 */
+      })
+  }, [])
+
+  if (!cfg) {
+    return <div style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>运行配置加载中...</div>
+  }
+
+  const numField = (
+    key: 'autoBackgroundMs' | 'inactivityTimeoutMs' | 'maxTurnsDefault' | 'tokenBudgetDefault',
+    label: string,
+    hint: string,
+  ) => (
+    <div key={key}>
+      <label style={{ fontSize: '11px', color: 'var(--text-tertiary)', display: 'block', marginBottom: '4px' }}>
+        {label}
+      </label>
+      <input
+        style={{
+          width: '100%',
+          padding: '6px 8px',
+          background: 'var(--bg-primary)',
+          border: '1px solid var(--border)',
+          borderRadius: 'var(--radius-sm)',
+          color: 'var(--text-primary)',
+          fontSize: '12px',
+          fontFamily: 'var(--font-mono)',
+          boxSizing: 'border-box',
+        }}
+        value={String(cfg[key])}
+        onChange={(e) => {
+          const v = e.target.value.trim()
+          setCfg({ ...cfg, [key]: v && /^\d+$/.test(v) ? Number(v) : cfg[key] })
+        }}
+        title={hint}
+      />
+      <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{hint}</div>
+    </div>
+  )
+
+  const saveAll = async () => {
+    setSaving(true)
+    setMsg('')
+    try {
+      const res = await subagentsConfigApi.set(cfg)
+      if (res.ok) {
+        setMsg('已保存')
+        if (res.subagents) setCfg(res.subagents)
+      } else {
+        setMsg(res.error || '保存失败')
+      }
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div
+      className="subagent-runtime-config"
+      style={{
+        padding: '14px',
+        backgroundColor: 'var(--bg-primary)',
+        border: '1px solid var(--border)',
+        borderRadius: 'var(--radius-md)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '10px',
+        marginBottom: '16px',
+      }}
+    >
+      <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+        执行底座全局配置（对所有子代理生效，代理定义可单独覆盖模型/轮数/预算）
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+        {numField('autoBackgroundMs', '自动转后台阈值（毫秒）', '前台运行超过该时长自动转后台；0 = 关闭')}
+        {numField('inactivityTimeoutMs', '活性超时（毫秒）', '超过该时长无任何活动即中止；0 = 关闭')}
+        {numField('maxTurnsDefault', '默认轮次上限', '代理未指定轮数时应用；0 = 不限')}
+        {numField('tokenBudgetDefault', '默认 token 预算', '代理未指定预算时应用；0 = 不限')}
+      </div>
+      <div>
+        <label style={{ fontSize: '11px', color: 'var(--text-tertiary)', display: 'block', marginBottom: '4px' }}>
+          默认模型（空 = 继承主循环）
+        </label>
+        <input
+          style={{
+            width: '100%',
+            padding: '6px 8px',
+            background: 'var(--bg-primary)',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-sm)',
+            color: 'var(--text-primary)',
+            fontSize: '12px',
+            fontFamily: 'var(--font-mono)',
+            boxSizing: 'border-box',
+          }}
+          value={cfg.defaultModel}
+          onChange={(e) => setCfg({ ...cfg, defaultModel: e.target.value })}
+        />
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <button
+          type="button"
+          disabled={saving}
+          onClick={saveAll}
+          style={{
+            padding: '5px 14px',
+            fontSize: '12px',
+            background: 'var(--accent)',
+            border: 'none',
+            borderRadius: 'var(--radius-sm)',
+            color: 'var(--button-primary-text)',
+            cursor: saving ? 'default' : 'pointer',
+          }}
+        >
+          {saving ? '保存中...' : '保存配置'}
+        </button>
+        {msg && (
+          <span style={{ fontSize: '11px', color: msg === '已保存' ? 'var(--success)' : 'var(--error)' }}>{msg}</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+
 function SubagentSettingsSection() {
   const [agents, setAgents] = useState<AgentInfo[]>([])
   const [diagnostics, setDiagnostics] = useState<AgentDiagnostic[]>([])
@@ -266,6 +411,8 @@ function SubagentSettingsSection() {
         子智能体定义（内置 + 自定义）。自定义代理从 .md 文件加载：用户级 ~/.agent/agents/ 可在下方增删改，
         项目级 .agent/agents/ 只读（其权限配置不生效，防提权）。
       </div>
+
+      <RuntimeConfigPanel />
 
       {error && <div style={{ color: 'var(--error)', fontSize: '12px', marginBottom: '12px' }}>{error}</div>}
 

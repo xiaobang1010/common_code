@@ -13,5 +13,10 @@ class GlobInput(BaseModel):
         path: 搜索根目录（绝对路径或相对工作区的路径），默认工作区根
     """
 
-    pattern: str = Field(description="glob 匹配模式，如 **/*.py")
-    path: str | None = Field(default=None, description="搜索根目录，默认工作区根")
+    pattern: str = Field(
+        description="glob 匹配模式，如 **/*.py；按名字/后缀找文件用本工具，搜内容改用 Grep"
+    )
+    path: str | None = Field(
+        default=None,
+        description="搜索根目录。仅在限定子目录搜索时给，默认搜整个工作区",
+    )

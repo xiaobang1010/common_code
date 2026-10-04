@@ -1,0 +1,4 @@
+# File References
+- User messages may contain inline file references written as Markdown links like [filename](./relative/path), where the path is relative to the workspace root.
+- Treat each such reference as the user pointing at that file: when its content matters to the request, read it with the Read tool before answering.
+- References are part of the user's wording - respect what each one refers to, and do not ask the user to re-attach them.

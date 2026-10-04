@@ -1,18 +1,25 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
-import Sidebar from './components/Sidebar'
+import Sidebar, { type SidebarView } from './components/Sidebar'
 import ArtifactPanel, { type ArtifactPanelHandle } from './components/ArtifactPanel'
+import { registerPanelOpener } from './stores/panelBridge'
 import AIPanel from './components/AIPanel'
 import TitleBar from './components/TitleBar'
-import IconRail from './components/IconRail'
+import CapsuleCard from './components/CapsuleCard'
 import Resizer from './components/Resizer'
+import TerminalPanel from './components/editor/TerminalPanel'
 import SettingsModal from './components/settings/SettingsModal'
 import WorkspaceSelector from './components/ai/WorkspaceSelector'
 import BranchSelector from './components/ai/BranchSelector'
 import { useChatStore, lastActivityAtRef } from './stores/useChatStore'
 import { useSettingsStore } from './stores/useSettingsStore'
 import { useSessions } from './hooks/useSessions'
+import { useBranches } from './hooks/useBranches'
+import { useRunsWatcher } from './hooks/useRunsWatcher'
 import { TOOL_META, type ToolId } from './components/editor/toolMeta'
-import { gitApi, sessionsApi } from './api/client'
+import { useBrowserStore } from './stores/useBrowserStore'
+import { onBrowserCommand, reportTeardown, reportVisibility } from './utils/browserBridge'
+import { panelToggleDecision } from './utils/browserLogic'
+import { gitApi, sessionsApi, type StateResponse, type TurnExitInfo } from './api/client'
 
 // 布局宽度预算：对话区是主角，有最小宽度保护；编辑区宽度设上下限
 const SIDEBAR_MIN = 180
@@ -21,63 +28,59 @@ const CHAT_MIN_WIDTH = 360 // 对话区最小宽度：任何情况下不被挤�
 const EDITOR_MIN = 360
 const EDITOR_MAX_RATIO = 0.85 // 编辑器最多占窗口 85%
 
+// 会话区底部终端面板的高度预算：下限保证可用，上限按窗口比例留出对话区
+const TERMINAL_MIN = 120
+const TERMINAL_DEFAULT = 240
+const TERMINAL_MAX_RATIO = 0.6
+
 // 布局持久化 key：宽度与面板开关状态重启后恢复，设置面板提供「恢复默认布局」
 const LAYOUT_KEYS = {
   sidebarWidth: 'layout.sidebarWidth',
   editorWidth: 'layout.editorWidth',
-  treeWidth: 'layout.treeWidth',
-  treeCollapsed: 'layout.treeCollapsed',
+  terminalHeight: 'layout.terminalHeight',
   toolTabsOpen: 'layout.toolTabsOpen',
   activeToolId: 'layout.activeToolId',
-  toolTabsMigrated: 'layout.toolTabsMigrated',
   sidebarView: 'layout.sidebarView',
 } as const
 
-// 默认工具标签集：转为「产物区」定位后，面板展开默认呈现 概要/终端/文件，激活概要
-const DEFAULT_TOOL_TABS: ToolId[] = ['summary', 'terminal', 'files']
+// 默认工具标签集：空集——展开产物区后默认落在「打开标签页」选择页，由用户点卡片开标签。
+// 不在工具标签体系内的两例：终端（会话区底部独立面板，入口在标题栏开关与选择页卡片）、
+// 文件视图（面板无工具激活时的基础视图，打开文件即切过去，无需标签占位）
+const DEFAULT_TOOL_TABS: ToolId[] = []
 
-// 初始化工具标签开关集（含一次性旧持久化迁移）：
-// 旧版本默认标签集为空，且用户「关闭全部」也会产生空集——两者无法从值上区分。
-// 用迁移标记区分：仅当存在旧记录（不含 files，旧版本无此工具）时补齐默认三标签并写标记一次，
-// 之后用户关空得到的空集保持为空（「关闭全部 = 面板全隐藏」不变量不被重置）
+// 初始化工具标签开关集：已存记录按当前 TOOL_META 过滤（已被移除的标签在此自然消失），
+// 全新安装采用默认集；用户主动「关闭全部」得到的空集保持为空（面板全隐藏）
 function loadInitialToolTabs(): ToolId[] {
   const raw = localStorage.getItem(LAYOUT_KEYS.toolTabsOpen)
-  let ids: ToolId[] = []
-  if (raw !== null) {
-    try {
-      const v = JSON.parse(raw)
-      ids = Array.isArray(v) ? v.filter((x): x is ToolId => TOOL_META.some((t) => t.id === x)) : []
-    } catch {
-      ids = []
-    }
-  } else {
-    // 全新安装：直接采用新默认集
-    ids = DEFAULT_TOOL_TABS
+  if (raw === null) return DEFAULT_TOOL_TABS
+  try {
+    const v = JSON.parse(raw)
+    return Array.isArray(v) ? v.filter((x): x is ToolId => TOOL_META.some((t) => t.id === x)) : []
+  } catch {
+    return []
   }
-  if (localStorage.getItem(LAYOUT_KEYS.toolTabsMigrated) !== '1') {
-    if (raw !== null && !ids.includes('files')) {
-      // 旧版本数据：补齐默认三标签，仅迁移这一次
-      ids = Array.from(new Set([...ids, ...DEFAULT_TOOL_TABS]))
-    }
-    localStorage.setItem(LAYOUT_KEYS.toolTabsMigrated, '1')
-  }
-  return ids
 }
 
 function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   // 侧栏视图（分组/项目）：持久化恢复，默认「项目」（保持现状心智）
-  const [sidebarView, setSidebarView] = useState<'projects' | 'groups'>(() =>
+  const [sidebarView, setSidebarView] = useState<SidebarView>(() =>
     localStorage.getItem(LAYOUT_KEYS.sidebarView) === 'groups' ? 'groups' : 'projects',
   )
-  // 右侧面板（产物区）：默认收起；展开后默认呈现概要产物视图，打开文件不再是唯一展开时机
+  // 右侧面板（产物区）：默认收起；展开后无工具标签激活时呈现「打开标签页」选择页
   const [editorCollapsed, setEditorCollapsed] = useState(true)
 
-  // 工具标签（概要/终端/文件/搜索/审查）开关状态：由 App 持有，标题栏开关/入口卡片/快捷键共用
+  // 底部终端面板：默认收起。首次展开才挂载终端组件（没用过终端就不白起 shell 进程），
+  // 挂载后收起只隐藏不卸载，pty 与其中运行的命令继续存活
+  const [terminalOpen, setTerminalOpen] = useState(false)
+  const [terminalMounted, setTerminalMounted] = useState(false)
+
+  // 工具标签（搜索/审查/智能体/浏览器）开关状态：由 App 持有，标题栏开关/入口卡片/快捷键共用
   const [toolTabsOpen, setToolTabsOpen] = useState<ToolId[]>(() => loadInitialToolTabs())
   const [activeToolId, setActiveToolId] = useState<ToolId | null>(() => {
     const v = localStorage.getItem(LAYOUT_KEYS.activeToolId)
-    return v && TOOL_META.some((t) => t.id === v) ? (v as ToolId) : 'summary'
+    // 无记录或记录指向已下线标签（如概要）时回退 null：产物区落在选择页
+    return v && TOOL_META.some((t) => t.id === v) ? (v as ToolId) : null
   })
   // 最近使用的工具标签：标题栏开关展开编辑区时聚焦它
   const lastToolIdRef = useRef<ToolId | null>(activeToolId)
@@ -95,6 +98,10 @@ function App() {
     const v = Number(localStorage.getItem(LAYOUT_KEYS.editorWidth))
     return v > 0 ? Math.min(v, window.innerWidth * EDITOR_MAX_RATIO) : 0
   })
+  const [terminalHeight, setTerminalHeight] = useState(() => {
+    const v = Number(localStorage.getItem(LAYOUT_KEYS.terminalHeight))
+    return v >= TERMINAL_MIN && v <= window.innerHeight * TERMINAL_MAX_RATIO ? v : TERMINAL_DEFAULT
+  })
 
   // 聊天状态从 store 订阅：action 引用稳定，不会因流式更新引起本组件重渲
   const chatSessionId = useChatStore(s => s.sessionId)
@@ -106,6 +113,18 @@ function App() {
   const isStreaming = useChatStore(s => s.isStreaming)
   const sessions = useSessions()
   const editorRef = useRef<ArtifactPanelHandle>(null)
+
+  // present_files 交付桥接：store 层收到交付事件后经此打开右侧面板标签。
+  // 逆序打开让优先级第一的文件最后打开、保持聚焦；组件卸载时注销防止悬挂引用
+  useEffect(() => {
+    registerPanelOpener((files: string[]) => {
+      for (let i = files.length - 1; i >= 0; i--) {
+        void editorRef.current?.openFile(files[i])
+      }
+    })
+    return () => registerPanelOpener(null)
+  }, [])
+
 
   // 当前任务标题（标题栏展示）：从分组数据找当前会话，侧栏折叠时仍可见
   const currentTaskTitle = useMemo(() => {
@@ -123,26 +142,19 @@ function App() {
     sessions.loadAllSessions()
   }, [isStreaming]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 当前 Git 分支和分支列表
-  const [currentBranch, setCurrentBranch] = useState('')
-  const [branches, setBranches] = useState<string[]>([])
+  // 当前 Git 分支和分支列表：轮询/聚焦/工作区信号自动刷新，应用内切分支
+  // 与下拉打开时手动 refresh（见 useBranches）
+  const { current: currentBranch, branches, refresh: refreshBranches } = useBranches()
+
+  // 运行任务感知：外部唤起的轮次（如后台子代理完成自动续跑）出现/结束时
+  // 刷新会话列表——运行指示与当前会话实时消息由既有链路接管。本地流式期间
+  // 本就有 SSE 驱动刷新，暂停轮询
+  useRunsWatcher(!isStreaming, () => {
+    sessions.loadAllSessions()
+  })
 
   // 标记初始会话是否已加载，避免重复加载
   const initialSessionLoaded = useRef(false)
-
-  // 工作区变化时加载分支列表
-  useEffect(() => {
-    if (!sessions.currentWorkspace) return
-    gitApi.branches(sessions.currentWorkspace.path)
-      .then(data => {
-        setBranches(data.branches)
-        setCurrentBranch(data.current)
-      })
-      .catch(() => {
-        setBranches([])
-        setCurrentBranch('')
-      })
-  }, [sessions.currentWorkspace?.path]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // 初始拉取后端汇总状态；改 LLM 配置后刷新 model 显示（原 useChat 内部逻辑）
   useEffect(() => {
@@ -159,9 +171,9 @@ function App() {
     if (!sessions.currentSessionId) return
     initialSessionLoaded.current = true
     const id = sessions.currentSessionId
-    sessions.switchSession(id).then(messages => {
+    sessions.switchSession(id).then(result => {
       setSessionId(id)
-      if (messages) loadMessages(messages)
+      if (result?.messages) loadMessages(result.messages, { lastTurn: result.lastTurn })
     }).catch(e => {
       // 初始加载失败：提示用户，本地状态不动（引擎未覆盖，不会串数据）
       alert(`加载会话失败：${e instanceof Error ? e.message : '未知错误'}`)
@@ -176,22 +188,27 @@ function App() {
     localStorage.setItem(LAYOUT_KEYS.editorWidth, String(editorWidth))
   }, [editorWidth])
   useEffect(() => {
+    localStorage.setItem(LAYOUT_KEYS.terminalHeight, String(terminalHeight))
+  }, [terminalHeight])
+  useEffect(() => {
     localStorage.setItem(LAYOUT_KEYS.toolTabsOpen, JSON.stringify(toolTabsOpen))
   }, [toolTabsOpen])
   useEffect(() => {
     localStorage.setItem(LAYOUT_KEYS.activeToolId, activeToolId ?? '')
   }, [activeToolId])
 
-  // 恢复默认布局：清持久化并重置各宽度与面板开关（树状态由 ArtifactPanel 监听事件重置）
+  // 恢复默认布局：清持久化并重置各宽度与面板开关
   const resetLayout = useCallback(() => {
     Object.values(LAYOUT_KEYS).forEach((k) => localStorage.removeItem(k))
     setSidebarWidth(240)
     setEditorWidth(0)
+    setTerminalHeight(TERMINAL_DEFAULT)
     setToolTabsOpen(DEFAULT_TOOL_TABS)
-    setActiveToolId('summary')
+    setActiveToolId(null)
     setSidebarCollapsed(false)
     setEditorCollapsed(true)
-    window.dispatchEvent(new Event('layout-reset'))
+    // 终端面板只收起不复位挂载闩锁：重置布局不该把正在跑的 shell 杀掉
+    setTerminalOpen(false)
   }, [])
 
   // 窄屏退让：树列折叠由 ArtifactPanel 按编辑区/窗口宽度处理；
@@ -242,6 +259,21 @@ function App() {
     })
   }, [editorWidth])
 
+  // 底部终端面板拖拽：分隔条在面板顶部，分隔条跟着鼠标走
+  // 向上拖（delta 负）面板变高，向下拖变矮
+  const handleTerminalResize = useCallback((delta: number) => {
+    setTerminalHeight((prev) => {
+      const maxH = window.innerHeight * TERMINAL_MAX_RATIO
+      return Math.max(TERMINAL_MIN, Math.min(maxH, prev - delta))
+    })
+  }, [])
+
+  // 开关底部终端面板：首次展开时才挂载终端，之后收起只隐藏（会话保活）
+  const toggleTerminal = useCallback(() => {
+    setTerminalMounted(true)
+    setTerminalOpen((prev) => !prev)
+  }, [])
+
   // ---- 工具标签操作 ----
 
   // 打开工具标签：展开编辑区并激活该面板
@@ -257,7 +289,7 @@ function App() {
     [editorCollapsed, toggleEditor]
   )
 
-  // 关闭工具标签：只隐藏面板，后台状态保留（终端会话不杀、审查结果不清除）
+  // 关闭工具标签：只隐藏面板，后台状态保留（审查结果不清除、文件视图不销毁）
   const closeTool = useCallback((id: ToolId) => {
     setToolTabsOpen((prev) => prev.filter((t) => t !== id))
     setActiveToolId((prev) => (prev === id ? null : prev))
@@ -268,16 +300,76 @@ function App() {
     setActiveToolId(null)
   }, [])
 
-  // 标题栏面板开关：展开编辑区并聚焦最近工具标签；已展开则收起
-  const togglePanel = useCallback(() => {
-    if (!editorCollapsed) {
-      toggleEditor()
-      return
+  // ---- 内置浏览器 ----
+  // openTool/activateFile 经 ref 转发给命令订阅，避免订阅随回调重建
+  const openToolRef = useRef(openTool)
+  openToolRef.current = openTool
+  const activateFileRef = useRef(activateFile)
+  activateFileRef.current = activateFile
+
+  // 主进程命令接收：订阅放常驻 App 层——产物区折叠时 ArtifactPanel 早退不挂载，
+  // BrowserPane 非常驻，折叠态的 tab-add 只有这里能接住（先展开面板再建标签）
+  useEffect(() => {
+    return onBrowserCommand((cmd) => {
+      const store = useBrowserStore.getState()
+      if (cmd.type === 'tab-add') {
+        openToolRef.current('browser')
+        store.ensureTab(cmd.tabId, cmd.url)
+      } else if (cmd.type === 'tab-remove' && cmd.tabId) {
+        store.closeTab(cmd.tabId)
+      } else if (cmd.type === 'tab-activate' && cmd.tabId) {
+        openToolRef.current('browser')
+        store.activateTab(cmd.tabId)
+      } else if (cmd.type === 'pane-visibility') {
+        // 显示=打开并激活浏览器标签；隐藏=切回文件视图（标签保持挂载，网页不销毁）
+        if (cmd.visible) openToolRef.current('browser')
+        else activateFileRef.current()
+      }
+    })
+  }, [])
+
+  // 回收：browser 移出工具标签集或面板折叠即销毁 guest 并清空注册表。
+  // 首启即折叠会空跑一次 teardown，主进程对空注册表幂等，无副作用
+  const browserTabOpen = toolTabsOpen.includes('browser')
+  useEffect(() => {
+    if (!browserTabOpen || editorCollapsed) {
+      reportTeardown()
+      useBrowserStore.getState().reset()
     }
-    const last = lastToolIdRef.current ?? 'summary'
+  }, [browserTabOpen, editorCollapsed])
+
+  // 面板可见性回报：browser 标签处于激活显示状态才算可见（控制服务 visibility 命令读取）
+  useEffect(() => {
+    reportVisibility(!editorCollapsed && activeToolId === 'browser')
+  }, [editorCollapsed, activeToolId])
+
+  // ---- 智能体轨迹标签 ----
+
+  // 选中任务 id：内存态不持久化（重启后由标签内列表重选）；会话切换时重置防旧选中悬空
+  const [agentTraceId, setAgentTraceId] = useState<string | null>(null)
+  useEffect(() => {
+    setAgentTraceId(null)
+  }, [chatSessionId])
+
+  // 胶囊卡「智能体」条目点入：选中任务并展开产物面板的智能体标签
+  const handleOpenAgent = useCallback(
+    (id: string) => {
+      setAgentTraceId(id)
+      openTool('agent')
+    },
+    [openTool]
+  )
+
+  // 标题栏面板开关：展开编辑区并聚焦最近工具标签；已展开则收起。
+  // 无最近工具标签（首启或概要下线后）时只展开面板、保持选择页，不强行激活任何标签
+  const togglePanel = useCallback(() => {
+    const decision = panelToggleDecision(!editorCollapsed, lastToolIdRef.current)
     toggleEditor()
-    setToolTabsOpen((prev) => (prev.includes(last) ? prev : [...prev, last]))
-    setActiveToolId(last)
+    if (decision.action === 'expand' && decision.focusTool) {
+      const last = decision.focusTool
+      setToolTabsOpen((prev) => (prev.includes(last) ? prev : [...prev, last]))
+      setActiveToolId(last)
+    }
   }, [editorCollapsed, toggleEditor])
 
   // ---- 会话管理相关回调 ----
@@ -301,7 +393,8 @@ function App() {
         lastMsgCountRef.current = 0
         if (chatSessionId) {
           sessionsApi.get(chatSessionId)
-            .then(detail => loadMessages(detail.messages))
+            // 详情接口带 last_turn：任务刚结束的回合重建时恢复真实退出原因
+            .then(detail => loadMessages(detail.messages, { lastTurn: detail.session.last_turn }))
             .catch(() => {})
         }
       }
@@ -316,13 +409,13 @@ function App() {
       // 拉取任务引擎实时消息（消息数变化才重建视图，避免闪烁）
       try {
         const resp = await fetch('/api/state')
-        const data = await resp.json()
+        const data = (await resp.json()) as StateResponse
         // 轮询成功说明后端存活：刷新活动时间，避免状态行误报「连接异常」
         lastActivityAtRef.current = Date.now()
         if (Array.isArray(data.messages) && data.messages.length !== lastMsgCountRef.current) {
           lastMsgCountRef.current = data.messages.length
           const runningStartedAt = typeof data.started_at === 'number' ? data.started_at * 1000 : undefined
-          loadMessages(data.messages, { runningStartedAt })
+          loadMessages(data.messages, { runningStartedAt, lastTurn: data.last_turn })
         }
       } catch {
         // 忽略瞬时失败
@@ -335,6 +428,13 @@ function App() {
   const runningSessionId = sessions.currentTasks.some(t => t.session_id === chatSessionId)
     ? chatSessionId
     : null
+
+  // 当前工作区显示名（侧栏文件树头部标题行）：别名 > 名称 > 路径末段
+  const workspaceDisplayName = useMemo(() => {
+    const ws = sessions.currentWorkspace
+    if (!ws) return ''
+    return ws.alias || ws.name || ws.path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || ''
+  }, [sessions.currentWorkspace])
 
   // 全部运行中会话 id（含其他工作区的后台任务），侧边栏行级运行标记用：
   // 跨工作区并行时，未在查看的后台任务也要能看到「正在运行」
@@ -377,38 +477,42 @@ function App() {
       alert('切换工作区失败，未能新建任务')
       return
     }
-    setCurrentBranch(switched.branch)
-    // 刷新分支列表（工作区变了）
-    gitApi.branches(workspacePath)
-      .then(data => {
-        setBranches(data.branches)
-        setCurrentBranch(data.current)
-      })
-      .catch(() => {})
+    // 分支显示由 useBranches 随工作区信号自动刷新
     await handleCreateSession()
   }, [sessions, handleCreateSession])
 
-  // 切换侧栏视图：状态 + localStorage 持久化一并更新
-  const handleChangeSidebarView = useCallback((view: 'projects' | 'groups') => {
+  // 切换侧栏视图：状态 + localStorage 持久化一并更新（tab 只在项目/分组间切换）
+  const handleChangeSidebarView = useCallback((view: SidebarView) => {
+    if (view === 'files') return
     setSidebarView(view)
     localStorage.setItem(LAYOUT_KEYS.sidebarView, view)
   }, [])
 
   // 统一以 /api/state 为准加载当前会话消息：响应含 started_at 表示目标会话有运行中任务，
-  // 据此标记「工作中」；snapshot 为 switchSession 等返回的 DB 快照，作为 /api/state 失败时的回退。
-  const loadMessagesWithRunningState = useCallback(async (snapshot?: Record<string, unknown>[] | null) => {
+  // 据此标记「工作中」；snapshot 为 switchSession 等返回的 DB 快照，作为 /api/state 失败时的回退；
+  // lastTurn 为 switch 带回的最近回合退出信息——成功路径优先用 state 的（更新），
+  // 回退路径用入参，不丢源
+  const loadMessagesWithRunningState = useCallback(async (
+    snapshot?: Record<string, unknown>[] | null,
+    lastTurn?: TurnExitInfo,
+  ) => {
     lastMsgCountRef.current = 0
     try {
       const resp = await fetch('/api/state')
-      const data = await resp.json()
+      const data = (await resp.json()) as StateResponse
       // 后端已响应：刷新活动时间，避免切回后台任务时状态行误报「连接异常」
       lastActivityAtRef.current = Date.now()
-      const messages = Array.isArray(data.messages) ? (data.messages as Record<string, unknown>[]) : snapshot
-      const runningStartedAt = typeof data.started_at === 'number' ? data.started_at * 1000 : undefined
-      if (messages) loadMessages(messages, { runningStartedAt })
+      const running = typeof data.started_at === 'number'
+      // 无运行任务时优先 DB 快照：/api/state 的图片块是占位形态（不含 base64），
+      // 快照带完整 data URL 才能保证含图会话重开正确回显；运行中才取 state（更新鲜）
+      const messages = Array.isArray(data.messages)
+        ? (running || !snapshot ? data.messages : snapshot)
+        : snapshot
+      const runningStartedAt = running ? (data.started_at as number) * 1000 : undefined
+      if (messages) loadMessages(messages, { runningStartedAt, lastTurn: data.last_turn ?? lastTurn })
       else clearMessages()
     } catch {
-      if (snapshot) loadMessages(snapshot)
+      if (snapshot) loadMessages(snapshot, { lastTurn })
       else clearMessages()
     }
   }, [loadMessages, clearMessages])
@@ -421,9 +525,9 @@ function App() {
     // 断开当前 SSE 连接：任务在后台继续跑，本地恢复可发送状态
     disconnectStream()
     try {
-      const snapshot = await sessions.switchSession(sessionId)
+      const snap = await sessions.switchSession(sessionId)
       setSessionId(sessionId)
-      await loadMessagesWithRunningState(snapshot)
+      await loadMessagesWithRunningState(snap.messages, snap.lastTurn)
     } catch (e) {
       alert(`切换会话失败：${e instanceof Error ? e.message : '未知错误'}`)
     }
@@ -442,8 +546,8 @@ function App() {
       if (newSessionId) {
         // 加载新当前会话的消息
         try {
-          const messages = await sessions.switchSession(newSessionId)
-          if (messages) loadMessages(messages)
+          const snap = await sessions.switchSession(newSessionId)
+          if (snap?.messages) loadMessages(snap.messages, { lastTurn: snap.lastTurn })
           else clearMessages()
         } catch (e) {
           clearMessages()
@@ -463,39 +567,26 @@ function App() {
       const result = await sessions.switchToSessionInWorkspace(sessionId, workspacePath)
       if (result) {
         setSessionId(sessionId)
-        await loadMessagesWithRunningState(result.messages)
-        // 更新分支信息
-        if (result.branch !== undefined) {
-          setCurrentBranch(result.branch)
-        }
-        // 刷新分支列表（工作区可能变了）
-        if (sessions.currentWorkspace) {
-          gitApi.branches(sessions.currentWorkspace.path)
-            .then(data => {
-              setBranches(data.branches)
-              setCurrentBranch(data.current)
-            })
-            .catch(() => {})
-        }
+        await loadMessagesWithRunningState(result.messages, result.lastTurn)
+        // 分支显示由 useBranches 随工作区信号自动刷新
       }
     } catch (e) {
       alert(`切换会话失败：${e instanceof Error ? e.message : '未知错误'}`)
     }
   }, [sessions, setSessionId, loadMessagesWithRunningState])
 
-  // 切换工作区：更新分支，加载新当前会话（不中止后台任务）。
+  // 切换工作区：加载新当前会话（不中止后台任务）。
   // 嵌套切换失败时提示用户，本地状态不动（后端引擎未覆盖，不会串数据）
   const handleSwitchWorkspace = useCallback(async (path: string) => {
     disconnectStream()
     const result = await sessions.switchWorkspace(path)
     if (result) {
-      setCurrentBranch(result.branch)
-      // 加载新当前会话的消息
+      // 加载新当前会话的消息（分支显示由 useBranches 随工作区信号自动刷新）
       if (result.sessionId) {
         try {
-          const snapshot = await sessions.switchSession(result.sessionId)
+          const snap = await sessions.switchSession(result.sessionId)
           setSessionId(result.sessionId)
-          await loadMessagesWithRunningState(snapshot)
+          await loadMessagesWithRunningState(snap.messages, snap.lastTurn)
         } catch (e) {
           alert(`切换会话失败：${e instanceof Error ? e.message : '未知错误'}`)
         }
@@ -506,6 +597,33 @@ function App() {
     }
   }, [sessions, setSessionId, loadMessagesWithRunningState, clearMessages])
 
+  // 文件树视图的来源视图：返回任务时恢复；files 不写 localStorage（重启兜底 projects）
+  const fileTreeReturnViewRef = useRef<'projects' | 'groups'>('projects')
+
+  // 工作区行「文件树」按钮：非当前工作区先切换（连带切会话，与跨工作区「+」一致），
+  // 再进入文件树视图并记录来源
+  const handleOpenFileTree = useCallback(async (workspacePath: string) => {
+    if (sessions.currentWorkspace?.path !== workspacePath) {
+      await handleSwitchWorkspace(workspacePath)
+    }
+    setSidebarView((prev) => {
+      if (prev === 'projects' || prev === 'groups') fileTreeReturnViewRef.current = prev
+      return 'files'
+    })
+  }, [sessions.currentWorkspace?.path, handleSwitchWorkspace])
+
+  // 文件树视图「返回任务」：恢复来源视图并持久化
+  const handleBackFromFileTree = useCallback(() => {
+    const back = fileTreeReturnViewRef.current
+    setSidebarView(back)
+    localStorage.setItem(LAYOUT_KEYS.sidebarView, back)
+  }, [])
+
+  // 文件树点击文件：右侧面板打开（openFile 自带折叠时自动展开，勿在外层先行 toggle）
+  const handleOpenFileFromTree = useCallback((path: string) => {
+    editorRef.current?.openFile(path)
+  }, [])
+
   // 浏览选择目录
   const handleBrowse = useCallback(async () => {
     const w = window as unknown as { electronAPI?: { selectDirectory?: () => Promise<string | null> } }
@@ -515,15 +633,15 @@ function App() {
     }
   }, [handleSwitchWorkspace])
 
-  // 切换 Git 分支
+  // 切换 Git 分支：成功后重取分支状态（顺带拿到 reflog 更新后的排序）
   const handleCheckout = useCallback(async (branch: string) => {
     try {
       await gitApi.checkout(branch)
-      setCurrentBranch(branch)
+      refreshBranches()
     } catch {
       // 切换失败静默忽略
     }
-  }, [])
+  }, [refreshBranches])
 
   // 移除工作区：删除后刷新列表，如果删的是当前工作区则清空聊天状态。
   // 删除工作区会连名下所有会话一起删除，运行中的任务也会被中止，需确认
@@ -533,11 +651,10 @@ function App() {
     const isCurrent = workspacePath === sessions.currentWorkspace?.path
     await sessions.deleteWorkspace(workspacePath)
     if (isCurrent) {
-      // 删的是当前工作区，清空聊天和会话状态
+      // 删的是当前工作区，清空聊天和会话状态（分支显示由 useBranches
+      // 随信号变空自动清空）
       setSessionId(null)
       clearMessages()
-      setCurrentBranch('')
-      setBranches([])
     }
   }, [sessions, setSessionId, clearMessages])
 
@@ -550,8 +667,8 @@ function App() {
     }
   }, [handleSwitchWorkspace])
 
-  // 全局快捷键：Ctrl/⌘+N 新建任务，Ctrl/⌘+K 打开搜索工具标签
-  // Electron 中这两组快捷键无默认系统行为，全局拦截安全
+  // 全局快捷键：Ctrl/⌘+N 新建任务，Ctrl/⌘+K 打开搜索工具标签，Ctrl+` 开关底部终端面板
+  // Electron 中这些快捷键无默认系统行为，全局拦截安全
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey
@@ -562,11 +679,15 @@ function App() {
       } else if (e.key.toLowerCase() === 'k') {
         e.preventDefault()
         openTool('search')
+      } else if (e.key === '`' && e.ctrlKey) {
+        // 只认 Ctrl：⌘+` 在 macOS 是系统切换窗口快捷键，不抢占
+        e.preventDefault()
+        toggleTerminal()
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [handleCreateSession, openTool])
+  }, [handleCreateSession, openTool, toggleTerminal])
 
   return (
     <div
@@ -593,17 +714,19 @@ function App() {
             currentBranch={currentBranch}
             branches={branches}
             onCheckout={handleCheckout}
+            onRefresh={refreshBranches}
           />
         }
         panelActive={!editorCollapsed}
         onTogglePanel={togglePanel}
+        terminalActive={terminalOpen}
+        onToggleTerminal={toggleTerminal}
         onOpenSettings={() => setSettingsOpen(true)}
-        onNewSession={handleCreateSession}
         currentTaskTitle={currentTaskTitle}
         taskRunning={runningSessionId !== null}
       />
 
-      {/* 主体行：会话栏 + AI面板 + 编辑区 + 右缘图标轨 */}
+      {/* 主体行：会话栏 + AI面板 + 编辑区（折叠时右上角浮状态胶囊卡） */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         {/* 会话栏：折叠时不占位，展开时固定宽度 + 可拖拽 */}
         {!sidebarCollapsed && (
@@ -630,6 +753,10 @@ function App() {
                 onDeleteSession={handleDeleteSession}
                 onRemoveWorkspace={handleRemoveWorkspace}
                 onOpenWorkspace={handleOpenWorkspace}
+                onOpenFileTree={handleOpenFileTree}
+                onBackFromFileTree={handleBackFromFileTree}
+                onOpenFileFromTree={handleOpenFileFromTree}
+                workspaceName={workspaceDisplayName}
                 onOpenSearch={() => openTool('search')}
                 runningSessionIds={runningSessionIds}
                 onRenameSession={sessions.renameSession}
@@ -663,6 +790,10 @@ function App() {
             onDeleteSession={handleDeleteSession}
             onRemoveWorkspace={handleRemoveWorkspace}
             onOpenWorkspace={handleOpenWorkspace}
+            onOpenFileTree={handleOpenFileTree}
+            onBackFromFileTree={handleBackFromFileTree}
+            onOpenFileFromTree={handleOpenFileFromTree}
+            workspaceName={workspaceDisplayName}
             onOpenSearch={() => openTool('search')}
             runningSessionIds={runningSessionIds}
             onRenameSession={sessions.renameSession}
@@ -672,16 +803,32 @@ function App() {
           </div>
         )}
 
-        {/* AI 面板：占据剩余空间（主角），最小宽度受保护不被挤没 */}
-        <div style={{ flex: 1, minWidth: CHAT_MIN_WIDTH }}>
-          <AIPanel
-            hasWorkspace={!!sessions.currentWorkspace}
-            onOpenWorkspace={handleOpenWorkspace}
-            currentTaskSessionId={runningSessionId}
-          />
+        {/* 会话区列：对话流 + 输入区在上，底部终端面板在下（同一列纵向排布，
+            右侧产物面板保持全高，不与终端分栏）。最小宽度受保护不被挤没 */}
+        <div style={{ flex: 1, minWidth: CHAT_MIN_WIDTH, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+          {/* AI 面板：占据终端之外的剩余空间（主角），最小高度不设，
+              纵向空间不足时由它先让位给固定高度的终端面板 */}
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <AIPanel
+              hasWorkspace={!!sessions.currentWorkspace}
+              onOpenWorkspace={handleOpenWorkspace}
+              currentTaskSessionId={runningSessionId}
+            />
+          </div>
+          {/* 底部终端面板：首次展开后常驻挂载，收起只隐藏（终端会话保活）。
+              按工作区分组，切换工作区即切换到该工作区自己的终端 */}
+          {terminalMounted && (
+            <TerminalPanel
+              open={terminalOpen}
+              height={terminalHeight}
+              onResize={handleTerminalResize}
+              onClose={toggleTerminal}
+              workspacePath={sessions.currentWorkspace?.path ?? null}
+            />
+          )}
         </div>
 
-        {/* 右侧面板（产物区）：默认收起，展开后默认呈现概要产物视图；打开文件不再是唯一展开时机。
+        {/* 右侧面板（产物区）：默认收起，展开后无工具标签激活时呈现「打开标签页」选择页。
             树位置保持恒定（折叠时仅隐藏分隔条、宽度交给内容），
             避免折叠/展开切换导致 ArtifactPanel 重建丢失已打开标签 */}
         <div style={{ display: editorCollapsed ? 'none' : 'flex', height: '100%', flexShrink: 0 }}>
@@ -699,18 +846,27 @@ function App() {
             ref={editorRef}
             collapsed={editorCollapsed}
             onToggleCollapse={toggleEditor}
-            workspacePath={sessions.currentWorkspace?.path ?? null}
             toolTabsOpen={toolTabsOpen}
             activeToolId={activeToolId}
             onOpenTool={openTool}
             onCloseTool={closeTool}
             onActivateFile={activateFile}
+            agentTraceId={agentTraceId}
+            onSelectAgentTrace={setAgentTraceId}
+            onOpenTerminal={toggleTerminal}
           />
         </div>
       </div>
 
-      {/* 收起态右上角悬浮卡片：面板展开时不渲染；图标点击直达对应工具标签 */}
-      {editorCollapsed && <IconRail onToolClick={openTool} />}
+      {/* 收起态右上角状态胶囊卡：面板展开时不渲染；区块点击直达对应工具标签，
+          「智能体」条目直达产物面板的执行轨迹 */}
+      {editorCollapsed && (
+        <CapsuleCard
+          onOpenTool={openTool}
+          onOpenAgent={handleOpenAgent}
+          sessionId={chatSessionId}
+        />
+      )}
 
       {/* 状态信息已并入输入区底部行（ChatInput），无独立状态栏 */}
 

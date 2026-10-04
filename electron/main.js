@@ -1,6 +1,15 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require('electron')
 const path = require('path')
+const fs = require('fs')
 const pty = require('node-pty')
+const { BrowserTabManager } = require('./browser/tabs')
+const { CdpExecutor } = require('./browser/cdp')
+const { BrowserControlServer } = require('./browser/server')
+
+// 内置浏览器：标签注册表 + CDP 执行器 + 本地控制服务（技能经桥接文件连入）
+const browserTabs = new BrowserTabManager()
+const browserCdp = new CdpExecutor(browserTabs)
+const browserServer = new BrowserControlServer(browserTabs, browserCdp)
 
 // 主窗口引用
 let win = null
@@ -80,6 +89,8 @@ function createWindow(port) {
     backgroundColor: '#0f1115',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
+      // 内置浏览器标签页用 <webview> 渲染 guest 页面
+      webviewTag: true,
     },
   }
 
@@ -99,6 +110,16 @@ function createWindow(port) {
   // Linux：保持默认 frame（Wayland/X11 差异大，titleBarOverlay 行为需单独验证）
 
   win = new BrowserWindow(windowOptions)
+
+  // 外链一律交给系统默认浏览器：AI 回复里的外链带 target=_blank（streamdown
+  // rehype-harden 加固产物），不拦会在应用内开新的 Electron 窗口；
+  // 仅放行 http/https，其余协议（file: 等）直接拒绝，避免任意协议唤起
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) {
+      shell.openExternal(url)
+    }
+    return { action: 'deny' }
+  })
 
   // Windows/Linux 隐藏菜单栏（菜单仍在，快捷键不丢）
   if (!isMac) {
@@ -139,6 +160,8 @@ function createWindow(port) {
 // 创建一个伪终端，返回 { id, shell }：shell 名供前端终端标签标题展示
 function createTerminal(cwd) {
   const id = `term-${++terminalIdCounter}`
+  // 工作区目录可能已被删除，此时回退到项目根，避免 pty 启动直接抛错
+  const workDir = cwd && fs.existsSync(cwd) ? cwd : projectRoot
   // Windows 优先 PowerShell 7，未安装则回退到 Windows PowerShell 5
   // 其他平台默认 bash
   let shell
@@ -159,7 +182,7 @@ function createTerminal(cwd) {
     name: 'xterm-color',
     cols: 80,
     rows: 24,
-    cwd: cwd || projectRoot,
+    cwd: workDir,
     env: process.env
   })
   // pty 输出转发给渲染进程
@@ -192,6 +215,10 @@ app.whenReady().then(() => {
   }
   createWindow(port)
 
+  // 内置浏览器：注册表 IPC 与 guest 守护先装配，控制服务随后启动（写桥接文件）
+  browserTabs.init(() => win)
+  browserServer.start().catch((e) => console.error('浏览器控制服务启动失败:', e.message))
+
   // 终端 IPC
   ipcMain.handle('terminal:create', (_event, cwd) => createTerminal(cwd))
   ipcMain.on('terminal:input', (_event, { id, data }) => {
@@ -217,6 +244,12 @@ app.whenReady().then(() => {
     }
     return result.filePaths[0]
   })
+
+  // 在系统文件管理器中定位并选中指定路径（文件树右键「在资源管理器中打开」）
+  ipcMain.handle('shell:revealInFolder', (_event, fullPath) => {
+    if (typeof fullPath !== 'string' || !fullPath) return
+    shell.showItemInFolder(fullPath)
+  })
 })
 
 // 所有窗口关闭时的处理：终端控制台模式下生命周期由 launch.py 托管，
@@ -225,8 +258,10 @@ app.on('window-all-closed', () => {
   app.quit()
 })
 
-// 应用退出前清理终端进程，避免残留 pwsh
+// 应用退出前清理终端进程与浏览器 guest，避免残留进程
 app.on('before-quit', () => {
   for (const [, t] of terminals) { t.kill() }
   terminals.clear()
+  browserTabs.teardown()
+  browserServer.stop()
 })

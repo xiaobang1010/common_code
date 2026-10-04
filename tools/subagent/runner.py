@@ -66,6 +66,7 @@ async def run_agent(
         record_sidechain_transcript,
         write_agent_metadata,
     )
+    from tools.subagent.session_binding import persist_child_messages
 
     # 1. 写入元数据
     write_agent_metadata(
@@ -75,7 +76,7 @@ async def run_agent(
         model=ctx.model,
     )
 
-    # 2. 构建 QueryEngineConfig
+    # 2. 构建 QueryEngineConfig（预算护栏随配置下发到循环）
     engine_config = build_engine_config(
         model=ctx.model,
         tools=tools,
@@ -87,6 +88,7 @@ async def run_agent(
             ),
         ],
         max_turns=ctx.max_turns,
+        token_budget=ctx.token_budget,
     )
 
     # 3. 创建 QueryEngine，传入初始消息
@@ -121,41 +123,82 @@ async def run_agent(
     # 6. 运行 query_loop，yield 消息
     # 传入 ctx.tool_use_context 使每轮工具执行上下文携带 agent_id，
     # is_subagent_context() 由此对子代理循环内返回 True
+    #
+    # 外层循环承担「循环终止守卫」：query_loop 结束时若 pending 队列仍有
+    # 消息，注入后以同一引擎续跑直至队列为空——消息不静默丢失。
+    # 投递安全点：assistant 消息 yield 之后（轮次边界，当前轮历史已写回，
+    # 注入 user 消息不会破坏 tool_calls/tool 消息配对）；禁止流式中途插入。
     try:
-        async for event in query_loop(
-            engine, query_config, tool_use_context=ctx.tool_use_context
-        ):
-            # 检查 abort_event
-            if ctx.abort_event is not None and ctx.abort_event.is_set():
-                logger.info("子代理 %s 被 abort 中断", ctx.agent_id)
-                yield {"role": "assistant", "content": "[Subagent aborted]"}
+        while True:
+            aborted_run = False
+            async for event in query_loop(
+                engine, query_config, tool_use_context=ctx.tool_use_context
+            ):
+                # 活动上报（活性看门狗）：每条事件都算活动，上报失败不影响运行
+                if ctx.on_activity is not None:
+                    try:
+                        ctx.on_activity()
+                    except Exception:
+                        pass
+
+                # 检查 abort_event
+                if ctx.abort_event is not None and ctx.abort_event.is_set():
+                    logger.info("子代理 %s 被 abort 中断", ctx.agent_id)
+                    yield {"role": "assistant", "content": "[Subagent aborted]"}
+                    aborted_run = True
+                    break
+
+                # 只 yield dict 类型的消息（跳过 StreamEvent）
+                if isinstance(event, dict):
+                    # 工具调用计数
+                    if event.get("role") == "tool":
+                        tool_uses += 1
+                    # 增量写入 transcript
+                    last_uuid = record_sidechain_transcript(
+                        [event], ctx.agent_id, last_uuid,
+                    )
+                    # 子会话每轮整表落库（无子会话的降级模式跳过；失败仅日志）
+                    if ctx.child_session_id:
+                        persist_child_messages(
+                            ctx.child_session_id, engine.mutable_messages
+                        )
+                    yield event
+
+                    # 投递安全点：assistant 消息落定后注入排队消息
+                    if event.get("role") == "assistant":
+                        for msg in _drain_pending_messages(ctx):
+                            engine.mutable_messages.append(
+                                {"role": "user", "content": msg}
+                            )
+                            last_uuid = record_sidechain_transcript(
+                                [{"role": "user", "content": msg}],
+                                ctx.agent_id, last_uuid,
+                            )
+                            if ctx.child_session_id:
+                                persist_child_messages(
+                                    ctx.child_session_id, engine.mutable_messages
+                                )
+                            yield {"role": "user", "content": msg}
+
+            # 循环终止守卫：abort 退出不再续跑；队列仍非空则注入续跑
+            if aborted_run:
                 break
-
-            # 只 yield dict 类型的消息（跳过 StreamEvent）
-            if isinstance(event, dict):
-                # 工具调用计数
-                if event.get("role") == "tool":
-                    tool_uses += 1
-                # 增量写入 transcript
+            drained = _drain_pending_messages(ctx)
+            if not drained:
+                break
+            for msg in drained:
+                engine.mutable_messages.append({"role": "user", "content": msg})
                 last_uuid = record_sidechain_transcript(
-                    [event], ctx.agent_id, last_uuid,
+                    [{"role": "user", "content": msg}],
+                    ctx.agent_id, last_uuid,
                 )
-                yield event
-
-                # 在 tool 轮次边界 drain pending_messages
-                if event.get("role") == "tool":
-                    drained = _drain_pending_messages(ctx)
-                    for msg in drained:
-                        # 把 pending 消息追加到引擎消息
-                        engine.mutable_messages.append(
-                            {"role": "user", "content": msg}
-                        )
-                        # 也写入 transcript
-                        last_uuid = record_sidechain_transcript(
-                            [{"role": "user", "content": msg}],
-                            ctx.agent_id, last_uuid,
-                        )
-                        yield {"role": "user", "content": msg}
+                if ctx.child_session_id:
+                    persist_child_messages(
+                        ctx.child_session_id, engine.mutable_messages
+                    )
+                yield {"role": "user", "content": msg}
+            # 以同一引擎续跑（预算护栏在续跑循环中继续生效）
+            logger.info("子代理 %s 有待投递消息，续跑循环", ctx.agent_id)
 
     except Exception as e:
         logger.exception("子代理 %s 执行异常: %s", ctx.agent_id, e)
@@ -188,7 +231,7 @@ def _drain_pending_messages(ctx: SubagentContext) -> list[str]:
     """原子地取出并清空 pending_messages 队列。
 
     SendMessage 续接正在运行的子代理时，消息入队 pending_messages，
-    在 tool 轮次边界（tool result 之后）取出注入对话。
+    由 runner 在投递安全点（assistant 消息落定后 / 循环终止守卫）注入对话。
     """
     if not ctx.pending_messages:
         return []

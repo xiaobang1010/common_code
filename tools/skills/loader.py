@@ -179,9 +179,11 @@ def _substitute_variables(text: str, skill_root: str) -> str:
     """替换 skill 正文中的变量。
 
     支持的变量：
-    - ${CLAUDE_SKILL_DIR} → skill 根目录路径
+    - ${SKILL_DIR} → skill 根目录路径（中性别名，新技能优先使用）
+    - ${CLAUDE_SKILL_DIR} → 同源兼容变量（历史技能在用，保留不重命名）
     - ${CLAUDE_SESSION_ID} → 占位（当前无 session 上下文，保留原样）
     """
+    text = text.replace("${SKILL_DIR}", skill_root)
     text = text.replace("${CLAUDE_SKILL_DIR}", skill_root)
     # CLAUDE_SESSION_ID 在运行时由调用方替换，此处不做
     return text

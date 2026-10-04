@@ -1,9 +1,43 @@
-"""系统提示词段结构与静态内容。"""
+"""系统提示词段结构与组装。
+
+段的正文全部来自 prompts/templates/system/ 下的 .j2 模板（见 prompts/loader.py），
+本模块只负责：定义段顺序、渲染、拼接静态段、给动态段注入变量。
+"""
 
 from __future__ import annotations
 
 import platform as _platform
 from dataclasses import dataclass
+
+from prompts.loader import render_prompt
+
+# 静态段：内容不随会话变化，整块走静态缓存；顺序即拼接顺序。
+# 正文除标注「我方机制」外均为参考模板原文（原文照抄，仅品牌与机制冲突处调整），
+# 原文留档见 context/ref/ 对应目录。
+_SYSTEM_STATIC_SECTION_NAMES = [
+    "opening",
+    "content-policy",
+    "personal-files-safety",
+    "windows-command-safety",  # 仅 Windows 平台拼入
+    "regional-conventions",
+    "agent-loop",
+    "result-presentation",
+    "sharing-files",
+    "final-answer-instructions",
+    "tool-use",
+    "visualizer",  # 可视化交付：widget_guidelines + show_widget（沙箱渲染已实装）
+    "task-planning",  # 我方机制：spec 三件套 / TodoWrite 轻清单
+    "asking-questions",
+    "tool-usage-policy",
+    "doing-tasks",
+    "tone-and-style",
+    "output-efficiency",
+    "executing-actions-with-care",
+    "security-boundaries",
+    "code-references",
+    "file-references",  # 我方机制：消息内文件引用
+    "agent-skills",
+]
 
 
 @dataclass
@@ -23,95 +57,68 @@ _ATTRIBUTION_HEADER = (
 _CLI_PREFIX = """You are Common Code, an AI programming assistant - the official CLI for Common. \
 You help users with software engineering tasks using the tools available to you."""
 
-_STATIC_SECTIONS = """# Core Behavior
-- Follow user instructions precisely. Use tools to complete tasks rather than guessing.
-- When uncertain, ask the user for clarification rather than making assumptions.
-- Read and understand existing code before suggesting modifications.
-- Prefer editing existing files over creating new ones to prevent file bloat.
-- If an approach fails, diagnose why before switching tactics. Do not retry the identical action blindly.
 
-# Tool Usage
-- Use dedicated tools (Read, Edit, Write, Glob, Grep) instead of shell commands when available.
-- Call multiple independent tools in parallel for efficiency.
-- Verify tool results rather than assuming they succeeded.
-- Do not re-attempt a tool call that the user has denied - adjust your approach instead.
+def build_static_sections() -> str:
+    """按序拼接全部静态段模板，段间以一个空行分隔。
 
-# Safety Rules
-- Never execute destructive operations (rm -rf, force push, drop tables) without explicit user confirmation.
-- Never expose or log secrets, API keys, or credentials.
-- Be careful not to introduce security vulnerabilities (command injection, XSS, SQL injection, etc.).
-- Protect sensitive files (.env, credentials) - never commit them.
-- Only take risky actions carefully; when in doubt, ask before acting."""
+    windows-command-safety 仅在 Windows 平台拼入（内容为其专用安全规约）。
+    """
+    names = [
+        n
+        for n in _SYSTEM_STATIC_SECTION_NAMES
+        if n != "windows-command-safety" or _platform.system() == "Windows"
+    ]
+    parts = [render_prompt(f"system/{n}.j2").rstrip() for n in names]
+    return "\n\n".join(parts)
 
 
-_SKILL_GUIDANCE = """\
-# Skill Usage
-- Skills are available via the Skill tool. A listing of available skills is provided in the conversation.
-- Each skill has a name, description, and when_to_use field. Use these to determine if a skill matches the user's request.
-- When a skill matches the user's request, this is a BLOCKING REQUIREMENT: invoke the relevant Skill tool BEFORE generating any other response.
-- Skills can also be triggered by the user via /skill-name. When the user types a slash command that matches a skill, expand it.
-- Do not invoke a skill that is not in the listing."""
+def build_skill_guidance() -> str:
+    """Skill 使用指导。"""
+    return render_prompt("system/skill-guidance.j2")
 
 
-_SUBAGENT_GUIDANCE = """\
-# Subagent Usage
-- Use the Agent tool to delegate tasks to subagents with isolated context.
-- Available agent types:
-  - general-purpose: Full tool access, for complex research and multi-step tasks
-  - Explore: Read-only, for fast codebase search and information location
-- When to use subagents:
-  - Complex research tasks that need many tool calls (saves main context)
-  - Independent tasks that can run in parallel
-  - Read-only exploration where you don't want to clutter main context
-- The subagent's result is NOT visible to the user. You must relay key findings.
-- For parallel independent tasks, issue multiple Agent tool calls in a single message.
-- For long-running tasks, pass run_in_background=true. The subagent runs in the background and you will be notified when it completes.
-- Subagents do NOT inherit your conversation history - give them complete instructions."""
+def build_team_guidance() -> str:
+    """Team 协作指导。"""
+    return render_prompt("system/team-guidance.j2")
 
 
 def build_subagent_guidance() -> str:
-    """构建子代理使用指导（动态：代理清单来自 get_agent_listing，含自定义代理）。
+    """构建子代理使用指导（代理清单来自 get_agent_listing，含自定义代理）。
 
-    静态通用规则保留在 _SUBAGENT_GUIDANCE；代理类型清单按实际可用代理渲染，
-    自定义 .md 代理加载后自动出现在提示词中。
+    清单取数失败时退化为内置两类，保证提示词构建必须容错。
     """
     try:
         from tools.subagent.built_in_agents import get_agent_listing
+
         listing = get_agent_listing()
     except Exception:  # noqa: BLE001 提示词构建必须容错
         listing = []
 
     if not listing:
-        return _SUBAGENT_GUIDANCE
-
-    lines = [
-        "# Subagent Usage",
-        "- Use the Agent tool to delegate tasks to subagents with isolated context.",
-        "- Available agent types:",
-    ]
-    for item in listing:
-        lines.append(f"  - {item['type']}: {item['when_to_use']}")
-    lines += [
-        "- When to use subagents:",
-        "  - Complex research tasks that need many tool calls (saves main context)",
-        "  - Independent tasks that can run in parallel",
-        "  - Read-only exploration where you don't want to clutter main context",
-        "- The subagent's result is NOT visible to the user. You must relay key findings.",
-        "- For parallel independent tasks, issue multiple Agent tool calls in a single message.",
-        "- For long-running tasks, pass run_in_background=true. The subagent runs in the background and you will be notified when it completes.",
-        "- Subagents do NOT inherit your conversation history - give them complete instructions.",
-    ]
-    return "\n".join(lines)
-
-
-_TEAM_GUIDANCE = """\
-# Team Collaboration
-- You are the leader of a team. Use TeamCreate to create a team, then spawn teammates.
-- Spawn teammates with the Agent tool using team_name + name parameters.
-- Create tasks with TaskCreate and assign them to teammates with TaskUpdate (set owner).
-- Communicate with teammates using SendMessage. Messages are delivered as new conversation turns.
-- Broadcast with to="*" to reach all team members.
-- Teammates are flat - they cannot spawn their own teammates.
-- When a teammate is done, it enters idle state. Send a message to wake it for more work.
-- To shut down a teammate, send a message containing "[shutdown_request]".
-- Use TaskList to monitor overall progress across the team."""
+        listing = [
+            {
+                "type": "general-purpose",
+                "when_to_use": (
+                    "General-purpose agent for researching complex questions, "
+                    "searching for code, and executing multi-step tasks. "
+                    "When you are searching for a keyword or file and are not "
+                    "confident that you will find the right match in the "
+                    "first few tries use this agent to perform the search "
+                    "for you."
+                ),
+            },
+            {
+                "type": "Explore",
+                "when_to_use": (
+                    "Read-only search agent for broad fan-out searches - "
+                    "when answering means sweeping many files, directories, "
+                    "or naming conventions and need only the conclusion, "
+                    "not the file dumps. It reads excerpts rather than "
+                    "whole files, so it locates code; it doesn't review or "
+                    "audit it. Specify search breadth: \"medium\" for "
+                    "moderate exploration, \"very thorough\" for multiple "
+                    "locations and naming conventions."
+                ),
+            },
+        ]
+    return render_prompt("system/subagent-guidance.j2", agents=listing)

@@ -1,54 +1,98 @@
-import { useState, useEffect, memo, useCallback, useRef } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
-// @ts-ignore
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
-import { useChatStore, formatDuration, lastActivityAtRef, type WorkBlock, type WorkStep } from '../../stores/useChatStore'
+import { useRef, useState, useEffect, memo, useCallback, type ReactNode } from 'react'
+import { useChatStore, formatDuration, lastActivityAtRef, type WorkBlock, type TimelineItem } from '../../stores/useChatStore'
 import SubagentCard from './SubagentCard'
+import Markdown from './Markdown'
+import { VERB_BY_TOOL, extractObject, StepIcon, iconKind } from './toolDisplay'
+import { GuidelinesStep, WidgetStep } from './WidgetSteps'
+
+// ---------- 用户消息中的文件引用渲染 ----------
+// 输入框发送时把内联 chip 序列化为 [文件名](./工作区相对路径) 的 Markdown
+// 链接，气泡里再还原成文件 chip。仅当链接 URL 以 ./ 开头才认定为文件引用，
+// 外链等普通 Markdown 链接不受影响
+const FILE_REF_RE = /\[([^\]]+)\]\((\.\/[^)]+)\)/g
+
+function renderUserMessage(text: string): ReactNode[] {
+  const nodes: ReactNode[] = []
+  let last = 0
+  let m: RegExpExecArray | null
+  FILE_REF_RE.lastIndex = 0
+  while ((m = FILE_REF_RE.exec(text))) {
+    const [, label, url] = m
+    const path = url.slice(2)
+    if (m.index > last) nodes.push(text.slice(last, m.index))
+    nodes.push(
+      <span key={`ref-${m.index}`} className="chat-ref-chip" title={path}>
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <path d="M14 2v6h6" />
+        </svg>
+        <span>{label}</span>
+      </span>,
+    )
+    last = m.index + m[0].length
+  }
+  if (last < text.length) nodes.push(text.slice(last))
+  return nodes
+}
+
+// 用户消息图片条：缩略图渲染，点击在原尺寸/缩略间切换（预览不弹新窗）
+function UserImageStrip({ images }: { images: Array<{ name: string; mime: string; dataUrl: string }> }) {
+  const [expandedIdx, setExpandedIdx] = useState<number | null>(null)
+  return (
+    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: blockImageGap }}>
+      {images.map((img, i) => (
+        <img
+          key={i}
+          src={img.dataUrl}
+          alt={img.name || '图片'}
+          title="点击放大/还原"
+          onClick={() => setExpandedIdx(v => (v === i ? null : i))}
+          style={{
+            width: expandedIdx === i ? '100%' : 96,
+            height: expandedIdx === i ? 'auto' : 96,
+            objectFit: expandedIdx === i ? 'contain' : 'cover',
+            borderRadius: 'var(--radius-sm)',
+            border: '1px solid var(--border)',
+            cursor: 'zoom-in',
+            display: 'block',
+            background: 'var(--bg-primary)',
+          }}
+        />
+      ))}
+    </div>
+  )
+}
+
+// 图片与文本之间的间隙
+const blockImageGap = '8px'
 
 interface Props {
   // 只订阅自己的工作块：流式更新只触发本组件重渲
   blockId: string
 }
 
-// ---------- 事件行动词映射（toolName 小写归一后匹配，未知工具兜底「已执行」+ 原名） ----------
-const VERB_BY_TOOL: Record<string, string> = {
-  bash: '已执行命令',
-  read: '已读取',
-  write: '已写入',
-  edit: '已修改',
-  grep: '已搜索',
-  glob: '已查找',
-  askuserquestion: '已提问',
-  skill: '已运行技能',
-  agent: '已委派子任务',
-  sendmessage: '已发送消息',
-  teamcreate: '已创建团队',
-  taskcreate: '已创建任务',
-  taskupdate: '已更新任务',
-  tasklist: '已查看任务',
-  taskget: '已获取任务',
-  summarizeteam: '已汇总团队',
-  error: '出错',
-}
-
 // 正常结束的退出原因；其余视为异常，需要弱提示与原因说明
 const NORMAL_EXITS = new Set(['', 'completed', 'command'])
 
 // 异常退出原因 → 行尾弱提示 / 展开首行原因（error 的展开首行附带错误步骤摘要，见 exitReasonLine）
+// 约定：aborted 仅由真实停止操作写入（前端 abort() 与后端 abort_event 判定两处），
+// 异常断流/无输出兜底走 stream_lost / no_output，不再冒用「用户主动停止」
 const EXIT_HINT: Record<string, string> = {
   aborted: '已中断',
   error: '出错',
   model_error: '模型出错',
   prompt_too_long: '输入过长',
   max_output_tokens_exhausted: '输出超限',
+  stream_lost: '连接中断',
+  no_output: '无输出',
 }
 const EXIT_REASON: Record<string, string> = {
   aborted: '已中断：用户主动停止',
   model_error: '模型出错',
   prompt_too_long: '输入过长',
   max_output_tokens_exhausted: '输出超限',
+  stream_lost: '已中断：连接断开，未收到回合结果',
+  no_output: '已中断：本回合无输出（历史数据无退出原因）',
 }
 
 // 展开区首行原因：error 附错误步骤的 result 摘要；未知原因原样展示
@@ -56,69 +100,10 @@ function exitReasonLine(block: WorkBlock): string {
   const reason = block.exitReason ?? ''
   if (NORMAL_EXITS.has(reason)) return ''
   if (reason === 'error') {
-    const detail = block.steps.find(s => s.toolName === 'error')?.result?.replace(/^错误:\s*/, '').trim()
+    const detail = block.timeline.find(s => s.toolName === 'error')?.result?.replace(/^错误:\s*/, '').trim()
     return detail ? `出错：${detail}` : '出错'
   }
   return EXIT_REASON[reason] ?? reason
-}
-
-// 事件行图标按语义分组复用，单色（外层 currentColor 决定：错误红、其余中性灰）
-const ICON_PATHS: Record<string, React.ReactNode> = {
-  file: (<><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z" /><path d="M14 2v6h6" /></>),
-  search: (<><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" /></>),
-  pencil: (<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />),
-  filePlus: (<><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z" /><path d="M14 2v6h6M12 18v-6M9 15h6" /></>),
-  terminal: (<><path d="M4 17l6-6-6-6" /><path d="M12 19h8" /></>),
-  zap: (<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />),
-  help: (<><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><path d="M12 17h.01" /></>),
-  bot: (<><rect x="4" y="8" width="16" height="12" rx="2" /><path d="M12 8V4" /><path d="M8 13h.01M16 13h.01" /></>),
-  send: (<><path d="M22 2L11 13" /><path d="M22 2l-7 20-4-9-9-4z" /></>),
-  users: (<><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></>),
-  list: (<><path d="M8 6h13M8 12h13M8 18h13" /><path d="M3 6h.01M3 12h.01M3 18h.01" /></>),
-  alert: (<><circle cx="12" cy="12" r="10" /><path d="M12 8v4M12 16h.01" /></>),
-  dot: (<circle cx="12" cy="12" r="3" fill="currentColor" stroke="none" />),
-}
-
-function iconKind(toolName: string): string {
-  const n = toolName.toLowerCase()
-  if (n === 'bash') return 'terminal'
-  if (n === 'read') return 'file'
-  if (n === 'grep' || n === 'glob') return 'search'
-  if (n === 'write') return 'filePlus'
-  if (n === 'edit') return 'pencil'
-  if (n === 'skill') return 'zap'
-  if (n === 'askuserquestion') return 'help'
-  if (n === 'agent') return 'bot'
-  if (n === 'sendmessage') return 'send'
-  if (n === 'teamcreate') return 'users'
-  if (n === 'taskcreate' || n === 'taskupdate' || n === 'tasklist' || n === 'taskget' || n === 'summarizeteam') return 'list'
-  if (n === 'error') return 'alert'
-  return 'dot'
-}
-
-function StepIcon({ kind }: { kind: string }) {
-  return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-      {ICON_PATHS[kind] ?? ICON_PATHS.dot}
-    </svg>
-  )
-}
-
-// 从 args JSON 提取首个可读参数（路径/命令/问题等）作为事件行对象名
-function extractObject(args: string): string | null {
-  if (!args) return null
-  try {
-    const parsed = JSON.parse(args)
-    if (parsed && typeof parsed === 'object') {
-      for (const value of Object.values(parsed)) {
-        if (typeof value === 'string' && value.trim()) return value.trim()
-        if (typeof value === 'number') return String(value)
-      }
-    }
-    return null
-  } catch {
-    return null
-  }
 }
 
 // 中间截断：超长路径两端保留，完整内容放 title
@@ -128,20 +113,57 @@ function truncateMiddle(text: string, max = 48): string {
   return `${text.slice(0, keep)}…${text.slice(-keep)}`
 }
 
-// 工具步骤事件行：单行低调行（灰图标 + 动词 + 等宽对象名 + 状态位），点击展开详情
+// 文件类工具：事件行按「文件名 + 目录 + 变更统计」排布
+const FILE_TOOLS = new Set(['read', 'write', 'edit'])
+
+// 从 args 提取 file_path（文件类工具的路径参数名统一为 file_path）
+function extractFilePath(args: string): string | null {
+  if (!args) return null
+  try {
+    const parsed = JSON.parse(args)
+    const p = parsed?.file_path
+    return typeof p === 'string' && p.trim() ? p.trim() : null
+  } catch {
+    return null
+  }
+}
+
+// 路径拆文件名与目录：文件名亮色不截断，目录暗色可截断
+function splitPath(p: string): { name: string; dir: string } {
+  const idx = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
+  return idx >= 0 ? { name: p.slice(idx + 1), dir: p.slice(0, idx + 1) } : { name: p, dir: '' }
+}
+
+// 从结果文本提取变更统计：edit「+a -r 行」、write「+a 行」（后端 format_model_content 产出）
+function extractChangeStat(result: string | undefined): { added: number; removed: number } | null {
+  if (!result) return null
+  const both = result.match(/\+(\d+)\s*-\s*(\d+)\s*行/)
+  if (both) return { added: Number(both[1]), removed: Number(both[2]) }
+  const only = result.match(/\+\s*(\d+)\s*行/)
+  return only ? { added: Number(only[1]), removed: 0 } : null
+}
+
+// 工具步骤事件行：单行低调行（灰图标 + 分类标签 + 等宽对象名 + 状态位），点击展开详情
 // memo：步骤对象引用稳定时跳过重渲，避免父块更新时全部步骤重绘
-const EventLine = memo(function EventLine({ step }: { step: WorkStep }) {
+const EventLine = memo(function EventLine({ step }: { step: TimelineItem }) {
   const [expanded, setExpanded] = useState(false)
   const isError = step.toolName === 'error'
   const isRunning = !!step.isRunning && !isError
-  const known = VERB_BY_TOOL[step.toolName.toLowerCase()]
+  const known = VERB_BY_TOOL[step.toolName?.toLowerCase() ?? '']
   const verb = known ?? '已执行'
+  // 文件类工具按「文件名+目录+统计」排布；其余仍取 args 首个可读参数
+  const filePath = !isError && FILE_TOOLS.has(step.toolName?.toLowerCase() ?? '') ? extractFilePath(step.args ?? '') : null
+  const stat = filePath ? extractChangeStat(step.result) : null
+  const pathParts = filePath ? splitPath(filePath) : null
   // 错误步骤展示错误摘要；已知工具展示 args 提取的对象名；未知工具以原始 toolName 兜底
   const objectText = isError
     ? (step.result || '').replace(/^错误:\s*/, '')
-    : extractObject(step.args) ?? (known ? null : step.toolName)
-  // 可展开条件：有详情内容，或运行中（可看「等待结果...」占位）
-  const clickable = !!(step.reasoning || step.args || step.result) || isRunning
+    : pathParts
+      ? null
+      : extractObject(step.args ?? '') ?? (known ? null : step.toolName)
+  // 可展开条件：有详情内容，或运行中（可看「等待结果...」占位）。
+  // 思考已独立成行（ReasoningRow），展开区不再承载 reasoning
+  const clickable = !!(step.args || step.result) || isRunning
   const rowColor = isError ? 'var(--error)' : 'var(--text-tertiary)'
 
   const row = (
@@ -151,10 +173,38 @@ const EventLine = memo(function EventLine({ step }: { step: WorkStep }) {
           <path d="M21 12a9 9 0 1 1-6.219-8.56" />
         </svg>
       ) : (
-        <StepIcon kind={iconKind(step.toolName)} />
+        <StepIcon kind={iconKind(step.toolName ?? '')} />
       )}
       <span style={{ flexShrink: 0 }}>{verb}</span>
-      {objectText && (
+      {pathParts ? (
+        <>
+          <span title={filePath ?? undefined} style={{ fontFamily: 'var(--font-mono)', color: rowColor === 'var(--error)' ? rowColor : 'var(--text-secondary)', flexShrink: 0 }}>
+            {pathParts.name}
+          </span>
+          {pathParts.dir && (
+            <span
+              title={filePath ?? undefined}
+              style={{
+                fontFamily: 'var(--font-mono)',
+                color: 'var(--text-tertiary)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                flex: 1,
+                minWidth: 0,
+              }}
+            >
+              {truncateMiddle(pathParts.dir)}
+            </span>
+          )}
+          {stat && (
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', flexShrink: 0 }}>
+              <span style={{ color: 'var(--success)' }}>+{stat.added}</span>
+              {stat.removed > 0 && <span style={{ color: 'var(--error)', marginLeft: '6px' }}>-{stat.removed}</span>}
+            </span>
+          )}
+        </>
+      ) : objectText && (
         <span
           title={objectText}
           style={{
@@ -199,6 +249,16 @@ const EventLine = memo(function EventLine({ step }: { step: WorkStep }) {
   // Agent 步骤：事件行下方渲染独立状态卡片（状态/耗时/usage/输出预览/停止）
   const isAgentStep = step.toolName === 'Agent' || step.toolName === 'Task'
 
+  // 设计规范加载：内部准备步骤，按紧凑一行呈现，不剧透规范内容
+  // （show_widget 由时间线顶层渲染为交付卡，不经过事件行）
+  if (step.toolName === 'widget_guidelines') {
+    return (
+      <div style={{ padding: '0 0 2px 20px' }}>
+        <GuidelinesStep step={step} />
+      </div>
+    )
+  }
+
   return (
     <div>
       {clickable ? (
@@ -225,24 +285,6 @@ const EventLine = memo(function EventLine({ step }: { step: WorkStep }) {
 
       {expanded && (
         <div style={{ padding: '2px 0 8px 20px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          {step.reasoning && (
-            <div>
-              <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '2px', letterSpacing: '1px', textTransform: 'uppercase' }}>
-                思考过程
-              </div>
-              <div style={{
-                fontSize: '11px',
-                color: 'var(--text-tertiary)',
-                lineHeight: 1.6,
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-                maxHeight: '300px',
-                overflow: 'auto',
-              }}>
-                {step.reasoning}
-              </div>
-            </div>
-          )}
           {step.args && (
             <div>
               <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '2px', letterSpacing: '1px', textTransform: 'uppercase' }}>
@@ -274,8 +316,152 @@ const EventLine = memo(function EventLine({ step }: { step: WorkStep }) {
   )
 })
 
+// 思考行：脑图标 + 「思考 · X秒」，点击展开思维链全文。
+// 流式期间（open）显示「思考中 · X秒」并 1s tick 递增——tick 收敛在本组件内，
+// 关闭后定时器随之停止，不影响其余时间线行
+const ReasoningRow = memo(function ReasoningRow({ item }: { item: TimelineItem }) {
+  const [expanded, setExpanded] = useState(false)
+  const isStreaming = !!item.open
+  const [, force] = useState(0)
+  useEffect(() => {
+    if (!isStreaming) return
+    const timer = setInterval(() => force((n) => n + 1), 1000)
+    return () => clearInterval(timer)
+  }, [isStreaming])
+
+  const duration = (item.endTime || Date.now()) - (item.startTime || Date.now())
+  const content = item.content || ''
+  const clickable = !!content
+
+  const rowStyle: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    width: '100%',
+    padding: '3px 0',
+    background: 'transparent',
+    border: 'none',
+    fontSize: '12px',
+    fontFamily: 'var(--font-ui)',
+    color: 'var(--text-tertiary)',
+    textAlign: 'left',
+    userSelect: 'text',
+    borderRadius: 'var(--radius-sm)',
+    cursor: clickable ? 'pointer' : 'default',
+  }
+
+  const row = (
+    <>
+      {isStreaming ? (
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }}>
+          <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+        </svg>
+      ) : (
+        <StepIcon kind="brain" />
+      )}
+      <span style={{ flexShrink: 0 }}>{isStreaming ? '思考中' : '思考'}</span>
+      <span style={{ fontFamily: 'var(--font-mono)', flexShrink: 0 }}>· {formatDuration(duration)}</span>
+      {clickable && (
+        <span style={{ marginLeft: 'auto', flexShrink: 0, fontSize: '10px' }}>
+          {expanded ? '▾' : '▸'}
+        </span>
+      )}
+    </>
+  )
+
+  return (
+    <div>
+      {clickable ? (
+        <button
+          className="work-row"
+          type="button"
+          onClick={() => setExpanded(!expanded)}
+          aria-expanded={expanded}
+          style={rowStyle}
+          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--hover-bg)')}
+          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+        >
+          {row}
+        </button>
+      ) : (
+        <div style={rowStyle}>{row}</div>
+      )}
+      {expanded && content && (
+        <div style={{
+          padding: '2px 0 8px 20px',
+          fontSize: '11px',
+          color: 'var(--text-tertiary)',
+          lineHeight: 1.6,
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+          maxHeight: '300px',
+          overflow: 'auto',
+        }}>
+          {content}
+        </div>
+      )}
+    </div>
+  )
+})
+
+// 正文行：过渡叙述与最终回复同为一等事件，统一走 Markdown（streamdown）渲染。
+// 流式中（open）由 streamdown 修复未闭合语法并显示跟随末行的光标，完成后自然定格，
+// 无渲染管线切换
+// 上下文压缩分隔线：三态文案（进行中 / 完成带前后规模 / 失败带原因）
+const CompactDivider = memo(function CompactDivider({ item }: { item: TimelineItem }) {
+  const status = item.compactStatus || 'done'
+  let label = '上下文已压缩'
+  if (status === 'running') label = '正在压缩上下文…'
+  else if (status === 'failed') label = `上下文压缩失败：${item.compactReason || '未知原因'}`
+  else if (typeof item.tokensBefore === 'number') {
+    // 完成态展示压缩前规模（历史重建只带 pre-compact tokens）
+    label = `上下文已压缩（压缩前约 ${(item.tokensBefore / 1000).toFixed(0)}k tokens）`
+  }
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        padding: '6px 0',
+        fontSize: '11px',
+        fontFamily: 'var(--font-ui)',
+        color: status === 'failed' ? 'var(--danger, var(--text-secondary))' : 'var(--text-tertiary)',
+      }}
+    >
+      <span style={{ flex: 1, borderTop: '1px solid var(--border-color, rgba(128,128,128,0.25))' }} />
+      <span style={{ whiteSpace: 'nowrap' }}>{status === 'running' ? '⏳ ' : '▤ '}{label}</span>
+      <span style={{ flex: 1, borderTop: '1px solid var(--border-color, rgba(128,128,128,0.25))' }} />
+    </div>
+  )
+})
+
+const TextItemView = memo(function TextItemView({ item }: { item: TimelineItem }) {
+  const streaming = !!item.open
+
+  if (!item.content) return null
+
+  return (
+    <div
+      style={{
+        // 通栏铺满：fit-content 会让代码块/表格跟着文字宽度收缩，
+        // 参考效果里卡片始终撑满可读列
+        alignSelf: 'stretch',
+        // 14px/1.6：与主流客户端正文实测对齐；中文回落到雅黑渲染，
+        // 字面本就偏大，再放大字号会明显抢版面
+        fontSize: '14px',
+        lineHeight: 1.6,
+        color: 'var(--text-primary)',
+        wordBreak: 'break-word',
+      }}
+    >
+      <Markdown content={item.content} streaming={streaming} />
+    </div>
+  )
+})
+
 // 状态行：主行（工作中/已工作 + 耗时）+ 细分隔线 + 活动行。
-// 1s tick 收敛在本组件内：时间刷新与 idleMs 重算共用，事件行列表与最终回复不随 tick 重渲
+// 1s tick 收敛在本组件内：时间刷新与 idleMs 重算共用，事件行列表与正文行不随 tick 重渲
 const StatusLine = memo(function StatusLine({ block, expanded, onToggle }: {
   block: WorkBlock
   expanded: boolean
@@ -307,9 +493,16 @@ const StatusLine = memo(function StatusLine({ block, expanded, onToggle }: {
     if (!isRunning) return ''
     if (idleMs > 60000) return '长时间无响应，可能连接异常，可在输入区停止后重试'
     if (idleMs > 10000) return '模型响应较慢，可继续浏览其他区域'
-    const runningStep = block.steps.find(s => s.isRunning)
+    const runningStep = block.timeline.find(s => s.isRunning)
     if (runningStep) return `正在执行工具 ${runningStep.toolName}`
-    if (block.finalReplyStreaming && block.finalReply) return '正在生成回复'
+    // 压缩进行中：时间线上存在 running 分隔线即透出（覆盖模型请求前的摘要耗时）
+    if (block.timeline.some(s => s.type === 'compact' && s.compactStatus === 'running')) {
+      return '正在压缩上下文'
+    }
+    const lastItem = block.timeline[block.timeline.length - 1]
+    if (lastItem?.type === 'text' && lastItem.open) return '正在生成回复'
+    // 逐次重试反馈：两条协议路径的重试 phase 事件都带「正在重试 n/total」，原样透出
+    if (block.phase?.includes('正在重试')) return block.phase
     if (block.phase === 'model_requested') return '正在调用模型'
     if (block.phase === 'memory_ready') return '已加载上下文'
     return '等待模型响应'
@@ -373,309 +566,338 @@ const StatusLine = memo(function StatusLine({ block, expanded, onToggle }: {
   )
 })
 
-// Markdown 渲染配置（对话区渲染与编辑区 .md 预览共用）
-export const markdownComponents = {
-  code({ className, children }: { className?: string; children?: React.ReactNode }) {
-    const match = /language-(\w+)/.exec(className || '')
-    const codeText = String(children).replace(/\n$/, '')
-    if (match) {
-      // 超长代码块不做 Prism 高亮：tokenize 会生成海量 span，页面容易卡死
-      if (codeText.split('\n').length > 300 || codeText.length > 20000) {
-        return (
-          <pre
-            style={{
-              background: 'var(--bg-base)',
-              borderRadius: 'var(--radius-md)',
-              border: '1px solid var(--border-subtle)',
-              fontSize: '12px',
-              margin: '8px 0',
-              padding: '12px',
-              overflow: 'auto',
-              fontFamily: 'var(--font-mono)',
-              color: 'var(--text-primary)',
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-            }}
-          >
-            {codeText}
-          </pre>
-        )
-      }
-      return (
-        <SyntaxHighlighter
-          language={match[1]}
-          style={vscDarkPlus}
-          PreTag="div"
-          customStyle={{
-            background: 'var(--bg-base)',
-            borderRadius: 'var(--radius-md)',
-            border: '1px solid var(--border-subtle)',
-            fontSize: '12px',
-            margin: '8px 0',
-          }}
-        >
-          {codeText}
-        </SyntaxHighlighter>
-      )
-    }
-    return (
-      <code
-        style={{
-          backgroundColor: 'var(--code-bg)',
-          border: '1px solid var(--code-border)',
-          padding: '1px 5px',
-          borderRadius: '4px',
-          fontFamily: 'var(--font-mono)',
-          fontSize: '12px',
-          color: 'var(--code-text)',
-        }}
-      >
-        {children}
-      </code>
-    )
-  },
-  a({ children, href }: { children?: React.ReactNode; href?: string }) {
-    return (
-      <a className="markdown-link" href={href}>
-        {children}
-      </a>
-    )
-  },
-  p({ children }: { children?: React.ReactNode }) {
-    return <p style={{ margin: '6px 0' }}>{children}</p>
-  },
-  ul({ children }: { children?: React.ReactNode }) {
-    return <ul style={{ margin: '6px 0', paddingLeft: '20px' }}>{children}</ul>
-  },
-  ol({ children }: { children?: React.ReactNode }) {
-    return <ol style={{ margin: '6px 0', paddingLeft: '20px' }}>{children}</ol>
-  },
-  // 表格可能很宽：外层包横向滚动容器，让宽表格在限宽列内部滚动而不撑破列边界
-  table({ children }: { children?: React.ReactNode }) {
-    return (
-      <div style={{ overflowX: 'auto' }}>
-        <table>{children}</table>
-      </div>
-    )
-  },
-  h1({ children }: { children?: React.ReactNode }) {
-    return <h1 style={{ fontSize: '17px', fontWeight: 600, margin: '12px 0 6px' }}>{children}</h1>
-  },
-  h2({ children }: { children?: React.ReactNode }) {
-    return <h2 style={{ fontSize: '15px', fontWeight: 600, margin: '10px 0 4px' }}>{children}</h2>
-  },
-  h3({ children }: { children?: React.ReactNode }) {
-    return <h3 style={{ fontSize: '14px', fontWeight: 600, margin: '8px 0 4px' }}>{children}</h3>
-  },
-}
-
-// 流式期间的轻量 Markdown 渲染配置：代码块不做 Prism 高亮。
-// 回复未完成时每帧全量 tokenize 会随内容变长越来越卡，等完成后切回完整高亮渲染
-const lightMarkdownComponents = {
-  ...markdownComponents,
-  code({ className, children }: { className?: string; children?: React.ReactNode }) {
-    const match = /language-(\w+)/.exec(className || '')
-    if (match) {
-      return (
-        <pre
-          style={{
-            background: 'var(--bg-base)',
-            borderRadius: 'var(--radius-md)',
-            border: '1px solid var(--border-subtle)',
-            fontSize: '12px',
-            margin: '8px 0',
-            padding: '12px',
-            overflow: 'auto',
-            fontFamily: 'var(--font-mono)',
-            color: 'var(--text-primary)',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-          }}
-        >
-          {String(children).replace(/\n$/, '')}
-        </pre>
-      )
-    }
-    return (
-      <code
-        style={{
-          backgroundColor: 'var(--code-bg)',
-          border: '1px solid var(--code-border)',
-          padding: '1px 5px',
-          borderRadius: '4px',
-          fontFamily: 'var(--font-mono)',
-          fontSize: '12px',
-          color: 'var(--code-text)',
-        }}
-      >
-        {children}
-      </code>
-    )
-  },
-}
-
 function WorkBlockView({ blockId }: Props) {
   // 局部订阅：只监听自己的工作块，其他 block 更新时不重渲
   const block = useChatStore(s => s.blocksById[blockId])
-  const [expanded, setExpanded] = useState(block?.status === 'running')
+  // 展开语义：是否显示过程行（reasoning/tool）；正文行恒可见。
+  // 完成态默认折叠（含历史恢复），流式挂载时展开；点状态行可切换降噪
   const isRunning = block?.status === 'running'
-
-  // 展开策略：正常完成自动折叠；异常结束保持展开，让原因可见。
-  // 用 prevStatusRef 只响应 running→done 的切换，历史回合加载时不自动展开
+  const [expanded, setExpanded] = useState(() => block?.status === 'running')
+  // done 迁移自动收起：最终回复完整输出那一刻收回一次过程行；
+  // 仅沿 running→done 翻转触发，之后用户手动展开不再被打扰
   const prevStatusRef = useRef(block?.status)
   useEffect(() => {
-    if (block?.status === 'done' && prevStatusRef.current === 'running') {
-      const abnormal = !!block.exitReason && !NORMAL_EXITS.has(block.exitReason)
-      setExpanded(abnormal)
-    }
+    if (prevStatusRef.current === 'running' && block?.status === 'done') setExpanded(false)
     prevStatusRef.current = block?.status
   }, [block?.status])
 
   const toggleExpanded = useCallback(() => setExpanded(v => !v), [])
 
-  // 流式结束后延迟约 250ms 再升级完整高亮：流式期间与延迟窗口内保持轻量渲染，
-  // 避免长回复完成瞬间从轻量渲染切到 Prism 高亮的可见跳变
-  const [highlightReady, setHighlightReady] = useState(!block?.finalReplyStreaming)
-  useEffect(() => {
-    if (block?.finalReplyStreaming) {
-      setHighlightReady(false)
-      return
-    }
-    const timer = window.setTimeout(() => setHighlightReady(true), 250)
-    return () => clearTimeout(timer)
-  }, [block?.finalReplyStreaming])
+  // 编辑态：悬停操作组点「编辑」后气泡替换为输入框，确认走 editAndResend 截断重发。
+  // hooks 放在早退 return 之前，保证调用顺序稳定
+  const editAndResend = useChatStore(s => s.editAndResend)
+  const [editing, setEditing] = useState(false)
+  const [editText, setEditText] = useState('')
+  const startEdit = useCallback(() => {
+    setEditText(block?.userMessage ?? '')
+    setEditing(true)
+  }, [block?.userMessage])
+  // 确认后本块会被截断移除（组件随之卸载），无需复位 editing；
+  // 发起失败（块已不存在等）同样卸载，新块里已有错误提示
+  const confirmEdit = useCallback(() => {
+    if (!editText.trim()) return
+    void editAndResend(blockId, editText)
+  }, [editAndResend, blockId, editText])
+  const cancelEdit = useCallback(() => setEditing(false), [])
 
   if (!block) return null
 
-  const hasSteps = block.steps.length > 0
-  // 流程区显示规则：有步骤始终显示；无步骤运行中且未出文本时显示等待占位；
-  // 无步骤异常结束保留状态行（行尾灰字承载异常）；其余组合让位给文本流
-  const showFlow = hasSteps
-    || (isRunning && !block.finalReply)
-    || (!isRunning && !!(block.exitReason && !NORMAL_EXITS.has(block.exitReason)))
+  const hasItems = block.timeline.length > 0
+  // 过程行判定排除 text 与 compact 分隔线：纯压缩块不应因分隔线误触发折叠条
+  const hasProcessRows = block.timeline.some(s => s.type !== 'text' && s.type !== 'compact')
+  // 流程区显示规则：有时间线始终显示；无内容运行中显示等待占位；
+  // 无内容异常结束保留状态行（行尾灰字承载异常）；其余组合让位给空
+  const showFlow = hasItems
+    || isRunning
+    || !!(block.exitReason && !NORMAL_EXITS.has(block.exitReason))
 
-  // 运行中只显示最近 3 条步骤，其余折叠；结束后展开显示全部
-  const [showAllSteps, setShowAllSteps] = useState(false)
-  const foldSteps = isRunning && !showAllSteps && block.steps.length > 3
-  const recentSteps = foldSteps ? block.steps.slice(-3) : block.steps
-  const hiddenCount = block.steps.length - recentSteps.length
+  // 运行期过程行全量按时序平铺：思考段结束后收起为一行「思考 · X秒」（点开看全文），
+  // 不做「最近 N 条 + 折叠组」的窗口化；结束后整体交由 expanded 折叠为「已处理 N 步」。
+  // show_widget 是交付内容而非过程行：恒可见、不计入步数（与正文同级按时序渲染）
+  const processIdx = block.timeline
+    .map((it, i) => (it.type === 'text' || it.type === 'compact' || it.toolName === 'show_widget' ? -1 : i))
+    .filter(i => i >= 0)
 
-  // 异常结束且展开时，展开区首行显示原因
-  const reasonText = !isRunning && expanded ? exitReasonLine(block) : ''
+  // 异常结束原因行：过程行可见时在时间线首行显示；若块没有任何过程行，
+  // 则没有折叠入口可展开（expanded 恒为初始折叠态），原因行直接平铺显示
+  const reasonText = !isRunning && (expanded || !hasProcessRows) ? exitReasonLine(block) : ''
+
+  // 时间线按真实时序平铺：text → 正文行；show_widget → 交付卡（折叠态也可见）；
+  // reasoning → 思考行；其余 tool → 事件行。
+  // 折叠态（!expanded）只保留正文行 + 交付卡 + 一条「已处理 N 步」折叠条
+  const timelineNodes: React.ReactNode[] = []
+  let foldBarRendered = false
+  block.timeline.forEach((item) => {
+    if (item.type === 'text') {
+      timelineNodes.push(<TextItemView key={item.id} item={item} />)
+      return
+    }
+    if (item.toolName === 'show_widget') {
+      timelineNodes.push(
+        <div key={item.id} style={{ padding: '2px 0' }}>
+          <WidgetStep step={item} />
+        </div>,
+      )
+      return
+    }
+    // 上下文压缩分隔线：进行中/完成/失败三态，独立于折叠条恒可见
+    if (item.type === 'compact') {
+      timelineNodes.push(<CompactDivider key={item.id} item={item} />)
+      return
+    }
+    if (!expanded) {
+      if (!foldBarRendered) {
+        foldBarRendered = true
+        timelineNodes.push(
+          <button
+            key="fold-bar"
+            className="work-row"
+            type="button"
+            onClick={toggleExpanded}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              width: '100%',
+              padding: '3px 0',
+              background: 'transparent',
+              border: 'none',
+              fontSize: '11px',
+              fontFamily: 'var(--font-ui)',
+              color: 'var(--text-tertiary)',
+              textAlign: 'left',
+              cursor: 'pointer',
+              borderRadius: 'var(--radius-sm)',
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--hover-bg)')}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+          >
+            已处理 {processIdx.length} 步 ▸
+          </button>,
+        )
+      }
+      return
+    }
+    timelineNodes.push(
+      item.type === 'reasoning'
+        ? <ReasoningRow key={item.id} item={item} />
+        : <EventLine key={item.id} step={item} />,
+    )
+  })
 
   return (
-    <div className="work-block" style={{ display: 'flex', flexDirection: 'column', gap: '10px', animation: 'fade-in-up 280ms ease-out' }}>
-      {/* 用户消息 */}
-      <div
-        style={{
-          alignSelf: 'flex-end',
-          maxWidth: '80%',
-          padding: '10px 14px',
-          borderRadius: 'var(--radius-lg)',
-          background: 'var(--bg-tertiary)',
-          color: 'var(--text-primary)',
-          fontSize: '14px',
-          lineHeight: 1.6,
-          wordBreak: 'break-word',
-          boxShadow: 'var(--shadow-md)',
-          fontWeight: 500,
-          whiteSpace: 'pre-wrap',
-        }}
-      >
-        {block.userMessage}
-      </div>
+    <div className="work-block" data-block-id={blockId} style={{ display: 'flex', flexDirection: 'column', gap: '10px', animation: 'fade-in-up 280ms ease-out' }}>
+      {/* 用户消息：技能触发时首行显示「徽章 + 技能名」。
+          悬停显示操作组（复制/编辑，对齐主流客户端交互）；运行中块与命令块不提供编辑。
+          编辑态气泡替换为输入框：Ctrl+Enter 确认重发、Esc 取消 */}
+      {editing ? (
+        <div
+          style={{
+            alignSelf: 'flex-end',
+            maxWidth: '80%',
+            width: '100%',
+            padding: '10px 12px',
+            borderRadius: 'var(--radius-lg)',
+            background: 'var(--bg-tertiary)',
+            boxShadow: 'var(--shadow-md)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '8px',
+            boxSizing: 'border-box',
+          }}
+        >
+          <textarea
+            autoFocus
+            value={editText}
+            onChange={e => setEditText(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault()
+                confirmEdit()
+              } else if (e.key === 'Escape') {
+                e.preventDefault()
+                cancelEdit()
+              }
+            }}
+            rows={Math.min(10, Math.max(2, editText.split('\n').length))}
+            style={{
+              width: '100%',
+              background: 'transparent',
+              color: 'var(--text-primary)',
+              border: 'none',
+              outline: 'none',
+              resize: 'vertical',
+              fontSize: '14px',
+              lineHeight: 1.6,
+              fontFamily: 'var(--font-ui)',
+              whiteSpace: 'pre-wrap',
+            }}
+          />
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+            <button
+              type="button"
+              onClick={cancelEdit}
+              style={{
+                padding: '4px 12px',
+                fontSize: '12px',
+                border: '1px solid var(--border-strong)',
+                borderRadius: 'var(--radius-md)',
+                background: 'transparent',
+                color: 'var(--text-secondary)',
+                cursor: 'pointer',
+              }}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={confirmEdit}
+              disabled={!editText.trim()}
+              style={{
+                padding: '4px 12px',
+                fontSize: '12px',
+                border: 'none',
+                borderRadius: 'var(--radius-md)',
+                background: 'var(--button-primary-bg)',
+                color: 'var(--button-primary-text)',
+                cursor: editText.trim() ? 'pointer' : 'not-allowed',
+                opacity: editText.trim() ? 1 : 0.5,
+              }}
+            >
+              重发
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div
+          className="msg-bubble-wrap"
+          style={{ alignSelf: 'flex-end', maxWidth: '80%', position: 'relative' }}
+        >
+          {/* 悬停操作组：贴对话条下方右缘，裸图标无底板，仅已完成对话块显示编辑 */}
+          {!isRunning && block.exitReason !== 'command' && (
+            <div
+              className="msg-actions"
+              style={{
+                position: 'absolute',
+                // top 与气泡底缘齐平 + 内边距留出视觉间隙：悬停从气泡移到按钮
+                // 的路径不离开容器，操作组不会中途淡出
+                top: '100%',
+                right: 0,
+                zIndex: 5,
+                display: 'flex',
+                gap: '10px',
+                paddingTop: '5px',
+              }}
+            >
+              <button
+                type="button"
+                className="msg-action-btn"
+                title="复制"
+                onClick={() => void navigator.clipboard.writeText(block.userMessage)}
+                style={{
+                  width: '22px',
+                  height: '22px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderRadius: '5px',
+                  border: 'none',
+                  padding: 0,
+                  color: 'var(--text-tertiary)',
+                  cursor: 'pointer',
+                }}
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="9" y="9" width="13" height="13" rx="2" />
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                </svg>
+              </button>
+              {/* 含图消息不支持编辑重发（编辑通路只承载文本） */}
+              {!(block.userImages && block.userImages.length > 0) && (
+              <button
+                type="button"
+                className="msg-action-btn"
+                title="编辑"
+                onClick={startEdit}
+                style={{
+                  width: '22px',
+                  height: '22px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderRadius: '5px',
+                  border: 'none',
+                  padding: 0,
+                  color: 'var(--text-tertiary)',
+                  cursor: 'pointer',
+                }}
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+                </svg>
+              </button>
+              )}
+            </div>
+          )}
+          <div
+            style={{
+              padding: '10px 14px',
+              borderRadius: 'var(--radius-lg)',
+              background: 'var(--bg-tertiary)',
+              color: 'var(--text-primary)',
+              fontSize: '14px',
+              lineHeight: 1.6,
+              wordBreak: 'break-word',
+              boxShadow: 'var(--shadow-md)',
+              fontWeight: 500,
+              whiteSpace: 'pre-wrap',
+            }}
+          >
+            {block.skillName && (
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                  marginRight: '8px',
+                  padding: '1px 9px',
+                  borderRadius: 'var(--radius-sm)',
+                  background: 'var(--selected-bg)',
+                  color: 'var(--text-primary)',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  verticalAlign: 'middle',
+                }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 20h9" />
+                  <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
+                </svg>
+                {block.skillName.charAt(0).toUpperCase() + block.skillName.slice(1)}
+              </span>
+            )}
+            {renderUserMessage(block.userMessage)}
+            {block.userImages && block.userImages.length > 0 && (
+              <UserImageStrip images={block.userImages} />
+            )}
+          </div>
+        </div>
+      )}
 
-      {/* 流程区：状态行 + 细分隔线 + 活动行 + 事件行，纯文本流排布 */}
+      {/* 流程区：状态行 + 细分隔线 + 活动行 + 时间线（正文/思考/工具按序平铺） */}
       {showFlow && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
           <StatusLine
             block={block}
             expanded={expanded}
-            onToggle={hasSteps ? toggleExpanded : null}
+            onToggle={hasProcessRows ? toggleExpanded : null}
           />
-          {expanded && hasSteps && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-              {reasonText && (
-                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', padding: '2px 0', fontFamily: 'var(--font-ui)' }}>
-                  {reasonText}
-                </div>
-              )}
-              {recentSteps.map(step => (
-                <EventLine key={step.id} step={step} />
-              ))}
-              {foldSteps && (
-                <button
-                  className="work-row"
-                  type="button"
-                  onClick={() => setShowAllSteps(true)}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    width: '100%',
-                    padding: '3px 0',
-                    background: 'transparent',
-                    border: 'none',
-                    fontSize: '11px',
-                    fontFamily: 'var(--font-ui)',
-                    color: 'var(--text-tertiary)',
-                    textAlign: 'left',
-                    cursor: 'pointer',
-                    borderRadius: 'var(--radius-sm)',
-                  }}
-                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--hover-bg)')}
-                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-                >
-                  +{hiddenCount} 条历史步骤
-                </button>
-              )}
+          {reasonText && (
+            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', padding: '2px 0', fontFamily: 'var(--font-ui)' }}>
+              {reasonText}
             </div>
           )}
-        </div>
-      )}
-
-      {/* 最终回复（独立显示在工作块外） */}
-      {block.finalReply && (
-        <div
-          style={{
-            alignSelf: 'flex-start',
-            maxWidth: '92%',
-            fontSize: '14px',
-            lineHeight: 1.6,
-            color: 'var(--text-primary)',
-            wordBreak: 'break-word',
-          }}
-        >
-          {block.finalReplyStreaming || !highlightReady ? (
-            // 流式期间与结束后的延迟窗口内用轻量渲染（代码块不高亮），
-            // 窗口结束后切回完整 Markdown + 高亮
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              components={lightMarkdownComponents}
-            >
-              {block.finalReply}
-            </ReactMarkdown>
-          ) : (
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              components={markdownComponents}
-            >
-              {block.finalReply}
-            </ReactMarkdown>
-          )}
-          {block.finalReplyStreaming && (
-            <span
-              style={{
-                display: 'inline-block',
-                width: '8px',
-                height: '14px',
-                backgroundColor: 'var(--text-primary)',
-                marginLeft: '2px',
-                verticalAlign: 'text-bottom',
-                animation: 'blink 1s step-end infinite',
-                borderRadius: '1px',
-              }}
-            />
-          )}
+          {timelineNodes}
         </div>
       )}
     </div>

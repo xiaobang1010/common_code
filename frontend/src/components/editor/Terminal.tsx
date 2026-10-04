@@ -22,6 +22,9 @@ function getTerminalAPI(): ElectronTerminalAPI | undefined {
 interface TerminalProps {
   // 父组件分配的唯一实例 id，变化时会重新创建终端
   instanceId: string
+  // 该终端所属工作区目录：各工作区终端互相独立，cwd 由调用方按所属工作区传入；
+  // 为空（尚未选择工作区）时不传，由主进程兜底
+  cwd?: string
   // 终端创建完成后的回调，把 pty id 与 shell 名回传给父组件管理
   onReady?: (ptyId: string, shell: string) => void
 }
@@ -29,7 +32,7 @@ interface TerminalProps {
 // 单个终端实例：通过 Electron 主进程的 node-pty 接入真实 PowerShell。
 // 开发模式（浏览器直连 Vite，没有 preload）下降级显示提示。
 // 父组件通过 instanceId 控制何时重新创建（切换 tab 时复用同一个 XTerm 容器）
-function Terminal({ instanceId, onReady }: TerminalProps) {
+function Terminal({ instanceId, cwd, onReady }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<XTerm | null>(null)
 
@@ -58,7 +61,15 @@ function Terminal({ instanceId, onReady }: TerminalProps) {
     const fitAddon = new FitAddon()
     term.loadAddon(fitAddon)
     term.open(container)
-    fitAddon.fit()
+
+    // 容器隐藏时（面板收起为 display:none）尺寸为 0，拟合会算出一个退化的极小尺寸
+    // 并顺着 onResize 把 pty 一起缩掉，正在跑的全屏程序会被打乱。尺寸为 0 时跳过，
+    // 重新可见时 ResizeObserver 会以真实尺寸再触发一次
+    const fitToContainer = () => {
+      if (container.clientWidth === 0 || container.clientHeight === 0) return
+      fitAddon.fit()
+    }
+    fitToContainer()
 
     termRef.current = term
 
@@ -75,7 +86,8 @@ function Terminal({ instanceId, onReady }: TerminalProps) {
     let cleanupOutput: (() => void) | undefined
     let ptyId: string | undefined
 
-    api.create().then((res) => {
+    // 新建终端落在所属工作区目录下（各工作区终端独立）
+    api.create(cwd).then((res) => {
       if (disposed) {
         api.dispose(res.id)
         return
@@ -103,10 +115,8 @@ function Terminal({ instanceId, onReady }: TerminalProps) {
       api.resize(res.id, term.cols, term.rows)
     })
 
-    // 容器尺寸变化时重新拟合
-    const resizeObserver = new ResizeObserver(() => {
-      fitAddon.fit()
-    })
+    // 容器尺寸变化时重新拟合（含面板收起/展开时的 0 尺寸切换）
+    const resizeObserver = new ResizeObserver(fitToContainer)
     resizeObserver.observe(container)
 
     return () => {
@@ -117,7 +127,8 @@ function Terminal({ instanceId, onReady }: TerminalProps) {
       term.dispose()
       termRef.current = null
     }
-    // instanceId 变化时整个终端重建
+    // instanceId 变化时整个终端重建。cwd 不进依赖：调用方按工作区分组，同一实例的
+    // 所属工作区恒定；若日后要支持同一实例换目录，必须连重建一起改，否则 shell 会留在旧目录
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instanceId])
 

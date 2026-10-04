@@ -6,11 +6,10 @@ from prompts.system.sections import (
     SystemPromptSection,
     _ATTRIBUTION_HEADER,
     _CLI_PREFIX,
-    _STATIC_SECTIONS,
-    _SKILL_GUIDANCE,
-    _SUBAGENT_GUIDANCE,
-    _TEAM_GUIDANCE,
+    build_skill_guidance,
+    build_static_sections,
     build_subagent_guidance,
+    build_team_guidance,
 )
 
 
@@ -23,7 +22,8 @@ def get_system_prompt_sections(
     段按顺序：
     ① 归因头（不缓存）：标识 CLI 版本信息
     ② CLI 前缀（静态缓存）：CLI 工具说明
-    ③ 静态 sections（静态缓存）：核心行为规则、工具使用规范、安全规则
+    ③ 静态 sections（静态缓存）：.j2 模板按序拼接——核心行为、工具使用策略、
+       最终回复、交付、安全规则、文件引用、任务规划
     ④ Skill 使用指导（不缓存）：当有可用 skill 时注入
     ⑤ 动态 sections（不缓存）：当前项目信息、用户自定义指令
     """
@@ -42,7 +42,7 @@ def get_system_prompt_sections(
         ),
         # ③ 静态 sections
         SystemPromptSection(
-            content=_STATIC_SECTIONS,
+            content=build_static_sections(),
             cache_scope="static",
             name="static_sections",
         ),
@@ -55,7 +55,7 @@ def get_system_prompt_sections(
         if skills:
             sections.append(
                 SystemPromptSection(
-                    content=_SKILL_GUIDANCE,
+                    content=build_skill_guidance(),
                     cache_scope=None,
                     name="skill_guidance",
                 )
@@ -84,7 +84,7 @@ def get_system_prompt_sections(
         if get_current_team() is not None:
             sections.append(
                 SystemPromptSection(
-                    content=_TEAM_GUIDANCE,
+                    content=build_team_guidance(),
                     cache_scope=None,
                     name="team_guidance",
                 )

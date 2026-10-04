@@ -1,0 +1,14 @@
+# Subagent Usage
+- Use the Agent tool to delegate tasks to subagents with isolated context.
+- Available agent types:
+{% for item in agents %}
+  - {{ item.type }}: {{ item.when_to_use }}
+{% endfor %}
+- When to use subagents:
+  - Complex research tasks that need many tool calls (saves main context)
+  - Independent tasks that can run in parallel
+  - Read-only exploration where you don't want to clutter main context
+- The subagent's result is NOT visible to the user. You must relay key findings.
+- For parallel independent tasks, issue multiple Agent tool calls in a single message.
+- For long-running tasks, pass run_in_background=true. The subagent runs in the background and you will be notified when it completes.
+- Subagents do NOT inherit your conversation history - give them complete instructions.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from prompts.loader import load_tool_prompt
 from tools.implementations.grep_tool.handler import (
     format_model_content,
     handle_grep,
@@ -23,17 +24,6 @@ from tools.protocol import (
     build_tool,
 )
 
-GREP_PROMPT = """\
-强大的内容搜索工具。
-
-使用说明：
-- 支持完整的正则表达式语法（如 "log.*Error", "function\\s+\\w+"）
-- 使用 include 参数过滤文件（如 "*.js", "*.py"）
-- 输出模式："content" 显示匹配行，"files_with_matches" 仅显示文件路径，"count" 显示匹配计数
-- 默认输出模式为 "content"
-- path 支持绝对路径或相对工作区的路径，默认搜索整个工作区
-- 自动跳过 .git/node_modules/__pycache__/.venv 等目录
-"""
 
 
 async def _execute(inp: GrepInput, context: ToolUseContext) -> ToolResult:
@@ -62,7 +52,7 @@ def get_grep_tool() -> Tool:
         description="内容搜索",
         input_schema=GrepInput,
         execute=_execute,
-        prompt=GREP_PROMPT,
+        prompt=load_tool_prompt("grep"),
         is_read_only=True,
         is_concurrent=True,
         requires_permission=False,

@@ -1,10 +1,13 @@
-"""消息切片辅助函数。
+"""消息切片与清洗辅助函数。
 
 提供 compact boundary 查找和切片功能，让 query loop 和 REPL 共用同一套
-"从最后一个压缩边界开始取活跃窗口"的语义。
+"从最后一个压缩边界开始取活跃窗口"的语义；
+提供悬空 tool_calls 清洗，保证发给模型与写入 DB 的历史序列合法。
 """
 
 from __future__ import annotations
+
+import time
 
 
 # ---------------------------------------------------------------------------
@@ -29,6 +32,28 @@ def is_compact_boundary_message(message: dict) -> bool:
     if not isinstance(content, str):
         return False
     return content.startswith(_COMPACT_BOUNDARY_PREFIX)
+
+
+def extract_text_from_content(content, image_placeholder: str = "") -> str:
+    """从消息 content（字符串或 parts 数组）提取纯文本。
+
+    parts 形态拼接全部 text 块；image_placeholder 非空时图片块以该占位符计入
+    （供 hook 入参、标题提取等纯文本消费方使用）。
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "text" and isinstance(block.get("text"), str):
+                parts.append(block["text"])
+            elif btype in ("image", "image_url", "input_image") and image_placeholder:
+                parts.append(image_placeholder)
+        return "\n".join(parts)
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -69,32 +94,76 @@ def get_messages_after_compact_boundary(messages: list[dict]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# skill 正文消息识别
+# assistant 轮组分组与压缩 pivot
 # ---------------------------------------------------------------------------
 
-# skill 正文消息的 content 前缀（通过 SkillTool 注入，system-reminder 格式）
-_SKILL_MESSAGE_PREFIX = "<system-reminder>"
 
+def group_rounds(messages: list[dict]) -> list[list[dict]]:
+    """按 assistant 轮次分组（压缩保留切点用）。
 
-def is_skill_message(message: dict) -> bool:
-    """判断消息是否为 skill 正文（SkillTool 注入的 system-reminder user 消息）。
-
-    skill 正文消息是 role=user、content 以 <system-reminder> 开头的消息。
-    压缩时应跳过此类消息，避免丢失已激活的 skill 能力定义。
-
-    注意：user_context 也用 <system-reminder> 格式，但 user_context 是临时注入
-    （不写回引擎消息），所以引擎持久化消息中的 <system-reminder> user 消息
-    只有 skill 正文。
+    规则：每条 assistant 消息开启新组并归入其前 pending 的 user 消息为组首；
+    tool 消息跟随当前组；组前悬空 tool 结果自成一组；末尾无 assistant 的
+    user 消息自成一组。分组不剔除 skill 正文，由调用方决定取舍。
     """
-    if not isinstance(message, dict):
-        return False
-    if message.get("role") != "user":
-        return False
-    content = message.get("content", "")
-    if not isinstance(content, str):
-        return False
-    return content.strip().startswith(_SKILL_MESSAGE_PREFIX)
+    groups: list[list[dict]] = []
+    pending: list[dict] = []
+    for msg in messages:
+        role = msg.get("role", "")
+        if role == "assistant":
+            groups.append(pending + [msg])
+            pending = []
+        elif role == "tool":
+            if groups:
+                groups[-1].append(msg)
+            else:
+                groups.append([msg])
+        elif role == "user":
+            pending.append(msg)
+        else:
+            # 其他角色（system 边界等）不应进分组：原样挂 pending，
+            # 由调用方保证传入的列表已过滤
+            pending.append(msg)
+    if pending:
+        groups.append(pending)
+    return groups
 
+
+def compact_pivot_index(messages: list[dict], keep_groups: int) -> int:
+    """计算压缩 pivot（插入边界的全局下标）。
+
+    在活跃窗口（最后一个压缩边界起）内按 assistant 轮组分组，保留最近
+    keep_groups 组原文；pivot 落在首个保留组的第一条消息处，pivot 之前的
+    活跃消息进入被压缩区。keep_groups ≤ 0 时 pivot 落在活跃窗口首条
+    非 system 消息处（全量摘要，仅旧边界留在原位）。
+
+    Raises:
+        RuntimeError: 活跃窗口内无可压缩消息（保留组覆盖全部或历史过短）
+    """
+    boundary_idx = find_last_compact_boundary_index(messages)
+    active_offset = boundary_idx + 1  # 无 boundary 时为 0
+    active = messages[active_offset:]
+
+    # 活跃窗口内非 system 消息参与分组（旧摘要 role=user 正常入组）
+    non_system = [m for m in active if m.get("role") != "system"]
+    if not non_system:
+        raise RuntimeError("Not enough messages to compact.")
+
+    groups = group_rounds(non_system)
+    if keep_groups <= 0:
+        # 全量摘要：保留 0 组，被压缩区覆盖全部非 system 消息
+        first_kept_role_idx = len(active)
+    else:
+        keep_groups = min(keep_groups, len(groups))
+        if keep_groups >= len(groups):
+            raise RuntimeError("Not enough messages to compact.")
+        first_kept_msg = groups[-keep_groups][0]
+        # 按对象身份定位（内容相同的重复消息用相等比较会错指到最早一条）
+        first_kept_role_idx = next(
+            i for i, m in enumerate(active) if m is first_kept_msg
+        )
+
+    # pivot 必须落在非 system 消息处（插入点之前的消息保持原序）
+    return active_offset + first_kept_role_idx
 
 # ---------------------------------------------------------------------------
 # skill 正文消息识别
@@ -119,3 +188,73 @@ def is_skill_message(message: dict) -> bool:
     if not isinstance(content, str):
         return False
     return content.strip().startswith(_SYSTEM_REMINDER_PREFIX)
+
+
+# ---------------------------------------------------------------------------
+# 悬空 tool_calls 清洗
+# ---------------------------------------------------------------------------
+
+# 缺失工具结果补入的合成文本：中断/崩溃导致的收尾不全是事实，如实告知模型
+ABORTED_TOOL_RESULT_CONTENT = "[执行被中断，无结果]"
+
+
+def _synthetic_tool_result(tool_call_id: str) -> dict:
+    """构造一条合成 tool 结果消息（形状与 tool_result_to_openai_message 对齐）。"""
+    return {
+        "role": "tool",
+        "tool_call_id": tool_call_id,
+        "content": ABORTED_TOOL_RESULT_CONTENT,
+        "_ts": time.time() * 1000,
+    }
+
+
+def sanitize_dangling_tool_calls(messages: list[dict]) -> list[dict]:
+    """补齐悬空 tool_calls 缺失的工具结果，返回新的消息列表。
+
+    任务被中断（/api/abort 的 task.cancel 落在工具执行阶段）或输出超限
+    恢复（finish_reason=length 的 7b 分支丢弃当轮工具结果）时，历史可能
+    存在「assistant 带 tool_calls 但没有齐全对应 tool 结果」的残缺形态。
+    这种序列发给 OpenAI 格式接口属于非法请求，部分模型服务宽容处理时会
+    补执行旧工具调用——表现即「模型执行上一条消息」。
+
+    全量扫描：每条带 tool_calls 的 assistant 消息，在其后、下一条非 tool
+    消息之前，缺失结果的 id 就地补一条合成 tool 结果（位于既有结果之后，
+    无既有结果则紧跟该 assistant）。不修改传入列表；历史合法时返回内容
+    与原列表一致的副本。
+    """
+    sanitized: list[dict] = []
+    # 最近一条带 tool_calls 的 assistant 消息中尚未等到结果的 id 集合
+    pending_ids: set[str] = set()
+
+    for msg in messages:
+        if not isinstance(msg, dict):
+            sanitized.append(msg)
+            continue
+        role = msg.get("role")
+
+        if role == "assistant" and msg.get("tool_calls"):
+            # 前一条 assistant 的悬空结果不可能再出现在另一条 assistant 之后，
+            # 先在其前补齐再切换待补集合
+            sanitized.extend(_synthetic_tool_result(i) for i in pending_ids)
+            sanitized.append(msg)
+            pending_ids = {
+                tc.get("id") for tc in msg["tool_calls"] if isinstance(tc, dict) and tc.get("id")
+            }
+            continue
+
+        if role == "tool" and pending_ids:
+            tool_call_id = msg.get("tool_call_id")
+            if tool_call_id in pending_ids:
+                pending_ids.discard(tool_call_id)
+            sanitized.append(msg)
+            continue
+
+        # 非 tool 消息：还有没等到结果的 id 就在它之前补合成结果
+        if pending_ids:
+            sanitized.extend(_synthetic_tool_result(i) for i in pending_ids)
+            pending_ids = set()
+        sanitized.append(msg)
+
+    # 历史以悬空 tool_calls 结尾（中断的典型形态）：在末尾补齐
+    sanitized.extend(_synthetic_tool_result(i) for i in pending_ids)
+    return sanitized

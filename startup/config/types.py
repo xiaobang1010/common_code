@@ -75,6 +75,76 @@ class Permissions:
 
 
 @dataclass
+class SubagentsConfig:
+    """子智能体执行底座配置。
+
+    全局配置中的 `subagents` 段，控制子代理的生命周期与预算默认值：
+        model_overrides: 按代理类型覆盖模型（如 {"Explore": "..."}）
+        default_model: 所有子代理的默认模型（空串表示继承主循环模型）
+        auto_background_ms: 前台子代理自动转后台阈值（毫秒，0=关闭）
+        inactivity_timeout_ms: 活性看门狗超时（毫秒，0=关闭）
+        max_turns_default: profile 未指定轮次上限时的默认值（0=不限）
+        token_budget_default: profile 未指定预算时的默认 token 预算（0=不限）
+        auto_resume_parent: 子代理通知到达时是否自动唤起空闲的父会话
+    """
+
+    model_overrides: dict[str, str] = field(default_factory=dict)
+    default_model: str = ""
+    # 阈值过短会让探索型子代理（常需数分钟）在父会话拿到结果前就被提升为后台，
+    # 触发模型轮询/自述等待/重复探索，回复密度被过程叙述稀释——默认放宽到 5 分钟
+    auto_background_ms: int = 300000
+    inactivity_timeout_ms: int = 300000
+    # 轮次是保险丝而非节流阀：探索型子代理一次任务常需十几到几十轮工具往返，
+    # 小额度会让子代理在写出总结前被掐断、父会话只收到截断占位消息；
+    # 兜住失控行为已有活性看门狗与 token 预算，默认不限轮次
+    max_turns_default: int = 0
+    token_budget_default: int = 0
+    auto_resume_parent: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "modelOverrides": self.model_overrides,
+            "defaultModel": self.default_model,
+            "autoBackgroundMs": self.auto_background_ms,
+            "inactivityTimeoutMs": self.inactivity_timeout_ms,
+            "maxTurnsDefault": self.max_turns_default,
+            "tokenBudgetDefault": self.token_budget_default,
+            "autoResumeParent": self.auto_resume_parent,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SubagentsConfig:
+        # 数值字段容错：非法值（非整数/负数）落默认，不让坏配置炸掉启动
+        overrides = data.get("modelOverrides", {})
+        if not isinstance(overrides, dict):
+            overrides = {}
+        return cls(
+            model_overrides={
+                str(k): str(v) for k, v in overrides.items() if v
+            },
+            default_model=str(data.get("defaultModel", "") or ""),
+            auto_background_ms=_non_negative_int(data.get("autoBackgroundMs"), 300000),
+            inactivity_timeout_ms=_non_negative_int(
+                data.get("inactivityTimeoutMs"), 300000
+            ),
+            max_turns_default=_non_negative_int(data.get("maxTurnsDefault"), 0),
+            token_budget_default=_non_negative_int(
+                data.get("tokenBudgetDefault"), 0
+            ),
+            auto_resume_parent=data.get("autoResumeParent") is not False,
+        )
+
+
+def _non_negative_int(value: Any, default: int) -> int:
+    """把配置值规整为非负整数，非法值回退默认。"""
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return default
+    return result if result >= 0 else default
+
+
+@dataclass
 class Settings:
     """完整设置结构。
 
@@ -86,7 +156,6 @@ class Settings:
     llm_base_url: str | None = None
     llm_api_key: str | None = None
     auto_compact: bool = True
-    context_collapse: bool = False
     verbose: bool = False
     theme: str = "dark"
     output_style: str = ""
@@ -110,8 +179,6 @@ class Settings:
             result["llm_api_key"] = self.llm_api_key
         if not self.auto_compact:
             result["auto_compact"] = self.auto_compact
-        if self.context_collapse:
-            result["context_collapse"] = self.context_collapse
         if self.verbose:
             result["verbose"] = self.verbose
         if self.theme != "dark":
@@ -144,7 +211,6 @@ class Settings:
             llm_base_url=data.get("llm_base_url"),
             llm_api_key=data.get("llm_api_key"),
             auto_compact=data.get("auto_compact", True),
-            context_collapse=data.get("context_collapse", False),
             verbose=data.get("verbose", False),
             theme=data.get("theme", "dark"),
             output_style=data.get("output_style", ""),

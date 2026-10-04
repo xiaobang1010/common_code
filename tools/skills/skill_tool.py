@@ -13,8 +13,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from prompts.loader import load_tool_prompt
 from tools.protocol import Tool, ToolResult, ToolUseContext, build_tool
 from tools.skills.bundled import find_skill_by_name
 from tools.skills.types import Skill
@@ -28,8 +29,13 @@ from tools.skills.types import Skill
 class SkillInput(BaseModel):
     """Skill 工具输入。"""
 
-    skill: str
-    args: str = ""
+    skill: str = Field(
+        description="skill 名称，必须取自每轮注入的 skill_listing，不能编造"
+    )
+    args: str = Field(
+        default="",
+        description="传给 skill 的参数。仅当 skill 的说明要求参数时给，格式按其说明",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -37,15 +43,6 @@ class SkillInput(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-SKILL_TOOL_PROMPT = """\
-执行指定的 Skill（能力包）。
-
-使用说明：
-- skill 参数是 skill 名称（在 skill_listing 中列出）
-- args 是可选的参数字符串，会传递给 skill
-- 根据 skill_listing 中的 when_to_use 判断是否匹配用户请求
-- 匹配时必须在生成其他响应之前先调用此工具
-"""
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +142,7 @@ def get_skill_tool() -> Tool:
         description="Execute a skill by name",
         input_schema=SkillInput,
         execute=_execute,
-        prompt=SKILL_TOOL_PROMPT,
+        prompt=load_tool_prompt("skill"),
         validate_input=_validate_input,
         is_read_only=True,
     )

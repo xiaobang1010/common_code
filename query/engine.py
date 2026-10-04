@@ -33,10 +33,12 @@ class QueryEngineConfig:
         model: 模型名称
         max_tokens: 最大输出 token 数
         temperature: 采样温度
+        reasoning_level: 本会话所选推理等级（空串=跟随模型默认，不注入推理参数）
         permission_mode: 权限模式
         tools: 可用工具列表
         system_prompt_sections: 系统提示词段落
         max_turns: 最大轮次（None 表示不限）
+        token_budget: 累计 token 预算（None 或 0 表示不限）；超限当轮优雅停止
         permission_check: 工具调用前的权限检查回调，None 表示跳过权限检查
         permission_prompt: 权限确认弹窗回调，当 permission_check 返回 ask 决策时调用。
             签名 (tool_name, tool_input, reason) -> "allow"|"deny"|"always_allow"，None 表示无弹窗
@@ -51,15 +53,107 @@ class QueryEngineConfig:
     model: str = ""  # 空字符串表示用 get_default_model() 解析，避免硬编码错误模型
     max_tokens: int = 8192
     temperature: float = 1.0
+    # 本会话所选推理等级（空串=跟随模型默认，不注入任何推理参数）
+    reasoning_level: str = ""
     permission_mode: str = "default"
     tools: list[Any] = field(default_factory=get_tools)
     system_prompt_sections: list[Any] = field(default_factory=list)
     max_turns: int | None = None
+    token_budget: int | None = None
     permission_check: Callable | None = None
     permission_prompt: Callable | None = None
     question_prompt: Callable | None = None
     abort_event: asyncio.Event | None = None
     deps: QueryDeps = field(default_factory=production_deps)
+
+
+# ---------------------------------------------------------------------------
+# Explore 子代理 Bash 只读白名单（spec 附录 F）
+# ---------------------------------------------------------------------------
+
+# 直接放行的首命令词
+_EXPLORE_BASH_READONLY_COMMANDS = frozenset({
+    "ls", "pwd", "cat", "head", "tail", "find", "grep", "rg", "echo",
+    "wc", "which", "where", "file", "stat", "du", "df", "sort", "uniq", "diff",
+})
+# git 仅放行的只读二级子命令
+_EXPLORE_BASH_GIT_SUBCOMMANDS = frozenset({
+    "status", "log", "diff", "show", "branch", "blame", "rev-parse",
+    "ls-files", "describe", "remote",
+})
+# remote 仅允许查看形态（无参列出 / -v）
+_GIT_REMOTE_VIEW_ARGS = frozenset({"", "-v", "--verbose"})
+# 出现即视为白名单外：重定向/管道/命令替换/heredoc 元字符与 tee
+_EXPLORE_BASH_FORBIDDEN_CHARS = ("<<", ">>", ">", "|", "`", "$(")
+_EXPLORE_BASH_FORBIDDEN_WORDS = {"tee"}
+
+_EXPLORE_BASH_DENY_REASON = (
+    "Permission required but subagents cannot ask the user for approval, "
+    "so this tool call was denied. Explore subagents can only run "
+    "read-only commands (ls, cat, head, tail, find, grep, rg, git "
+    "status/log/diff/show, etc.). If this action needs approval, run it "
+    "in the main conversation instead."
+)
+
+
+def _explore_bash_decision(tool, input_args, context) -> dict | None:
+    """Explore 子代理 Bash 只读判定：命中白名单返回 allow，未命中返回 deny。
+
+    仅作用于「Explore 类型子代理的 Bash 调用」这一场景，其余（非 Bash、
+    非子代理上下文、非 Explore）返回 None 交由通用权限链路，行为不变。
+    子代理无审批通道，通用链路对非删除命令默认放行对只读代理过宽，
+    故在本检查点独立产出 allow/deny。
+    """
+    if getattr(tool, "name", "") != "Bash":
+        return None
+    from tools.subagent.tools import is_subagent_context
+
+    if not is_subagent_context(context):
+        return None
+    agent_id = getattr(context, "tool_use_id", "")
+    try:
+        from tools.subagent.registry import get_subagent_registry
+
+        task = get_subagent_registry().get(agent_id)
+    except Exception:
+        task = None
+    if task is None or getattr(task, "agent_type", "") != "Explore":
+        return None
+
+    command = getattr(input_args, "command", None)
+    if not isinstance(command, str) or not command.strip():
+        return {"decision": "deny", "reason": _EXPLORE_BASH_DENY_REASON}
+    if any(ch in command for ch in _EXPLORE_BASH_FORBIDDEN_CHARS):
+        return {"decision": "deny", "reason": _EXPLORE_BASH_DENY_REASON}
+
+    # 复合命令（;、&&、||）逐段校验，任一段越界即整体拒绝
+    import re
+    import shlex
+
+    for segment in re.split(r";|&&|\|\|", command):
+        try:
+            tokens = shlex.split(segment)
+        except ValueError:
+            return {"decision": "deny", "reason": _EXPLORE_BASH_DENY_REASON}
+        if not tokens:
+            continue
+        if any(t in _EXPLORE_BASH_FORBIDDEN_WORDS for t in tokens):
+            return {"decision": "deny", "reason": _EXPLORE_BASH_DENY_REASON}
+        # 取首词的裸命令名（容忍绝对路径与 .exe 后缀形态）
+        head = tokens[0].rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        if head.endswith(".exe"):
+            head = head[:-4]
+        if head == "git":
+            sub = tokens[1] if len(tokens) > 1 else ""
+            if sub not in _EXPLORE_BASH_GIT_SUBCOMMANDS:
+                return {"decision": "deny", "reason": _EXPLORE_BASH_DENY_REASON}
+            if sub == "remote" and any(
+                arg not in _GIT_REMOTE_VIEW_ARGS for arg in tokens[2:]
+            ):
+                return {"decision": "deny", "reason": _EXPLORE_BASH_DENY_REASON}
+        elif head not in _EXPLORE_BASH_READONLY_COMMANDS:
+            return {"decision": "deny", "reason": _EXPLORE_BASH_DENY_REASON}
+    return {"decision": "allow"}
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +170,11 @@ async def _default_permission_check(tool, input_args, context):
         {"decision": "deny", "reason": ...} — 拒绝
         {"decision": "ask", "reason": ...} — 需要用户确认，由上层调弹窗回调处理
     """
+    # Explore 子代理的 Bash 只读白名单判定（优先于通用规则）
+    explore_bash = _explore_bash_decision(tool, input_args, context)
+    if explore_bash is not None:
+        return explore_bash
+
     from tools.utils.permissions.permissions import has_permissions_to_use_tool
     from startup.bootstrap.state import get_permission_mode
 
@@ -189,6 +288,10 @@ class QueryEngine:
         self._session_id: str = session_id or config.deps.get_uuid()
         # 会话级 ALWAYS_ALLOW 集合：用户选过 always_allow 的工具后续直接放行
         self._always_allowed: set[str] = set()
+        # 会话级压缩追踪：冷却基线与计数快照跨回合保留；
+        # 新用户回合仅重置连败与快速再满计数（submitMessage 内执行）
+        from query.services.compact.auto_compact import CompactTracking
+        self._compact_tracking: CompactTracking = CompactTracking()
 
     @property
     def mutable_messages(self) -> list[dict]:
@@ -221,6 +324,11 @@ class QueryEngine:
         return self._always_allowed
 
     @property
+    def compact_tracking(self):
+        """会话级压缩追踪状态：跨回合保留冷却基线与计数快照。"""
+        return self._compact_tracking
+
+    @property
     def config(self) -> QueryEngineConfig:
         return self._config
 
@@ -235,7 +343,7 @@ class QueryEngine:
 
     async def submitMessage(
         self,
-        prompt: str,
+        prompt: str | list,
         user_context: dict[str, str] | None = None,
         system_context: dict[str, str] | None = None,
     ) -> AsyncGenerator[Any, None]:
@@ -245,7 +353,8 @@ class QueryEngine:
         调 query_loop，循环结束后 turn_count + 1。
 
         Args:
-            prompt: 用户输入文本
+            prompt: 用户输入文本，或 OpenAI 风格 content parts 列表
+                （含图时为 [{"type":"text"...},{"type":"image_url"...}]）
             user_context: 用户上下文字典
             system_context: 系统上下文字典
 
@@ -261,6 +370,14 @@ class QueryEngine:
         from startup.hooks import run_user_prompt_submit_hooks
         from startup.setup import get_hooks_snapshot
         from query.services.api.llm import StreamEvent
+        from query.utils.messages import extract_text_from_content
+
+        # hook 入参口径保持纯文本：parts 时拼接 text 块、图片以 [image] 占位，
+        # 外部脚本的 prompt 字段形态不因多模态而变
+        hook_prompt = (
+            prompt if isinstance(prompt, str)
+            else extract_text_from_content(prompt, image_placeholder="[image]")
+        )
 
         hook_snapshot = get_hooks_snapshot()
         hook_result = None
@@ -268,12 +385,10 @@ class QueryEngine:
             try:
                 hook_result = await run_user_prompt_submit_hooks(
                     hook_snapshot,
-                    prompt,
+                    hook_prompt,
                     self._session_id,
                     effective_root(),
                 )
-            except Exception:
-                hook_result = None
             except Exception:
                 hook_result = None
 
@@ -293,6 +408,12 @@ class QueryEngine:
 
         # 把 user 消息加到 mutable_messages
         self._mutable_messages.append({"role": "user", "content": prompt, "_ts": time.time() * 1000})
+
+        # 新用户回合：重置压缩连败与快速再满计数；
+        # 冷却基线（last_compact_time）与上次压缩计数快照保留，跨回合生效
+        self._compact_tracking.consecutive_failures = 0
+        if hasattr(self._compact_tracking, "refill_within_rounds"):
+            self._compact_tracking.refill_within_rounds = 0
 
         # 构建循环级快照（session_id 整个会话不变）
         query_config = build_query_config(session_id=self._session_id)

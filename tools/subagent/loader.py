@@ -37,6 +37,10 @@ _KEY_MAP = {
     "model": "model",
     "maxturns": "max_turns",
     "max-turns": "max_turns",
+    "tokenbudget": "token_budget",
+    "token-budget": "token_budget",
+    "injectagentsmd": "inject_agents_md",
+    "inject-agents-md": "inject_agents_md",
     "background": "background",
     "permissionmode": "permission_mode",
     "permission-mode": "permission_mode",
@@ -193,6 +197,9 @@ def _parse_agent_file(path: Path, source: str) -> tuple[AgentDefinition | None, 
     max_turns = fields.get("max_turns")
     if isinstance(max_turns, str) and max_turns.isdigit():
         max_turns = int(max_turns)
+    token_budget = fields.get("token_budget")
+    if isinstance(token_budget, str) and token_budget.isdigit():
+        token_budget = int(token_budget)
 
     definition = AgentDefinition(
         agent_type=str(fields["name"]),
@@ -201,6 +208,9 @@ def _parse_agent_file(path: Path, source: str) -> tuple[AgentDefinition | None, 
         disallowed_tools=[*disallowed, "Agent"],  # 防递归
         model=fields.get("model") or None,
         max_turns=max_turns if isinstance(max_turns, int) else None,
+        token_budget=token_budget if isinstance(token_budget, int) else None,
+        # 缺省开启注入（与内置 general-purpose 一致），显式 false 关闭
+        inject_agents_md=bool(fields.get("inject_agents_md", True)),
         background=bool(fields.get("background", False)),
         permission_mode=fields.get("permission_mode") or None,
         system_prompt=body or str(fields["description"]),

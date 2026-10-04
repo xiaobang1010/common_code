@@ -40,6 +40,10 @@ class StreamEvent:
             - "tool_call": 完整工具调用
             - "tool_call_delta": 工具调用增量
             - "usage": token 使用量
+            - "context_breakdown": 上下文分类 token 估算（query_loop 发出）
+            - "compact_started": 自动压缩进行中（管线放行后、LLM 摘要前发出）
+            - "compact_completed": 压缩完成（compact_info 带前后统一计数）
+            - "compact_failed": 压缩失败/熔断（compact_info 带 reason，可操作文案）
             - "error": 错误
             - "done": 流结束
         content: 文本内容（type="content" 或 type="reasoning" 时）
@@ -49,6 +53,12 @@ class StreamEvent:
         usage: token 使用量字典
         error: 错误对象
         finish_reason: 结束原因（type="done" 时）
+        breakdown: 上下文分类估算（type="context_breakdown" 时），
+            结构为 {分类名: token 数, "total": 各分类之和}，
+            生成逻辑见 query/services/context_metrics.py
+        compact_info: 压缩事件载荷（compact_* 时），结构为
+            {status, tokens_before, tokens_after, reason}，
+            字段取值见 query.services.compact.auto_compact 的 CompactResult
     """
 
     type: str
@@ -60,6 +70,8 @@ class StreamEvent:
     usage: dict | None = None
     error: Exception | None = None
     finish_reason: str | None = None
+    breakdown: dict | None = None
+    compact_info: dict | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -131,10 +143,11 @@ async def query_model_with_streaming(
                 yield event
 
     # 用 with_retry_stream 包装，对建立阶段的可重试错误（rate_limit、server_error、
-    # 首包看护超时）做指数退避重试。流式场景收紧重试次数：首包挂起多为
-    # 供应商/代理问题，3 次重试（叠加 120 秒首包看护）已给足自愈窗口，
-    # 避免坏链路上静默重试过久
-    retry_config = RetryConfig(max_retries=3, base_delay=1.0, max_delay=8.0)
+    # 首包看护超时）做指数退避重试。次数与退避参数统一取 RetryConfig 默认值
+    # （对齐主流客户端实践：10 次重试、2s 基础退避倍增、封顶 60s）——
+    # 连接类错误快速失败，退避总预算约 6 分钟（不含抖动），可覆盖代理重启等
+    # 自愈窗口；每次重试经 _on_retry 的 phase 事件透出进度，界面不静默
+    retry_config = RetryConfig()
 
     async def _on_retry(n: int, total: int, error: Exception) -> StreamEvent:
         # 重试反馈走 phase 事件（前端工作块直接显示），避免重试全程静默
@@ -294,6 +307,14 @@ def parse_stream_chunk(chunk: Any) -> list[StreamEvent]:
                 cache_miss = usage.get("prompt_cache_miss_tokens")
             if cache_miss and cache_miss > 0:
                 usage_dict["cache_creation_input_tokens"] = cache_miss
+
+        # 本次请求实际发送的输入 token 总量，供缓存命中率做分母。
+        # OpenAI 兼容协议（含 DeepSeek/阿里等）的 prompt_tokens 已包含命中/未命中的
+        # 缓存部分，缓存字段是其子集，故总输入直接取 prompt_tokens——不能再叠加，
+        # 否则分母翻倍、命中率显示成真实值的一半
+        prompt_tokens = usage_dict.get("prompt_tokens")
+        if prompt_tokens is not None:
+            usage_dict["total_input_tokens"] = prompt_tokens
 
         # 只在有真实数据时生成 usage 事件（过滤掉全 0 的占位 usage）
         if usage_dict and any(v > 0 for v in usage_dict.values() if isinstance(v, int)):

@@ -10,14 +10,13 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from prompts.loader import load_tool_prompt
 
 from tools.protocol import Tool, ToolResult, ToolUseContext, build_tool
-from tools.subagent.built_in_agents import find_agent_by_type
-from tools.subagent.context import create_subagent_context
 from tools.subagent.types import AgentDefinition
 
 
@@ -38,12 +37,30 @@ class AgentInput(BaseModel):
         name: teammate 名字（teammate 派生时必填）
     """
 
-    description: str
-    prompt: str
-    subagent_type: str = "general-purpose"
-    run_in_background: bool = False
-    team_name: str | None = None
-    name: str | None = None
+    description: str = Field(
+        description="3-5 词任务简述（作为子代理标题展示）"
+    )
+    prompt: str = Field(
+        description="给子代理的完整任务指令：目标与背景、已排除什么、期望产出什么形态——"
+        "子代理看不到本对话，必须自包含"
+    )
+    subagent_type: str = Field(
+        default="general-purpose",
+        description="代理类型（见工具说明中的可用清单）；省略即 general-purpose，只读检索类任务用 Explore",
+    )
+    run_in_background: bool = Field(
+        default=False,
+        description="仅当父任务后续步骤不依赖该子代理结果时给 True；"
+        "需要结果才能推进时保持前台执行",
+    )
+    team_name: str | None = Field(
+        default=None,
+        description="团队模式派生队友时必填，其余场景省略",
+    )
+    name: str | None = Field(
+        default=None,
+        description="团队模式队友名字，派生队友时必填",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -51,19 +68,56 @@ class AgentInput(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-AGENT_TOOL_PROMPT = """\
-派生子代理执行隔离上下文的子任务。
+# 无清单数据时的兜底清单（保证不抛异常、描述仍可用）；描述与内置定义保持同文
+_AGENT_LISTING_FALLBACK = [
+    {
+        "type": "general-purpose",
+        "when_to_use": (
+            "General-purpose agent for researching complex questions, searching for "
+            "code, and executing multi-step tasks. When you are searching for a "
+            "keyword or file and are not confident that you will find the right "
+            "match in the first few tries use this agent to perform the search "
+            "for you."
+        ),
+        "tools": "",
+    },
+    {
+        "type": "Explore",
+        "when_to_use": (
+            "Read-only search agent for broad fan-out searches - when answering "
+            "means sweeping many files, directories, or naming conventions and "
+            "need only the conclusion, not the file dumps. It reads excerpts "
+            "rather than whole files, so it locates code; it doesn't review or "
+            "audit it. Specify search breadth: \"medium\" for moderate "
+            "exploration, \"very thorough\" for multiple locations and naming "
+            "conventions."
+        ),
+        "tools": "Bash, Glob, Grep, Read, WebFetch, TodoWrite",
+    },
+]
 
-使用说明：
-- description 是 3-5 词的简短任务描述
-- prompt 是给子代理的完整任务指令
-- subagent_type 选择代理类型：
-  - general-purpose：全工具，通用研究/多步骤任务
-  - Explore：只读搜索，快速定位代码库信息
-- 需要并行执行多个独立子任务时，在一条消息中发起多个 Agent 工具调用
-- 子代理结果对用户不可见，需要你转述关键发现
-- run_in_background=true 时子代理后台运行，立即返回 agent_id
-"""
+
+def build_agent_prompt() -> str:
+    """组装 Agent 工具完整使用说明（模型侧）。
+
+    代理清单每次调用时动态渲染（工具池每轮重建，自定义 .md 代理即时生效）；
+    模板见 prompts/templates/tools/agent.j2。取数失败退化为兜底两行。
+    """
+    try:
+        from tools.subagent.built_in_agents import get_agent_listing
+
+        listing = get_agent_listing()
+    except Exception:  # noqa: BLE001 清单渲染失败不能阻断工具描述
+        listing = []
+    items = [
+        {
+            "type": item.get("type", "unknown"),
+            "when_to_use": (item.get("when_to_use") or "").strip(),
+            "tools": item.get("tools") or "",
+        }
+        for item in listing
+    ] or _AGENT_LISTING_FALLBACK
+    return load_tool_prompt("agent", agents=items)
 
 
 # ---------------------------------------------------------------------------
@@ -132,13 +186,16 @@ async def _execute(inp: AgentInput, context: ToolUseContext) -> ToolResult:
     同步路径收集最终 assistant 文本作为 tool_result。
     异步路径立即返回 agent_id。
     """
-    # 解析代理类型
-    agent_def = find_agent_by_type(inp.subagent_type)
-    if agent_def is None:
+    # 解析代理类型：精确/唯一模糊命中才继续，歧义与未命中把候选回给模型自我纠正
+    from tools.subagent.resolver import resolve_agent_type
+
+    resolved = resolve_agent_type(inp.subagent_type)
+    if resolved.kind != "matched" or resolved.agent is None:
         return ToolResult(
-            content=f"Agent type not found: {inp.subagent_type}",
+            content=resolved.error_text(inp.subagent_type),
             is_error=True,
         )
+    agent_def = resolved.agent
 
     # 并发限制：超限明确报错，不静默排队、不假启动
     concurrency_error = _check_concurrency(context)
@@ -170,172 +227,64 @@ async def _execute(inp: AgentInput, context: ToolUseContext) -> ToolResult:
                 is_error=True,
             )
 
-    # ---- 普通 subagent 派生路径 ----
-    # 获取主循环模型名
-    from query.services.api.client import get_default_model
-    main_loop_model = get_default_model()
+    # ---- 普通 subagent 派生路径（生命周期引擎统一入口）----
+    from tools.subagent.lifecycle import SpawnRequest, spawn_subagent
 
-    # 提取父会话中断事件（loop 经 ToolUseContext.abort_controller 下发），
-    # 前台子代理共享此事件，/api/abort 时优雅退出
-    parent_abort_event = (
-        context.abort_controller
-        if isinstance(context.abort_controller, asyncio.Event)
-        else None
-    )
-
-    # 创建隔离上下文
-    subagent_ctx = create_subagent_context(
-        parent_context=context,
-        agent_def=agent_def,
-        main_loop_model=main_loop_model,
-        is_async=inp.run_in_background,
-        prompt=inp.prompt,
-        parent_abort_event=parent_abort_event,
-    )
-
-    # 异步路径：真后台运行，立即返回 agent_id
-    if inp.run_in_background:
-        from tools.subagent.background import launch_background_subagent
-
-        # 解析系统提示词与工具池（后台任务体内消费）
-        system_prompt = agent_def.resolve_system_prompt()
-        from tools import get_tools
-        all_tools = get_tools()
-        from tools.subagent.tools import resolve_agent_tools
-        worker_tools = resolve_agent_tools(agent_def, all_tools)
-
-        task = launch_background_subagent(
-            subagent_ctx,
-            worker_tools,
-            system_prompt,
+    spawn_result = await spawn_subagent(
+        SpawnRequest(
+            agent_def=agent_def,
+            prompt=inp.prompt,
             description=inp.description,
-            parent_session_id=context.session_id or None,
+            parent_context=context,
+            run_in_background=inp.run_in_background,
         )
+    )
+
+    # 后台/被提升：立即返回 agent_id，完成后自动通知
+    if spawn_result.kind == "async_launched":
         return ToolResult(
             content=(
                 f"Subagent launched in background "
-                f"(agent_id: {subagent_ctx.agent_id}). "
-                f"结果将在完成后自动通知；也可用 GetSubagentOutput 查看中间输出，"
-                f"StopSubagent 停止，SendMessage 续聊。"
+                f"(agent_id: {spawn_result.agent_id}). "
+                f"结果将在完成后自动通知，不要轮询或等待；"
+                f"StopSubagent 可停止，SendMessage 可续聊。"
             ),
             is_error=False,
             metadata={
-                "agent_id": subagent_ctx.agent_id,
+                "agent_id": spawn_result.agent_id,
                 "status": "async_launched",
-                "output_file": task.output_file,
             },
         )
 
-    # 同步路径：调 run_agent 收集最终结果
-    try:
-        from tools.subagent.runner import run_agent
-    except ImportError:
-        return ToolResult(
-            content="Subagent runner not yet implemented (requires runner module)",
-            is_error=True,
-        )
-
-    # 解析系统提示词
-    system_prompt = agent_def.resolve_system_prompt()
-
-    # 获取工具池（阶段三实现工具过滤）
-    from tools import get_tools
-    all_tools = get_tools()
-
-    from tools.subagent.tools import resolve_agent_tools
-    worker_tools = resolve_agent_tools(agent_def, all_tools)
-
-    # 注册进统一任务注册表（前台模式）
-    from tools.subagent.registry import (
-        MODE_FOREGROUND,
-        STATUS_ABORTED,
-        STATUS_COMPLETED,
-        STATUS_FAILED,
-        get_subagent_registry,
-    )
-    registry = get_subagent_registry()
-    registry.register(
-        subagent_ctx.agent_id,
-        subagent_ctx,
-        agent_type=agent_def.agent_type,
-        description=inp.description,
-        mode=MODE_FOREGROUND,
-        parent_session_id=context.session_id or None,
-    )
-
-    # 运行子代理，收集最终 assistant 文本
-    final_text = ""
-    try:
-        async for message in run_agent(
-            ctx=subagent_ctx,
-            tools=worker_tools,
-            system_prompt=system_prompt,
-        ):
-            if isinstance(message, dict) and message.get("role") == "assistant":
-                content = message.get("content", "")
-                if content:
-                    final_text = content  # 保留最后一条 assistant 消息
-    except asyncio.CancelledError:
-        # 父任务被 cancel 强杀：写入 aborted 后继续抛出，保证取消语义
-        registry.set_result(
-            subagent_ctx.agent_id, status=STATUS_ABORTED, error="parent session aborted"
-        )
-        raise
-    except Exception as e:
-        registry.set_result(
-            subagent_ctx.agent_id, status=STATUS_FAILED, error=str(e)
-        )
-        raise
-
-    # 结果截断保护：超过阈值时截断并落盘
-    MAX_RESULT_SIZE_CHARS = 100_000
-    output_file = None
-    if len(final_text) > MAX_RESULT_SIZE_CHARS:
-        from tools.subagent.transcript import save_full_result
-        result_path = save_full_result(subagent_ctx.agent_id, final_text)
-        output_file = result_path
-        final_text = (
-            final_text[:MAX_RESULT_SIZE_CHARS]
-            + f"\n\n[Result truncated. Full output saved to: {result_path}]"
-        )
-
-    # 父会话中断事件已置位 -> 优雅退出按 aborted 记录，正常跑完记 completed
-    was_aborted = (
-        subagent_ctx.abort_event is not None and subagent_ctx.abort_event.is_set()
-    )
-    registry.set_result(
-        subagent_ctx.agent_id,
-        status=STATUS_ABORTED if was_aborted else STATUS_COMPLETED,
-        final_text=final_text,
-        output_file=output_file,
-        usage=dict(subagent_ctx.usage),
-        error="parent session aborted" if was_aborted else None,
-    )
+    # 前台完成：生命周期引擎已处理终态（注册表/子会话/通知/截断），
+    # 这里只负责给模型的返回格式
+    outcome = spawn_result.outcome
+    assert outcome is not None
+    agent_id = spawn_result.agent_id
+    final_status = outcome.status
+    result_content = outcome.final_text or "Subagent completed with no output"
 
     # 结果开头放 agent_id 行：任何头截断（前端 500 字符展示、executor 预算）都切不到它，
     # 前端状态卡片据此解析任务
-    usage = subagent_ctx.usage
-    final_status = "aborted" if was_aborted else "completed"
-    result_content = final_text or "Subagent completed with no output"
     result_content = (
-        f"[subagent_id: {subagent_ctx.agent_id} | status: {final_status}]\n\n"
-        + result_content
+        f"[subagent_id: {agent_id} | status: {final_status}]\n\n" + result_content
     )
     # 尾部附 usage 统计与续聊指引（引导用 SendMessage 续聊而非重开）
+    usage = (spawn_result.task.usage if spawn_result.task is not None else {}) or {}
     result_content += (
         f"\n\n--- \n"
-        f"subagent_id: {subagent_ctx.agent_id} | status: {final_status} | "
+        f"subagent_id: {agent_id} | status: {final_status} | "
         f"tokens: {usage.get('total_tokens', 0)} | "
         f"tool_uses: {usage.get('tool_uses', 0)} | "
         f"duration_ms: {usage.get('duration_ms', 0)}\n"
-        f"如需继续该子代理的上下文，用 SendMessage 发送 agent_id={subagent_ctx.agent_id} 续聊。"
+        f"如需继续该子代理的上下文，用 SendMessage 发送 agent_id={agent_id} 续聊。"
     )
 
     return ToolResult(
         content=result_content,
-        is_error=False,
+        is_error=outcome.status not in ("completed",),
         metadata={
-            "agent_id": subagent_ctx.agent_id,
+            "agent_id": agent_id,
             "agent_type": agent_def.agent_type,
             "status": final_status,
             "usage": dict(usage),
@@ -357,7 +306,7 @@ def get_agent_tool() -> Tool:
         description="Launch a subagent to handle a task",
         input_schema=AgentInput,
         execute=_execute,
-        prompt=AGENT_TOOL_PROMPT,
+        prompt=build_agent_prompt(),
         validate_input=_validate_input,
         is_read_only=True,  # 权限委托给底层工具
         aliases=["Task"],

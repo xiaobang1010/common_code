@@ -1,6 +1,7 @@
 __pycache__/
 context/
 .trae/
+.agent/
 .env
 AGENTS.md
 

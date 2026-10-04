@@ -177,3 +177,58 @@ async def test_write_atomic_failure_keeps_original(workspace, monkeypatch):
     # 无残留临时文件
     leftovers = [p.name for p in workspace.iterdir() if p.name.startswith(".cc-write-")]
     assert leftovers == []
+
+
+# --- 自动基线：Read/Write/Edit 登记后覆盖写免手工回传 ---
+
+
+@pytest.mark.asyncio
+async def test_write_overwrite_after_read_uses_recorded_baseline(workspace):
+    """Read 后覆盖写无需回传基线：系统自动采用登记值。"""
+    (workspace / "a.py").write_text("old", encoding="utf-8")
+    await handle_read(FileReadInput(file_path="a.py"), None)
+    result = await handle_write(FileWriteInput(file_path="a.py", content="new"), None)
+    assert result["action"] == "overwritten"
+    assert (workspace / "a.py").read_text(encoding="utf-8") == "new"
+
+
+@pytest.mark.asyncio
+async def test_write_overwrite_after_previous_write_succeeds(workspace):
+    """连续覆盖写：上次写盘成功后登记新基线，再次覆盖无需重新 Read。"""
+    await handle_write(FileWriteInput(file_path="a.py", content="v1"), None)
+    result = await handle_write(FileWriteInput(file_path="a.py", content="v2"), None)
+    assert result["action"] == "overwritten"
+    assert (workspace / "a.py").read_text(encoding="utf-8") == "v2"
+
+
+@pytest.mark.asyncio
+async def test_write_overwrite_after_edit_uses_recorded_baseline(workspace):
+    """Edit 写盘后同样登记基线，后续 Write 覆盖免 Read。"""
+    (workspace / "a.py").write_text("hello world\n", encoding="utf-8")
+    await handle_edit(FileEditInput(file_path="a.py", old_string="hello", new_string="hi"), None)
+    result = await handle_write(FileWriteInput(file_path="a.py", content="full rewrite"), None)
+    assert result["action"] == "overwritten"
+    assert (workspace / "a.py").read_text(encoding="utf-8") == "full rewrite"
+
+
+@pytest.mark.asyncio
+async def test_write_overwrite_stale_recorded_baseline_conflict(workspace):
+    """登记基线后磁盘被外部改动：自动基线照样拦截（file_modified）。"""
+    (workspace / "a.py").write_text("old", encoding="utf-8")
+    await handle_read(FileReadInput(file_path="a.py"), None)
+    (workspace / "a.py").write_text("tampered", encoding="utf-8")
+    with pytest.raises(ToolExecutionError) as exc:
+        await handle_write(FileWriteInput(file_path="a.py", content="new"), None)
+    assert exc.value.code == "file_modified"
+    assert (workspace / "a.py").read_text(encoding="utf-8") == "tampered"
+
+
+@pytest.mark.asyncio
+async def test_write_overwrite_requires_baseline_message_points_to_read(workspace):
+    """从未读取过的文件覆盖被拒时，文案点名 Read 工具与免手工传参。"""
+    (workspace / "a.py").write_text("old", encoding="utf-8")
+    with pytest.raises(ToolExecutionError) as exc:
+        await handle_write(FileWriteInput(file_path="a.py", content="new"), None)
+    assert exc.value.code == "missing_baseline"
+    assert "Read" in exc.value.message
+    assert "无需手动传参" in exc.value.message

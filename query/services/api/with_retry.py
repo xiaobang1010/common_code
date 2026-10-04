@@ -23,7 +23,12 @@ T = TypeVar("T")
 
 @dataclass
 class RetryConfig:
-    """重试配置。
+    """重试配置（两条协议路径共用的唯一事实源，勿在调用方另行覆写次数/退避）。
+
+    默认参数对齐主流客户端实践：10 次重试（总尝试 11 次）、2s 基础退避倍增、
+    封顶 60s、带抖动。连接拒绝/TLS 重置类失败单次 <1s 返回，10 次重试的
+    退避总预算 2+4+8+16+32+60×5 = 362 秒 ≈ 约 6 分钟（不含抖动），
+    可覆盖代理重启等自愈窗口。
 
     Attributes:
         max_retries: 最大重试次数
@@ -33,8 +38,8 @@ class RetryConfig:
     """
 
     max_retries: int = 10
-    base_delay: float = 0.5
-    max_delay: float = 32.0
+    base_delay: float = 2.0
+    max_delay: float = 60.0
     retryable_errors: set[str] = field(
         default_factory=lambda: {"rate_limit", "server_error"}
     )

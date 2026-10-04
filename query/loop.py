@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import time
 from dataclasses import asdict, dataclass, field, replace
@@ -27,13 +28,22 @@ from query.stop_hooks import run_stop_hooks
 from query.services.api.errors import APIError, classify_error, is_recoverable_error
 from query.services.api.llm import StreamEvent, collect_tool_calls
 from query.services.compact.auto_compact import CompactTracking
+from query.utils.messages import get_messages_after_compact_boundary
 from tools.executor import (
     StreamingToolExecutor,
     ToolExecutionResult,
     tool_result_to_openai_message,
 )
 from tools import get_tools
-from query.utils.api import build_api_request, prepend_user_context, append_system_context
+from query.utils.api import (
+    build_api_request,
+    inject_context_before_last_user,
+    insert_message_before_last_user,
+    append_system_context,
+)
+from query.utils.reasoning import deep_merge_patch, resolve_reasoning_patch
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from query.engine import QueryEngine
@@ -96,6 +106,8 @@ def _build_project_info() -> str:
 
     让 agent 明确知晓当前工作区与访问边界（工作区根、git 分支、
     额外允许目录），不必靠 pwd/试错推断；随会话动态构建。
+    以 <user_info> 块承载：可视化规范段引用其中的 IDE Theme 字段决定图形配色，
+    主题作为运行时事实注入（当前应用仅提供深色界面，接入浅色主题后此处跟随设置）。
     """
     from server.paths import effective_root
 
@@ -114,7 +126,8 @@ def _build_project_info() -> str:
             lines.append(f"额外允许目录: {', '.join(additional)}")
     except Exception:
         pass  # 配置读取失败不影响注入
-    return "\n".join(lines)
+    lines.insert(0, "IDE Theme: dark")
+    return "<user_info>\n" + "\n".join(lines) + "\n</user_info>"
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +224,23 @@ def _build_tool_result_messages(
     return messages
 
 
+def _present_files_event(result: ToolExecutionResult) -> dict[str, Any] | None:
+    """present_files 交付结果 → 前端结构化事件；其他工具返回 None。
+
+    该事件只随 SSE 发给前端（打开面板标签），不进入对话历史、不落库。
+    """
+    if result.tool_name != "present_files" or result.is_error:
+        return None
+    meta = result.metadata or {}
+    if meta.get("type") != "present_files":
+        return None
+    return {
+        "role": "present_files",
+        "files": meta.get("files", []),
+        "explanation": meta.get("explanation", ""),
+    }
+
+
 # ---------------------------------------------------------------------------
 # _build_assistant_message — 从流式事件构建 assistant 消息
 # ---------------------------------------------------------------------------
@@ -219,12 +249,26 @@ def _build_tool_result_messages(
 def _build_assistant_message(
     content_parts: list[str],
     tool_calls: list[dict],
+    reasoning_parts: list[str] | None = None,
+    reasoning_first_ts: float | None = None,
+    reasoning_last_ts: float | None = None,
+    context_usage: int | None = None,
 ) -> dict:
     """从流式事件中收集的内容和工具调用构建 assistant 消息。"""
     content = "".join(content_parts) if content_parts else ""
     msg: dict[str, Any] = {"role": "assistant", "content": content, "_ts": time.time() * 1000}
     if tool_calls:
         msg["tool_calls"] = tool_calls
+    # 上下文计数基线：本次请求的真实总输入（含缓存读写），
+    # 供 count_context_tokens 反向扫描取基线；发给模型前随下划线字段一并剥离
+    if context_usage:
+        msg["_context_usage"] = int(context_usage)
+    # 思维链：有思考输出时写入下划线内部字段（与 _ts 同约定，发给模型前会被剥离，
+    # 随会话整表 JSON 落库），供前端历史恢复重建「思考 · X秒」行
+    reasoning = "".join(reasoning_parts) if reasoning_parts else ""
+    if reasoning and reasoning_first_ts is not None and reasoning_last_ts is not None:
+        msg["_reasoning"] = reasoning
+        msg["_reasoning_ms"] = int(reasoning_last_ts - reasoning_first_ts)
     return msg
 
 
@@ -256,89 +300,92 @@ async def _mine_conversation_to_palace(engine: QueryEngine) -> None:
 
 
 # ---------------------------------------------------------------------------
-# _run_inline_compression — 内联四级压缩管线
+# _run_inline_compression — 内联两级压缩管线
 # ---------------------------------------------------------------------------
+
+
+def _compact_transcript_path(engine: Any, tool_use_context: Any) -> str:
+    """解析压缩续写消息引用的转录逃生门路径。
+
+    子代理回合复用其既有 sidechain 转录（~/.agent/subagents/<agent_id>/transcript.jsonl，
+    只引用不新建）；主会话指向回合收尾导出的会话转录
+    （~/.agent/transcripts/<session_id>.jsonl）。
+    """
+    from pathlib import Path
+
+    home = Path(os.path.expanduser("~"))
+    if tool_use_context is not None and getattr(tool_use_context, "tool_use_id", ""):
+        return str(
+            home / ".agent" / "subagents" / tool_use_context.tool_use_id / "transcript.jsonl"
+        )
+    return str(home / ".agent" / "transcripts" / f"{engine.session_id}.jsonl")
 
 
 async def _run_inline_compression(
     messages: list[dict],
     model: str,
     tracking: CompactTracking,
-    context_collapse_enabled: bool,
     deps: Any,
-) -> list[dict]:
-    """内联四级压缩管线。
+    transcript_path: str | None = None,
+) -> Any:
+    """内联两级压缩管线（microcompact → autocompact），异步生成器。
 
-    顺序：snip → microcompact → context_collapse → autocompact。
-    snip 和 microcompact 无条件执行（不互斥），
-    autocompact 内部自判阈值，管线层面不做提前返回
-    （原来 run_compression_pipeline 每级之间的 safe_threshold 提前返回已移除）。
-
-    token 估算：粗略方式（字符数 ÷ 4），后续可替换为 tiktoken 等精确估算。
+    yield 两种对象：StreamEvent（压缩进行中/完成/失败事件，供上层转发前端）
+    与最终消息列表（最后一个产出）。snip 与 context_collapse 实验层已下线；
+    autocompact 内部自判阈值，管线层面不做提前返回。
 
     Args:
-        messages: 消息列表
+        messages: 消息列表（全量历史）
         model: 模型名称
-        tracking: 压缩追踪状态
-        context_collapse_enabled: 是否启用 context collapse
+        tracking: 压缩追踪状态（会话级）
         deps: I/O 依赖（取 microcompact、autocompact）
-
-    Returns:
-        压缩后的消息列表
+        transcript_path: 压缩续写消息引用的转录逃生门路径
     """
-    import os
-
-    from query.services.compact.snip import (
-        _estimate_tokens_for_messages as _est_tokens,
-        should_snip,
-        snip_messages,
+    from query.services.api.llm import StreamEvent as _SE
+    from query.services.compact.auto_compact import (
+        STATUS_COMPACTED,
+        STATUS_FAILED,
+        STATUS_BREAKER,
+        STATUS_SKIPPED_RAPID_REFILL,
+        should_auto_compact,
     )
     from query.services.compact.micro_compact import should_micro_compact
-    from query.services.compact.context_collapse import (
-        context_collapse_messages,
-        should_context_collapse,
-    )
-    from startup.model.config import get_effective_context_window
-    from query.utils.messages import get_messages_after_compact_boundary
 
-    # token 估算基于切片后的活跃窗口（最后一个 boundary 之后的消息），
-    # 而非完整历史。REPL 传入的 messages 可能含已被压缩的旧消息，
-    # 那些不会发给 LLM，不应计入 token 估算。
-    context_window = get_effective_context_window(model)
-    active_messages = get_messages_after_compact_boundary(messages)
-    current_tokens = _est_tokens(active_messages)
+    # 1b. Microcompact（闲置/水位触发）
+    if should_micro_compact(messages, model):
+        messages = deps.microcompact(messages=messages, model=model)
 
-    # 1a. Snip（受 COMMON_CODE_ENABLE_SNIP 环境变量门控）
-    snip_enabled = os.environ.get("COMMON_CODE_ENABLE_SNIP", "").lower() in (
-        "1", "true", "yes", "on",
-    )
-    if snip_enabled and should_snip(messages, context_window, current_tokens):
-        messages, _snip_tokens_freed = snip_messages(
-            messages, context_window, current_tokens,
-        )
-        current_tokens = _est_tokens(messages)
-
-    # 1b. Microcompact（无条件执行，snip 和 microcompact 不互斥）
-    if should_micro_compact(messages):
-        messages = deps.microcompact(messages=messages)
-
-    # 1c. Context Collapse（受 context_collapse_enabled 门控）
-    if context_collapse_enabled and should_context_collapse(
-        messages, context_window, current_tokens,
-    ):
-        messages = await context_collapse_messages(
-            messages, model, context_window,
-        )
-
-    # 1d. Autocompact（内部自判阈值，不在管线层面做提前返回）
-    messages, _was_compacted = await deps.autocompact(
+    # 1d. Autocompact：先经判定门，放行时先行进行中标记再执行（LLM 调用耗时可见）
+    if should_auto_compact(messages, model, tracking):
+        yield _SE(type="compact_started", content="auto")
+    messages, result = await deps.autocompact(
         messages=messages,
         model=model,
         tracking=tracking,
-        context_collapse_enabled=context_collapse_enabled,
+        transcript_path=transcript_path,
     )
-
-    return messages
+    if result is not None:
+        info = {
+            "status": result.status,
+            "tokens_before": result.tokens_before,
+            "tokens_after": result.tokens_after,
+            "reason": result.reason,
+        }
+        if result.status == STATUS_COMPACTED:
+            yield _SE(
+                type="compact_completed",
+                content=f"{result.tokens_before} -> {result.tokens_after}",
+                compact_info=info,
+            )
+        elif result.status in (
+            STATUS_FAILED, STATUS_BREAKER, STATUS_SKIPPED_RAPID_REFILL
+        ):
+            yield _SE(
+                type="compact_failed",
+                content=result.reason or result.status,
+                compact_info=info,
+            )
+    yield messages
 
 
 # ---------------------------------------------------------------------------
@@ -429,8 +476,11 @@ async def query_loop(
     deps = engine.deps
     engine_config = engine.config
 
-    # 初始化压缩追踪
-    tracking: CompactTracking = CompactTracking()
+    # 压缩追踪：会话级状态（挂 engine），跨回合保留冷却基线与计数快照
+    tracking: CompactTracking = engine.compact_tracking
+
+    # 压缩逃生门转录路径（主会话 transcripts / 子代理 sidechain）
+    transcript_path = _compact_transcript_path(engine, tool_use_context)
 
     # 循环内临时状态
     state = State()
@@ -495,26 +545,45 @@ async def query_loop(
                 return
         loop_turns += 1
 
-        # ---- 1. 压缩管线（内联四级）----
+        # ---- 0b. token 预算检查（与轮次上限同款优雅停止模式） ----
+        if engine_config.token_budget:
+            if engine.total_usage >= engine_config.token_budget:
+                yield {
+                    "role": "assistant",
+                    "content": (
+                        f"[已达到 token 预算上限（token_budget="
+                        f"{engine_config.token_budget}），本轮任务提前停止。]"
+                    ),
+                }
+                yield StreamEvent(type="done", finish_reason="stop")
+                await _mine_conversation_to_palace(engine)
+                yield LoopResult(reason="completed")
+                return
+
+        # ---- 1. 压缩管线（内联两级）----
         if config.auto_compact_enabled and messages:
             try:
-                compacted = await _run_inline_compression(
+                compacted: list[dict] | None = None
+                async for item in _run_inline_compression(
                     messages=messages,
                     model=engine_config.model,
                     tracking=tracking,
-                    context_collapse_enabled=config.context_collapse_enabled,
                     deps=deps,
-                )
+                    transcript_path=transcript_path,
+                ):
+                    if isinstance(item, StreamEvent):
+                        yield item
+                    else:
+                        compacted = item
                 if compacted is not None and compacted != messages:
-                    # 先 yield 压缩产物（boundary marker + summary + kept messages），
-                    # 让 REPL 据此更新自己的完整历史。
-                    for msg in compacted:
-                        yield msg
-                    # 压缩后替换引擎消息
+                    # 全量回写引擎；插入语义下新边界+摘要只在压缩发生时增量下发，
+                    # 微压缩的原位替换不产消息（避免把旧边界/摘要重复推给订阅者）
+                    was_inserted = len(compacted) > len(messages)
                     engine.mutable_messages = compacted
                     messages = compacted
-                    # 重置追踪
-                    tracking = CompactTracking()
+                    if was_inserted:
+                        for msg in get_messages_after_compact_boundary(compacted)[:2]:
+                            yield msg
             except Exception:
                 # 压缩失败不中断循环
                 pass
@@ -579,12 +648,21 @@ async def query_loop(
         if system_context:
             system_messages = append_system_context(system_messages, system_context)
 
-        # 用户上下文仅临时拼入 api_messages，不污染 messages（messages 会被写回引擎）
-        api_messages = messages
+        # 用户上下文仅临时拼入 api_messages，不污染 messages（messages 会被写回引擎）。
+        # 落点用稳定规则（最后一条 user 之前 / 工具续写轮末尾），不再头部插入，
+        # 保证自动前缀缓存供应商的历史前缀不被每轮变化的内容击穿
+        # 发给模型的只有活跃窗口（最后一个压缩边界起）：插入语义下 messages
+        # 是全量历史（含边界前的旧消息与旧摘要），旧消息不应进入请求；
+        # 全量列表留在引擎侧供落库与界面回放
+        api_messages = get_messages_after_compact_boundary(messages)
+        recall_text: str | None = None
         if mid_context:
-            api_messages = prepend_user_context(api_messages, mid_context)
+            api_messages = inject_context_before_last_user(api_messages, mid_context)
+            # 分类估算用：与 inject_context_before_last_user 内同样的分段拼接口径
+            recall_text = "\n".join(f"# {k}\n{v}" for k, v in mid_context.items())
 
         # skill 列表增量注入（临时，不写回引擎）
+        skill_listing_text: str | None = None
         try:
             from tools.skills.bundled import get_model_invocable_skills
             from tools.skills.listing import get_skill_listing_attachment
@@ -597,7 +675,13 @@ async def query_loop(
                     invocable_skills, sent_skills, context_window,
                 )
                 if skill_listing is not None:
-                    api_messages = [skill_listing, *api_messages]
+                    # 与记忆召回同一落点规则：易变清单不进头部，保住历史前缀
+                    api_messages = insert_message_before_last_user(
+                        api_messages, skill_listing,
+                    )
+                    content = skill_listing.get("content")
+                    if isinstance(content, str):
+                        skill_listing_text = content
         except ImportError:
             pass
 
@@ -609,6 +693,26 @@ async def query_loop(
             max_tokens=engine_config.max_tokens,
             temperature=engine_config.temperature,
         )
+
+        # ---- 3.5 上下文容量分类估算 ----
+        # 供前端「上下文容量」面板展示分类占比；估算失败不中断对话
+        try:
+            from query.services.context_metrics import build_context_breakdown
+            yield StreamEvent(
+                type="context_breakdown",
+                breakdown=build_context_breakdown(
+                    sections=sections,
+                    tools=engine_config.tools,
+                    # 与请求同口径：只统计活跃窗口（最后一个压缩边界起）
+                    history_messages=get_messages_after_compact_boundary(messages),
+                    skill_listing_text=skill_listing_text,
+                    recall_text=recall_text,
+                    # 面板"已用/窗口/压缩水位"与触发判定同源（含窗口来源）
+                    model=engine_config.model,
+                ),
+            )
+        except Exception:
+            logger.debug("context breakdown 估算失败，跳过本次上报", exc_info=True)
 
         # 创建流式工具执行器
         from tools.protocol import ToolUseContext
@@ -642,6 +746,11 @@ async def query_loop(
         yield StreamEvent(type="content", content="")  # stream_request_start 信号
 
         content_parts: list[str] = []
+        # 思维链累积与计时：起止取事件到达时刻（粗粒度耗时），供 assistant 消息
+        # 的 _reasoning/_reasoning_ms 字段与前端「思考 · X秒」显示
+        reasoning_parts: list[str] = []
+        reasoning_first_ts: float | None = None
+        reasoning_last_ts: float | None = None
         stream_events: list[StreamEvent] = []
         finish_reason: str | None = None
         usage_info: dict | None = None
@@ -649,14 +758,33 @@ async def query_loop(
         # 扣留的上下文超限错误事件，恢复完才决定要不要暴露给调用方
         withheld_error: StreamEvent | None = None
 
+        # 实发参数在此收口：推理等级映射求值结果按 API 格式决定注入位置
+        # （OpenAI 兼容并入 extra_body，Anthropic 并入顶层 kwargs），
+        # 未选等级/无映射时不注入任何推理参数，行为与改造前一致
+        call_kwargs: dict[str, Any] = {
+            "messages": request["messages"],
+            "tools": engine_config.tools,
+            "model": engine_config.model,
+            "max_tokens": engine_config.max_tokens,
+            "temperature": engine_config.temperature,
+        }
         try:
-            async for event in deps.call_model(
-                messages=request["messages"],
-                tools=engine_config.tools,
-                model=engine_config.model,
-                max_tokens=engine_config.max_tokens,
-                temperature=engine_config.temperature,
-            ):
+            reasoning_patch = resolve_reasoning_patch(
+                engine_config.model, engine_config.reasoning_level
+            )
+            if reasoning_patch:
+                from query.services.api.client import get_active_api_format
+                if get_active_api_format() == "anthropic":
+                    deep_merge_patch(call_kwargs, reasoning_patch)
+                else:
+                    deep_merge_patch(
+                        call_kwargs.setdefault("extra_body", {}), reasoning_patch
+                    )
+        except Exception:
+            logger.warning("推理参数注入失败，按无推理参数请求继续", exc_info=True)
+
+        try:
+            async for event in deps.call_model(**call_kwargs):
                 # ---- 5. 流式输出 ----
                 # 上下文超限错误先扣下，等恢复流程走完再决定是否暴露
                 if (
@@ -678,6 +806,13 @@ async def query_loop(
 
                 if event.type == "content" and event.content:
                     content_parts.append(event.content)
+                elif event.type == "reasoning" and event.content:
+                    # 思维链增量：累积全文，首个记 start、每个刷新 last（耗时 = last - first）
+                    reasoning_parts.append(event.content)
+                    now_ms = time.time() * 1000
+                    if reasoning_first_ts is None:
+                        reasoning_first_ts = now_ms
+                    reasoning_last_ts = now_ms
                 elif event.type == "done" and event.finish_reason:
                     finish_reason = event.finish_reason
                 elif event.type == "usage" and event.usage:
@@ -699,6 +834,10 @@ async def query_loop(
                     if completed.context_modifier and completed.context_modifier.get("allowed_tools"):
                         for t in completed.context_modifier["allowed_tools"]:
                             engine.always_allowed.add(t)
+                    # present_files 交付事件：只发前端，不入对话
+                    pf_event = _present_files_event(completed)
+                    if pf_event:
+                        yield pf_event
 
         except Exception as e:
             # 模型调用异常
@@ -727,6 +866,10 @@ async def query_loop(
             if result.context_modifier and result.context_modifier.get("allowed_tools"):
                 for t in result.context_modifier["allowed_tools"]:
                     engine.always_allowed.add(t)
+            # present_files 交付事件：只发前端，不入对话
+            pf_event = _present_files_event(result)
+            if pf_event:
+                yield pf_event
 
         # 更新 token 使用量（写回引擎）
         if usage_info:
@@ -736,7 +879,12 @@ async def query_loop(
         tool_calls = collect_tool_calls(stream_events)
 
         # 构建 assistant 消息
-        assistant_msg = _build_assistant_message(content_parts, tool_calls)
+        assistant_msg = _build_assistant_message(
+            content_parts, tool_calls, reasoning_parts, reasoning_first_ts, reasoning_last_ts,
+            context_usage=(
+                usage_info.get("total_input_tokens") or usage_info.get("prompt_tokens")
+            ) if usage_info else None,
+        )
 
         # ---- 7. 错误恢复 ----
 
@@ -747,16 +895,26 @@ async def query_loop(
                 # 尝试压缩恢复
                 if not state.has_attempted_reactive_compact and config.auto_compact_enabled:
                     try:
-                        compacted = await _run_inline_compression(
+                        compacted: list[dict] | None = None
+                        async for item in _run_inline_compression(
                             messages=messages,
                             model=engine_config.model,
                             tracking=tracking,
-                            context_collapse_enabled=config.context_collapse_enabled,
                             deps=deps,
-                        )
+                            transcript_path=transcript_path,
+                        ):
+                            if isinstance(item, StreamEvent):
+                                yield item
+                            else:
+                                compacted = item
                         if compacted is not None and compacted != messages:
+                            was_inserted = len(compacted) > len(messages)
                             engine.mutable_messages = compacted
                             messages = compacted
+                            if was_inserted:
+                                # 插入的新边界+摘要增量下发（与主压缩路径同规则）
+                                for msg in get_messages_after_compact_boundary(compacted)[:2]:
+                                    yield msg
                             # 取消流式工具执行器（LLM 没产出有效响应，工具结果不应保留）
                             tool_executor.cancel()
                             updates = {

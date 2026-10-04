@@ -9,6 +9,7 @@ from tools.implementations.runtime.errors import (
     file_not_found_error,
     not_a_file_error,
 )
+from tools.implementations.runtime.file_baseline import record_baseline
 from tools.implementations.runtime.paths import resolve_workspace_path
 from tools.protocol import ToolUseContext
 
@@ -74,13 +75,17 @@ def _read_sync(inp: FileReadInput) -> dict:
     if not has_explicit_limit and total_lines > end_line:
         content += f"\n（文件共 {total_lines} 行，仅显示前 {end_line} 行，请用 offset/limit 分段读取）"
 
+    # 登记基线：后续 Write/Edit 覆盖该文件时系统自动采用（模型无需回传参数）
+    mtime = int(st.st_mtime)
+    record_baseline(str(file_path), mtime, st.st_size)
+
     return {
         "file_path": str(file_path),
         "content": content,
         "start_line": offset,
         "end_line": min(end_line, total_lines),
         "total_lines": total_lines,
-        "mtime": int(st.st_mtime),
+        "mtime": mtime,
         "size": st.st_size,
     }
 
@@ -88,8 +93,8 @@ def _read_sync(inp: FileReadInput) -> dict:
 def format_model_content(structured: dict) -> str:
     """结构化结果 → 给模型的文本。
 
-    一致性基线（mtime/size）置于开头，避免被结果预算按头部保留截断；
-    供模型在后续 Write/Edit 里作为 base_mtime/base_size 回传。
+    一致性基线（mtime/size）置于开头，避免被结果预算按头部保留截断。
+    基线已由系统自动登记，此处展示仅供模型知悉文件状态。
     """
     mtime = structured.get("mtime")
     size = structured.get("size")
