@@ -141,6 +141,14 @@
   --syntax-comment: #5c6370;
   --syntax-function: #61afef;
 
+  /* git 状态色 - 文件树专用：文件名默认中性色，颜色只表达变更状态；
+     徽标/圆点的不透明度变体在组件内经 color-mix 从这些基色派生 */
+  --git-modified: #ff8a30;
+  --git-added: #46bf72;
+  --git-untracked: #46bf72;
+  --git-deleted: #ff5c5c;
+  --git-renamed: #4099ff;
+
   /* 阴影 - 营造深度，中性黑 */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);

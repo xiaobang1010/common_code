@@ -239,6 +239,68 @@ def test_status_repo_prefix_subdir_workspace(git_env):
     assert "\\" not in prefix
 
 
+def test_parse_porcelain_line_statuses():
+    """词表逐档断言：未跟踪/重命名/复制单列，AM 单行拆两条，冲突行落 unknown。"""
+    from server.routers.git.routes import _parse_porcelain_line
+
+    # 未跟踪：不再并入 added，且带 untracked 标记供行数统计
+    assert _parse_porcelain_line("?? new.txt") == [
+        {"path": "new.txt", "status": "untracked", "staged": False, "untracked": True}
+    ]
+    # 暂存新增 / 暂存修改 / 工作区修改 / 工作区删除
+    assert _parse_porcelain_line("A  a.txt") == [
+        {"path": "a.txt", "status": "added", "staged": True}
+    ]
+    assert _parse_porcelain_line("M  a.txt") == [
+        {"path": "a.txt", "status": "modified", "staged": True}
+    ]
+    assert _parse_porcelain_line(" M a.txt") == [
+        {"path": "a.txt", "status": "modified", "staged": False, "untracked": False}
+    ]
+    assert _parse_porcelain_line(" D a.txt") == [
+        {"path": "a.txt", "status": "deleted", "staged": False, "untracked": False}
+    ]
+    # 重命名/复制行：路径取箭头后的新路径，状态单列 renamed
+    assert _parse_porcelain_line("R  a.txt -> b.txt") == [
+        {"path": "b.txt", "status": "renamed", "staged": True}
+    ]
+    assert _parse_porcelain_line("C  a.txt -> b.txt") == [
+        {"path": "b.txt", "status": "renamed", "staged": True}
+    ]
+    # AM：一行 XY 两列拆为同 path 的两条变更项，前端按档位合并
+    am = _parse_porcelain_line("AM f.txt")
+    assert [(c["status"], c["staged"]) for c in am] == [("added", True), ("modified", False)]
+    # 含 U 的冲突码未命中词表，落 unknown
+    uu = _parse_porcelain_line("UU f.txt")
+    assert [c["status"] for c in uu] == ["unknown", "unknown"]
+
+
+def test_parse_porcelain_line_path_with_arrow_text():
+    """非重命名行即使文件名含 ` -> ` 字样或空格也不误分割。"""
+    from server.routers.git.routes import _parse_porcelain_line
+
+    assert _parse_porcelain_line(" M a -> b.txt") == [
+        {"path": "a -> b.txt", "status": "modified", "staged": False, "untracked": False}
+    ]
+    assert _parse_porcelain_line("M  my file.txt") == [
+        {"path": "my file.txt", "status": "modified", "staged": True}
+    ]
+
+
+def test_status_renamed_file(git_env):
+    """端到端：暂存的重命名在 /api/git/status 中输出 renamed 且 path 为新路径。"""
+    _, ws = git_env({"a.txt": "same content long enough for rename detection\n" * 20})
+    (ws / "a.txt").rename(ws / "b.txt")
+    _run_git(ws, ["add", "."])
+
+    from server.routers.git.routes import git_status
+
+    changes = git_status()["changes"]
+    renamed = [c for c in changes if c["status"] == "renamed"]
+    assert renamed, f"未识别出重命名行：{changes}"
+    assert renamed[0]["path"] == "b.txt"
+
+
 def test_branches_recent_checkout_order(git_env):
     """多次 checkout 后：当前分支第一，其后按 reflog 最近使用序，其余字母序。"""
     repo, _ = git_env({"a.txt": "1\n"})
