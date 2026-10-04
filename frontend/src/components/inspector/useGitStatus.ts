@@ -30,7 +30,7 @@ export interface GitStatusData {
 // 轮询拉取 git 状态的 hook：首次加载 + 每 10 秒刷新 + SSE 文件事件即时刷新；
 // 工作区切换（信号路径变化）时清旧数据并立即重取——/api/git/status 按服务端
 // 全局「当前工作区」返回，切换动作本身不产生文件事件，不主动重取会一直
-// 显示上一个工作区的数据。概要卡（产物）与审查卡共用，避免各自维护轮询
+// 显示上一个工作区的数据。审查卡与胶囊卡、文件树共用，避免各自维护轮询
 // 逻辑；refresh 供工具栏手动刷新
 export function useGitStatus(): { data: GitStatusData | null; refresh: () => void } {
   const [data, setData] = useState<GitStatusData | null>(null)

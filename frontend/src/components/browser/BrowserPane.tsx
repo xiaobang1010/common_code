@@ -1,0 +1,354 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useBrowserStore } from '../../stores/useBrowserStore'
+import {
+  reportTabCreated,
+  reportTabState,
+  reportTabActive,
+  reportTabClosed,
+  reportTeardown,
+} from '../../utils/browserBridge'
+import { normalizeAddress } from '../../utils/browserLogic'
+
+// @types/react 内置 webview 标签类型（HTMLWebViewElement 为空壳），
+// 经声明合并补上 Electron guest 元素实际可用的 API 面
+declare global {
+  interface HTMLWebViewElement extends HTMLElement {
+    getURL(): string
+    getTitle(): string
+    canGoBack(): boolean
+    canGoForward(): boolean
+    loadURL(url: string): Promise<void>
+    goBack(): void
+    goForward(): void
+    reload(): void
+    openDevTools(): void
+    closeDevTools(): void
+    getWebContentsId(): number
+  }
+}
+
+type WebviewEl = HTMLWebViewElement
+
+// webview 元素在 dom-ready 之前调用任何方法都会抛异常（Electron 语义），
+// 渲染期与事件回调里一律经安全包装调用，防止击穿 React 树
+function safeCall<T>(el: WebviewEl | null | undefined, fn: (e: WebviewEl) => T, fallback: T): T {
+  if (!el) return fallback
+  try {
+    return fn(el)
+  } catch {
+    return fallback
+  }
+}
+
+// 固定持久化分区：与主进程约定一致，cookie/登录态跨会话保留
+const BROWSER_PARTITION = 'persist:inapp-browser'
+
+// webview 的 allowpopups 必须是 DOM attribute（Electron 建 guest 时读它）；
+// JSX 直接写布尔值 React 会走属性赋值、落不进 attribute，这里用字符串值强制 attribute 形态
+const WEBVIEW_POPUP_ATTRS = { allowpopups: 'true' } as unknown as React.WebViewHTMLAttributes<HTMLWebViewElement>
+
+// 工具栏按钮统一样式
+const toolBtnStyle: React.CSSProperties = {
+  border: 'none',
+  background: 'transparent',
+  color: 'var(--text-secondary)',
+  cursor: 'pointer',
+  fontSize: '14px',
+  padding: '2px 6px',
+  borderRadius: 'var(--radius-sm)',
+  lineHeight: 1,
+  fontFamily: 'var(--font-ui)',
+}
+
+// 单个网页标签的 webview 帧：挂载后回报 guest id，导航/标题变化同步 store 与主进程
+function WebviewFrame({
+  tabId,
+  initialUrl,
+  active,
+}: {
+  tabId: string
+  initialUrl: string
+  active: boolean
+}) {
+  const elRef = useRef<WebviewEl | null>(null)
+  const updateTab = useBrowserStore((s) => s.updateTab)
+  const bump = useBrowserStore((s) => s.bump)
+
+  const syncState = useCallback(() => {
+    const el = elRef.current
+    if (!el) return
+    const url = safeCall(el, (e) => e.getURL(), '')
+    const title = safeCall(el, (e) => e.getTitle(), '')
+    updateTab(tabId, { url, title })
+    reportTabState(tabId, url, title)
+    bump() // 驱动工具栏历史按钮可用性刷新
+  }, [tabId, updateTab, bump])
+
+  useEffect(() => {
+    const el = elRef.current
+    if (!el) return
+    const handlers: Array<[string, () => void]> = [
+      ['dom-ready', () => {
+        // guest 就绪后才有 webContentsId，回报主进程完成注册/握手
+        safeCall(el, (e) => {
+          reportTabCreated(tabId, e.getWebContentsId(), e.getURL(), e.getTitle(), active)
+          return null
+        }, null)
+      }],
+      ['did-navigate', syncState],
+      ['did-navigate-in-page', syncState],
+      ['page-title-updated', syncState],
+      ['did-stop-loading', syncState],
+    ]
+    for (const [ev, fn] of handlers) el.addEventListener(ev, fn)
+    return () => {
+      for (const [ev, fn] of handlers) el.removeEventListener(ev, fn)
+    }
+  }, [tabId, active, syncState])
+
+  return (
+    <webview
+      {...WEBVIEW_POPUP_ATTRS}
+      data-tab-id={tabId}
+      ref={(el) => {
+        elRef.current = el as WebviewEl | null
+      }}
+      partition={BROWSER_PARTITION}
+      src={initialUrl || 'about:blank'}
+      style={{
+        display: active ? 'flex' : 'none',
+        flex: 1,
+        width: '100%',
+        height: '100%',
+        border: 'none',
+        backgroundColor: '#ffffff',
+      }}
+    />
+  )
+}
+
+// 浏览器工具标签内容：网页标签条 + 导航工具栏 + webview 区 / 空态
+export default function BrowserPane() {
+  const tabs = useBrowserStore((s) => s.tabs)
+  const activeTabId = useBrowserStore((s) => s.activeTabId)
+  const historyTick = useBrowserStore((s) => s.historyTick)
+  const ensureTab = useBrowserStore((s) => s.ensureTab)
+  const closeTab = useBrowserStore((s) => s.closeTab)
+  const activateTab = useBrowserStore((s) => s.activateTab)
+
+  const [address, setAddress] = useState('')
+  const [devToolsOpen, setDevToolsOpen] = useState(false)
+  // 地址栏只在切换标签或页面导航时同步，用户输入中途不被覆盖
+  const activeTab = tabs.find((t) => t.tabId === activeTabId) ?? null
+  useEffect(() => {
+    setAddress(activeTab?.url ?? '')
+  }, [activeTabId, activeTab?.url])
+
+  // 卸载即回收（双路之一，与 App 层「状态移出」effect 幂等互补）：
+  // 产物区折叠时本组件随 ArtifactPanel 早退卸载，主进程注册表与 guest 一并清账
+  useEffect(() => () => reportTeardown(), [])
+
+  const activeEl = (): WebviewEl | null =>
+    document.querySelector<WebviewEl>(`webview[data-tab-id="${activeTabId}"]`)
+
+  const canBack = historyTick >= 0 && safeCall(activeEl(), (e) => e.canGoBack(), false)
+  const canFwd = historyTick >= 0 && safeCall(activeEl(), (e) => e.canGoForward(), false)
+
+  const navigate = (url: string) => {
+    const target = normalizeAddress(url)
+    if (!target) return
+    const el = activeEl()
+    if (el) {
+      safeCall(el, (e) => { void e.loadURL(target); return null }, null)
+    } else {
+      // 空态下回车：直接建一个带初始 URL 的标签，webview 挂载即加载
+      ensureTab(undefined, target)
+    }
+  }
+
+  const handleClose = (tabId: string) => {
+    reportTabClosed(tabId)
+    closeTab(tabId)
+  }
+
+  const handleActivate = (tabId: string) => {
+    activateTab(tabId)
+    reportTabActive(tabId)
+  }
+
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+      {/* 网页标签条 */}
+      {tabs.length > 0 && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '4px',
+            padding: '4px 6px 0',
+            borderBottom: '1px solid var(--border-subtle)',
+            flexShrink: 0,
+            overflow: 'hidden',
+          }}
+        >
+          {tabs.map((t) => (
+            <div
+              key={t.tabId}
+              onClick={() => handleActivate(t.tabId)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '4px 8px',
+                borderRadius: 'var(--radius-sm) var(--radius-sm) 0 0',
+                backgroundColor: t.tabId === activeTabId ? 'var(--bg-tertiary)' : 'transparent',
+                color: t.tabId === activeTabId ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                cursor: 'pointer',
+                fontSize: '12px',
+                fontFamily: 'var(--font-ui)',
+                maxWidth: '160px',
+                userSelect: 'none',
+              }}
+            >
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {t.title || t.url || '新标签'}
+              </span>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  handleClose(t.tabId)
+                }}
+                title="关闭标签"
+                style={{ ...toolBtnStyle, fontSize: '12px', padding: '0 2px' }}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          <button
+            onClick={() => ensureTab()}
+            title="新建标签"
+            style={{ ...toolBtnStyle, fontSize: '15px' }}
+          >
+            +
+          </button>
+        </div>
+      )}
+
+      {/* 导航工具栏：常驻——空态下地址栏就是入口（回车即建标签导航），
+          无网页标签时历史/刷新/devtools 按钮禁用 */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '2px',
+          padding: '5px 8px',
+          borderBottom: '1px solid var(--border-subtle)',
+          flexShrink: 0,
+        }}
+      >
+        <button
+          disabled={!canBack}
+          onClick={() => safeCall(activeEl(), (e) => { e.goBack(); return null }, null)}
+          title="后退"
+          style={{ ...toolBtnStyle, opacity: canBack ? 1 : 0.35 }}
+        >
+          ‹
+        </button>
+        <button
+          disabled={!canFwd}
+          onClick={() => safeCall(activeEl(), (e) => { e.goForward(); return null }, null)}
+          title="前进"
+          style={{ ...toolBtnStyle, opacity: canFwd ? 1 : 0.35 }}
+        >
+          ›
+        </button>
+        <button
+          disabled={tabs.length === 0}
+          onClick={() => safeCall(activeEl(), (e) => { e.reload(); return null }, null)}
+          title="刷新"
+          style={{ ...toolBtnStyle, opacity: tabs.length === 0 ? 0.35 : 1 }}
+        >
+          ⟳
+        </button>
+          <input
+            value={address}
+            onChange={(e) => setAddress(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && address.trim()) navigate(address)
+            }}
+            placeholder="输入网址后回车"
+            spellCheck={false}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              margin: '0 6px',
+              padding: '4px 10px',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: '999px',
+              backgroundColor: 'var(--bg-secondary)',
+              color: 'var(--text-primary)',
+              fontSize: '12px',
+              fontFamily: 'var(--font-ui)',
+              outline: 'none',
+            }}
+          />
+          <button
+            disabled={tabs.length === 0}
+            onClick={() => {
+              const el = activeEl()
+              if (!el) return
+              // devtools 无同步状态可读，用本地开关量实现开/关切换
+              setDevToolsOpen((prev) => {
+                safeCall(el, (e) => {
+                  if (prev) e.closeDevTools()
+                  else e.openDevTools()
+                  return null
+                }, null)
+                return !prev
+              })
+            }}
+            title="开发者工具"
+            style={{ ...toolBtnStyle, opacity: tabs.length === 0 ? 0.35 : 1 }}
+          >
+            ⚙
+          </button>
+      </div>
+
+      {/* webview 区 / 空态 */}
+      {tabs.length === 0 ? (
+        <div
+          style={{
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '10px',
+            color: 'var(--text-tertiary)',
+            userSelect: 'none',
+          }}
+        >
+          <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" opacity="0.6">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M3 12h18" />
+            <path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18" />
+          </svg>
+          <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-secondary)', fontFamily: 'var(--font-ui)' }}>浏览器</span>
+          <span style={{ fontSize: '12px', fontFamily: 'var(--font-ui)' }}>粘贴或输入 URL 以打开网页。</span>
+        </div>
+      ) : (
+        <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+          {tabs.map((t) => (
+            <WebviewFrame
+              key={t.tabId}
+              tabId={t.tabId}
+              initialUrl={t.url}
+              active={t.tabId === activeTabId}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}

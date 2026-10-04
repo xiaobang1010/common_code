@@ -13,11 +13,11 @@ interface CapsuleCardProps {
   sessionId: string | null
 }
 
-// ··· 菜单展示的工具标签：概要/审查/智能体。
+// ··· 菜单展示的工具标签：审查/智能体/浏览器。
 // 「文件」入口已迁至侧栏工作区行、「搜索」有侧栏常驻按钮与 Ctrl+K，不再重复列出；
-// 终端已迁至会话区底部独立面板，入口在标题栏终端开关，也不在此列出。
+// 终端已迁至会话区底部独立面板，入口在标题栏终端开关与初始选择页卡片，也不在此列出。
 // 智能体有专属区块，但区块只在有运行中任务时出现——菜单入口保证历史任务也能打开轨迹面板
-const MENU_TOOL_IDS: ToolId[] = ['summary', 'review', 'agent']
+const MENU_TOOL_IDS: ToolId[] = ['review', 'agent', 'browser']
 
 // 折叠焦点窗：>6 条时以第一个未完成项为中心开 3 条（无未完成靠尾），
 // 两端折成「前面/后面 N 项」
@@ -163,7 +163,7 @@ function CapsuleCard({ onOpenTool, onOpenAgent, sessionId }: CapsuleCardProps) {
 
   // ---- 收起态：活动摘要小胶囊，点击展开 ----
   if (!expanded) {
-    // 与概要卡共用 deriveProgress 口径；验收全勾时整体绿色
+    // deriveProgress 统一进展计算口径；验收全勾时整体绿色
     const progressSource = deriveProgress(specData)
     const specxy = progressSource
       ? ` · ${progressSource.done}/${progressSource.total}`
@@ -235,11 +235,13 @@ function CapsuleCard({ onOpenTool, onOpenAgent, sessionId }: CapsuleCardProps) {
       }}
     >
       {/* 卡头：「进展」+ 进度数字（标签+数字形态）
-          有 spec 点卡头展开 spec 清单，无 spec 点卡头跳概要 */}
+          有 spec 点卡头展开 spec 清单；无 spec 时卡头不再跳转（概要标签已下线） */}
       <div
-        style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', padding: '5px 8px', margin: '0 -4px', marginBottom: '2px', cursor: 'pointer' }}
-        onClick={() => (spec ? setSpecOpen((v) => !v) : onOpenTool('summary'))}
-        title={spec ? '查看 spec 进展' : '查看概要'}
+        style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', padding: '5px 8px', margin: '0 -4px', marginBottom: '2px', cursor: spec ? 'pointer' : 'default' }}
+        onClick={() => {
+          if (spec) setSpecOpen((v) => !v)
+        }}
+        title={spec ? '查看 spec 进展' : undefined}
       >
         {spec ? (
           <span style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
@@ -320,8 +322,8 @@ function CapsuleCard({ onOpenTool, onOpenAgent, sessionId }: CapsuleCardProps) {
           </button>
           {menuOpen && (
             <div
-              /* 菜单项点击不能冒泡到卡头：无 spec 时卡头 onClick 会再调一次
-                 onOpenTool('summary')，与菜单项的展开相互抵消（开又立即收） */
+              /* 菜单项点击不能冒泡到卡头：有 spec 时卡头 onClick 会切换 spec 清单，
+                 与菜单项的展开相互抵消（开又立即收） */
               onClick={(e) => e.stopPropagation()}
               style={{
                 position: 'absolute',
