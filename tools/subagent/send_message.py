@@ -53,8 +53,11 @@ SEND_MESSAGE_PROMPT = """\
 - to 是子代理的 agent_id
 - summary 是 3-5 词的简短摘要
 - message 是完整消息内容
-- 如果子代理正在运行，消息会入队并在下个轮次边界注入（返回 delivered/queued）
-- 如果子代理已停止，会在后台从 transcript 恢复上下文继续运行（resumed_background）
+- 消息自动送达，无需查询收件箱：运行中的子代理入队并在其轮次边界注入
+  （返回 delivered/queued）；已停止的子代理带完整历史在后台从 transcript
+  复活续跑（返回 resumed_background），续跑完成经既有通知机制回报
+- 子代理没有横向通道（其工具池不含 SendMessage）：需要兄弟代理间传递
+  信息时，由你分别续聊转达
 """
 
 

@@ -353,7 +353,7 @@ async def spawn_subagent(request: SpawnRequest) -> SpawnResult:
     立即返回 async_launched 形态结果，主轮次不再阻塞。
     """
     from query.services.api.client import get_default_model
-    from tools import get_tools
+    from tools import ToolContextFilter, get_tools
     from tools.subagent.context import build_subagent_system_prompt
     from tools.subagent.session_binding import ensure_child_session
     from tools.subagent.tools import resolve_agent_tools
@@ -385,7 +385,11 @@ async def spawn_subagent(request: SpawnRequest) -> SpawnResult:
 
     # 系统提示词与工具池（model 传参用于 env 块的模型名行）
     system_prompt = build_subagent_system_prompt(agent_def, ctx.model)
-    worker_tools = resolve_agent_tools(agent_def, get_tools())
+    # 调用点显式传子代理过滤器：横向工具在注册层已被排除，通配白名单无从放行；
+    # 外层 resolve_agent_tools 再过滤一次是幂等的双保险
+    worker_tools = resolve_agent_tools(
+        agent_def, get_tools(ToolContextFilter.for_subagent(agent_def.agent_type))
+    )
 
     # 子会话绑定（upsert；失败降级为无子会话模式，不阻断派生）
     try:

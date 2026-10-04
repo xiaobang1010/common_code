@@ -41,6 +41,7 @@ class SubagentContext:
         pending_messages: 待投递的消息队列（SendMessage 续接时入队）
         on_activity: 活动上报回调（活性看门狗用，每条消息调用一次）
         stop_reason: 显式停止原因（看门狗超时/主动停止），空串表示非显式停止
+        parent_session_id: 父会话标识（子代理中途汇报的定位用），空串表示无父上下文
     """
 
     agent_id: str
@@ -57,6 +58,8 @@ class SubagentContext:
     usage: dict[str, int] = field(default_factory=dict)
     # 子会话 id（会话化绑定结果；空串表示无子会话的降级模式）
     child_session_id: str = ""
+    # 父会话 id（子→父中途汇报投递目标；空串表示无父上下文）
+    parent_session_id: str = ""
     on_activity: Any = None
     stop_reason: str = ""
 
@@ -209,6 +212,11 @@ def create_subagent_context(
     else:
         file_state_cache = {}
 
+    # 父会话标识：子代理经 RespondToCoordinator 汇报时据此投递通知（无父上下文为空串）
+    parent_session_id = (
+        parent_context.session_id if parent_context is not None else ""
+    ) or ""
+
     # 创建隔离的 ToolUseContext
     tool_use_context = ToolUseContext(
         permission_decision=None,
@@ -216,6 +224,7 @@ def create_subagent_context(
         file_state_cache=file_state_cache,
         abort_controller=None,  # 全新中断控制
         tool_use_id=resolved_agent_id,
+        parent_session_id=parent_session_id,
     )
 
     # abort 事件：同步共享父的，异步创建独立的
@@ -239,4 +248,5 @@ def create_subagent_context(
         is_async=is_async,
         initial_messages=initial_messages,
         abort_event=abort_event,
+        parent_session_id=parent_session_id,
     )
