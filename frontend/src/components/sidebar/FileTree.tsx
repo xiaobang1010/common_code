@@ -2,7 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as R
 import { filesApi } from '../../api/client'
 import { subscribeFileEventsDebounced } from '../../api/fileEvents'
 import { useWorkspaceSignal } from '../../stores/useWorkspaceSignal'
-import { dedupeChanges, useGitStatus } from '../inspector/useGitStatus'
+import {
+  aggregateDirectoryStatus,
+  buildStatusByPath,
+  descendantStatuses,
+  effectiveStatus,
+  type GitFileStatus,
+  type GitStatusIndex,
+} from '../../utils/gitStatus'
+import { useGitStatus } from '../inspector/useGitStatus'
 import FileTreeContextMenu from './FileTreeContextMenu'
 import { CHAT_INSERT_REF_EVENT } from '../ai/ChatInput'
 
@@ -19,6 +27,32 @@ interface FileItem {
 const IGNORED_COLOR = 'var(--text-tertiary)'
 // 被忽略条目的悬停提示：让灰色的含义可以自查
 const IGNORED_HINT = '已被 .gitignore 忽略'
+
+// git 状态 → 基色/徽标字母/中文名：基色是 index.css 的 token，组件内不写死色值
+const STATUS_COLOR: Record<GitFileStatus, string> = {
+  untracked: 'var(--git-untracked)',
+  added: 'var(--git-added)',
+  modified: 'var(--git-modified)',
+  deleted: 'var(--git-deleted)',
+  renamed: 'var(--git-renamed)',
+}
+const STATUS_BADGE: Record<GitFileStatus, string> = {
+  modified: 'M',
+  added: 'A',
+  deleted: 'D',
+  renamed: 'R',
+  untracked: 'U',
+}
+const STATUS_LABEL: Record<GitFileStatus, string> = {
+  modified: '修改',
+  added: '新增',
+  deleted: '删除',
+  renamed: '重命名',
+  untracked: '未跟踪',
+}
+// 徽标压到 70% 不透明度、目录圆点 60%：从基色 token 派生，避免另建色板
+const badgeColor = (s: GitFileStatus) => `color-mix(in srgb, ${STATUS_COLOR[s]} 70%, transparent)`
+const dotColor = (s: GitFileStatus) => `color-mix(in srgb, ${STATUS_COLOR[s]} 60%, transparent)`
 
 // 工作区相对路径（正斜杠口径）拼成当前平台的绝对路径。
 // 工作区路径本身来自主进程，已是原生分隔符口径；Windows 下统一转反斜杠
@@ -49,18 +83,6 @@ interface FileTreeProps {
   onPinFile?: (path: string) => void
   // 工作区显示名：头部标题行展示（侧栏文件树视图使用，可不传）
   workspaceName?: string
-}
-
-// 根据文件扩展名返回对应颜色 - 精致的语法色
-function getFileColor(name: string): string {
-  if (name.endsWith('.py')) return 'var(--syntax-function)'
-  if (name.endsWith('.js') || name.endsWith('.jsx')) return 'var(--warning)'
-  if (name.endsWith('.ts') || name.endsWith('.tsx')) return 'var(--info)'
-  if (name.endsWith('.json')) return 'var(--syntax-number)'
-  if (name.endsWith('.md')) return 'var(--text-secondary)'
-  if (name.endsWith('.css') || name.endsWith('.scss')) return 'var(--syntax-keyword)'
-  if (name.endsWith('.html')) return 'var(--syntax-number)'
-  return 'var(--text-primary)'
 }
 
 // 文件夹图标 SVG - color 由调用方给：被忽略的目录要跟着变灰，不能写死
@@ -97,14 +119,15 @@ function LoadingIcon() {
 }
 
 // 过滤命中段高亮：名称中包含关键词的部分加深底色。
-// 被忽略的条目整行同为灰色，命中段只用加粗区分，避免灰名称里冒出主色片段
+// 命中段颜色继承行文字色（状态色优先），只用底色与加粗表达命中，
+// 避免灰底里冒出主色片段、或把 git 状态色洗回主文字色
 function HighlightedName({ name, q, ignored }: { name: string; q: string; ignored?: boolean }) {
   const idx = name.toLowerCase().indexOf(q)
   if (idx < 0) return <span>{name}</span>
   return (
     <span>
       {name.slice(0, idx)}
-      <span style={{ backgroundColor: 'var(--selected-bg)', color: ignored ? IGNORED_COLOR : 'var(--text-primary)', fontWeight: 600 }}>{name.slice(idx, idx + q.length)}</span>
+      <span style={{ backgroundColor: 'var(--selected-bg)', color: ignored ? IGNORED_COLOR : 'inherit', fontWeight: 600 }}>{name.slice(idx, idx + q.length)}</span>
       {name.slice(idx + q.length)}
     </span>
   )
@@ -154,6 +177,53 @@ const pruneByChanged = (nodes: FullTreeNode[], changed: ChangedPaths): FullTreeN
           [...changed.dirs].some((d) => n.item.path === d || n.item.path.startsWith(d + '/')),
     )
 
+// 幽灵行注入（过滤树）：deleted 且磁盘快照里没有的文件插进父级文件段，
+// 必须在剪枝之前做，否则仅含被删文件的目录会被整体剪掉；父目录不在树中则跳过
+const injectPhantomNodes = (roots: FullTreeNode[], index: GitStatusIndex): FullTreeNode[] => {
+  const deleted: string[] = []
+  for (const [p, s] of index.statusByPath) {
+    if (s === 'deleted') deleted.push(p)
+  }
+  if (deleted.length === 0) return roots
+  const dirNodes = new Map<string, FullTreeNode>()
+  const collect = (list: FullTreeNode[]) => {
+    for (const n of list) {
+      if (n.item.type === 'dir') {
+        dirNodes.set(n.item.path, n)
+        collect(n.children)
+      }
+    }
+  }
+  collect(roots)
+  const touchedDirs = new Set<FullTreeNode>()
+  let rootTouched = false
+  for (const p of deleted) {
+    const slash = p.lastIndexOf('/')
+    const parentPath = slash < 0 ? '' : p.slice(0, slash)
+    const name = slash < 0 ? p : p.slice(slash + 1)
+    const parent = parentPath ? dirNodes.get(parentPath) : null
+    const siblings = parentPath ? parent?.children : roots
+    // 快照滞留下的同名常规行不重复插行，该行渲染时已按 deleted 着色
+    if (!siblings || siblings.some((c) => c.item.path === p)) continue
+    siblings.push({ item: { name, type: 'file', path: p }, children: [] })
+    if (parent) touchedDirs.add(parent)
+    else rootTouched = true
+  }
+  // 受影响层级重排：目录在前、文件段按名 code-unit 序，与懒树和列目录口径一致
+  const resort = (list: FullTreeNode[]) => {
+    list.sort((a, b) =>
+      a.item.type === b.item.type ? byName(a.item, b.item) : a.item.type === 'dir' ? -1 : 1,
+    )
+    for (const n of list) resort(n.children)
+  }
+  if (rootTouched) resort(roots)
+  for (const d of touchedDirs) resort(d.children)
+  return roots
+}
+
+// 名称 code-unit 字典序比较：与后端列目录的排序口径一致，幽灵行插入文件段用
+const byName = (a: { name: string }, b: { name: string }) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
+
 // 单个树节点
 interface FileTreeNodeProps {
   item: FileItem
@@ -163,9 +233,11 @@ interface FileTreeNodeProps {
   onPinFile?: (path: string) => void
   // 节点右键：弹出操作菜单（文件与目录均响应）
   onNodeContextMenu: (e: ReactMouseEvent, item: FileItem) => void
+  // git 状态索引：随递归透传，着色/徽标/目录聚合/幽灵行共用同一份口径
+  index: GitStatusIndex
 }
 
-function FileTreeNode({ item, depth, onFileOpen, activePath, onPinFile, onNodeContextMenu }: FileTreeNodeProps) {
+function FileTreeNode({ item, depth, onFileOpen, activePath, onPinFile, onNodeContextMenu, index }: FileTreeNodeProps) {
   const [expanded, setExpanded] = useState(false)
   const [children, setChildren] = useState<FileItem[]>([])
   const [loaded, setLoaded] = useState(false)
@@ -175,13 +247,43 @@ function FileTreeNode({ item, depth, onFileOpen, activePath, onPinFile, onNodeCo
   const isDir = item.type === 'dir'
   // 当前打开文件的节点高亮，选中与视线在树内闭环
   const isActive = !isDir && activePath === item.path
-  // 被忽略的条目一律压暗（含选中态，选中靠底色区分）；未忽略的沿用原配色：
-  // 名称保持「激活/目录用主色、其余用扩展名色」，图标按扩展名色，文件夹按开合分档
-  const fileColor = item.ignored ? IGNORED_COLOR : getFileColor(item.name)
-  const nameColor = item.ignored ? IGNORED_COLOR : isDir || isActive ? 'var(--text-primary)' : fileColor
-  const folderColor = item.ignored ? IGNORED_COLOR : expanded ? 'var(--text-primary)' : 'var(--text-secondary)'
+  // 着色三级：忽略灰 > git 状态色 > 主文字色；激活与目录展开/折叠不再覆盖名称色。
+  // 被忽略文件不参与未跟踪目录前缀命中（check-ignore 按索引判，被跟踪文件不会
+  // 标忽略，忽略与状态两个来源互斥），整行淡灰、无徽标无圆点
+  const status = !isDir && !item.ignored ? effectiveStatus(item.path, index) : null
+  const dirAgg = isDir && !item.ignored ? aggregateDirectoryStatus(descendantStatuses(item.path, index)) : null
+  const nameColor = item.ignored
+    ? IGNORED_COLOR
+    : status
+      ? STATUS_COLOR[status]
+      : dirAgg?.primary
+        ? STATUS_COLOR[dirAgg.primary]
+        : 'var(--text-primary)'
+  // 删除态（幽灵行与磁盘快照滞后行同口径）：不可打开/固定、光标默认，右键菜单保留
+  const isDeleted = status === 'deleted'
+
+  // 幽灵行合并：deleted 且磁盘快照里没有的文件插进本目录文件段（目录之后按名排序）；
+  // 渲染期计算不写回 children state，状态刷新后自动出现/消失；快照滞留下的同名
+  // 常规行不重复插行，该行已按 deleted 着色
+  const mergedChildren = useMemo(() => {
+    if (!isDir) return children
+    const prefix = item.path + '/'
+    const existing = new Set(children.map((c) => c.path))
+    const phantoms: FileItem[] = []
+    for (const [p, s] of index.statusByPath) {
+      const rel = p.startsWith(prefix) ? p.slice(prefix.length) : null
+      if (s === 'deleted' && rel && !rel.includes('/') && !existing.has(p)) {
+        phantoms.push({ name: rel, type: 'file', path: p })
+      }
+    }
+    if (phantoms.length === 0) return children
+    const dirs = children.filter((c) => c.type === 'dir')
+    const files = children.filter((c) => c.type !== 'dir')
+    return [...dirs, ...[...files, ...phantoms].sort(byName)]
+  }, [children, index.statusByPath, isDir, item.path])
 
   const handleClick = async () => {
+    if (isDeleted) return
     if (!isDir) {
       onFileOpen(item.path)
       return
@@ -207,7 +309,7 @@ function FileTreeNode({ item, depth, onFileOpen, activePath, onPinFile, onNodeCo
       <div
         onClick={handleClick}
         onDoubleClick={() => {
-          if (!isDir) onPinFile?.(item.path)
+          if (!isDir && !isDeleted) onPinFile?.(item.path)
         }}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
@@ -222,7 +324,7 @@ function FileTreeNode({ item, depth, onFileOpen, activePath, onPinFile, onNodeCo
           paddingLeft: depth * 14 + 8,
           paddingRight: '8px',
           height: '26px',
-          cursor: 'pointer',
+          cursor: isDeleted ? 'default' : 'pointer',
           color: nameColor,
           fontSize: '13px',
           fontFamily: 'var(--font-ui)',
@@ -235,14 +337,28 @@ function FileTreeNode({ item, depth, onFileOpen, activePath, onPinFile, onNodeCo
         }}
       >
         <span style={{ width: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          {loading ? <LoadingIcon /> : isDir ? <FolderIcon open={expanded} color={folderColor} /> : <FileIcon color={fileColor} />}
+          {loading ? <LoadingIcon /> : isDir ? <FolderIcon open={expanded} color={nameColor} /> : <FileIcon color={nameColor} />}
         </span>
-        <span style={{ fontWeight: isDir ? 500 : isActive ? 500 : 400 }}>{item.name}</span>
+        <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', fontWeight: isDir ? 500 : isActive ? 500 : 400 }}>{item.name}</span>
+        {status && (
+          <span
+            title={STATUS_LABEL[status]}
+            style={{ marginLeft: 'auto', flexShrink: 0, fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '12px', lineHeight: 1, color: badgeColor(status) }}
+          >
+            {STATUS_BADGE[status]}
+          </span>
+        )}
+        {dirAgg?.primary && (
+          <span
+            title={dirAgg.ordered.map((s) => STATUS_LABEL[s]).join('、')}
+            style={{ marginLeft: 'auto', flexShrink: 0, width: 6, height: 6, borderRadius: '50%', background: dotColor(dirAgg.primary) }}
+          />
+        )}
       </div>
       {isDir && expanded && loaded && (
         <div>
-          {children.map((child) => (
-            <FileTreeNode key={child.path} item={child} depth={depth + 1} onFileOpen={onFileOpen} activePath={activePath} onPinFile={onPinFile} onNodeContextMenu={onNodeContextMenu} />
+          {mergedChildren.map((child) => (
+            <FileTreeNode key={child.path} item={child} depth={depth + 1} onFileOpen={onFileOpen} activePath={activePath} onPinFile={onPinFile} onNodeContextMenu={onNodeContextMenu} index={index} />
           ))}
         </div>
       )}
@@ -250,8 +366,8 @@ function FileTreeNode({ item, depth, onFileOpen, activePath, onPinFile, onNodeCo
   )
 }
 
-// 过滤结果树节点：全部展开、命中高亮，点击文件打开
-function FilteredTreeNode({ node, depth, q, onFileOpen, activePath, onPinFile, onNodeContextMenu }: {
+// 过滤结果树节点：全部展开、命中高亮，点击文件打开；着色口径与普通树一致
+function FilteredTreeNode({ node, depth, q, onFileOpen, activePath, onPinFile, onNodeContextMenu, index }: {
   node: FullTreeNode
   depth: number
   q: string
@@ -259,23 +375,30 @@ function FilteredTreeNode({ node, depth, q, onFileOpen, activePath, onPinFile, o
   activePath?: string
   onPinFile?: (path: string) => void
   onNodeContextMenu: (e: ReactMouseEvent, item: FileItem) => void
+  index: GitStatusIndex
 }) {
   const [hovered, setHovered] = useState(false)
   const isDir = node.item.type === 'dir'
   const isActive = !isDir && activePath === node.item.path
   const ignored = node.item.ignored
-  // 与普通树同一套配色口径，避免搜索态与常态长得不一样
-  const fileColor = ignored ? IGNORED_COLOR : getFileColor(node.item.name)
-  const nameColor = ignored ? IGNORED_COLOR : isDir || isActive ? 'var(--text-primary)' : fileColor
-  const folderColor = ignored ? IGNORED_COLOR : 'var(--text-primary)'
+  const status = !isDir && !ignored ? effectiveStatus(node.item.path, index) : null
+  const dirAgg = isDir && !ignored ? aggregateDirectoryStatus(descendantStatuses(node.item.path, index)) : null
+  const nameColor = ignored
+    ? IGNORED_COLOR
+    : status
+      ? STATUS_COLOR[status]
+      : dirAgg?.primary
+        ? STATUS_COLOR[dirAgg.primary]
+        : 'var(--text-primary)'
+  const isDeleted = status === 'deleted'
   return (
     <div>
       <div
         onClick={() => {
-          if (!isDir) onFileOpen(node.item.path)
+          if (!isDir && !isDeleted) onFileOpen(node.item.path)
         }}
         onDoubleClick={() => {
-          if (!isDir) onPinFile?.(node.item.path)
+          if (!isDir && !isDeleted) onPinFile?.(node.item.path)
         }}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
@@ -290,7 +413,7 @@ function FilteredTreeNode({ node, depth, q, onFileOpen, activePath, onPinFile, o
           paddingLeft: depth * 14 + 8,
           paddingRight: '8px',
           height: '26px',
-          cursor: isDir ? 'default' : 'pointer',
+          cursor: isDir || isDeleted ? 'default' : 'pointer',
           color: nameColor,
           fontSize: '13px',
           fontFamily: 'var(--font-ui)',
@@ -303,14 +426,28 @@ function FilteredTreeNode({ node, depth, q, onFileOpen, activePath, onPinFile, o
         }}
       >
         <span style={{ width: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          {isDir ? <FolderIcon open={true} color={folderColor} /> : <FileIcon color={ignored ? IGNORED_COLOR : isActive ? 'var(--text-primary)' : fileColor} />}
+          {isDir ? <FolderIcon open={true} color={nameColor} /> : <FileIcon color={nameColor} />}
         </span>
-        <span style={{ fontWeight: isDir ? 500 : isActive ? 500 : 400 }}>
+        <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', fontWeight: isDir ? 500 : isActive ? 500 : 400 }}>
           <HighlightedName name={node.item.name} q={q} ignored={ignored} />
         </span>
+        {status && (
+          <span
+            title={STATUS_LABEL[status]}
+            style={{ marginLeft: 'auto', flexShrink: 0, fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '12px', lineHeight: 1, color: badgeColor(status) }}
+          >
+            {STATUS_BADGE[status]}
+          </span>
+        )}
+        {dirAgg?.primary && (
+          <span
+            title={dirAgg.ordered.map((s) => STATUS_LABEL[s]).join('、')}
+            style={{ marginLeft: 'auto', flexShrink: 0, width: 6, height: 6, borderRadius: '50%', background: dotColor(dirAgg.primary) }}
+          />
+        )}
       </div>
       {node.children.map((c) => (
-        <FilteredTreeNode key={c.item.path} node={c} depth={depth + 1} q={q} onFileOpen={onFileOpen} activePath={activePath} onPinFile={onPinFile} onNodeContextMenu={onNodeContextMenu} />
+        <FilteredTreeNode key={c.item.path} node={c} depth={depth + 1} q={q} onFileOpen={onFileOpen} activePath={activePath} onPinFile={onPinFile} onNodeContextMenu={onNodeContextMenu} index={index} />
       ))}
     </div>
   )
@@ -338,24 +475,32 @@ function FileTree({ onFileOpen, activePath, onPinFile, workspaceName }: FileTree
   const [refreshTick, setRefreshTick] = useState(0)
   const git = useGitStatus()
 
-  // 变更路径归一为工作区相对口径：changes[].path 是仓库根相对口径，按
-  // repo_prefix 剥前缀；未跟踪整目录条目（尾斜杠）单独归入 dirs 集合，
-  // 其内文件按前缀命中。status 响应缺失 repo_prefix 时按无前缀处理
-  const changedPaths = useMemo<ChangedPaths>(() => {
-    const prefix = git.data?.repoPrefix ?? ''
-    const files = new Set<string>()
-    const dirs = new Set<string>()
-    for (const c of dedupeChanges(git.data?.changes ?? [])) {
-      const isDir = c.path.endsWith('/')
-      let out = isDir ? c.path.slice(0, -1) : c.path
-      if (prefix && (out === prefix || out.startsWith(prefix + '/'))) {
-        out = out.slice(prefix.length + 1)
+  // git 状态索引：仓库根口径的 changes 按 repoPrefix 归一为工作区相对口径、
+  // 同路径多状态按档位合并；着色/徽标/聚合/幽灵行/变更过滤共用同一份数据
+  const statusIndex = useMemo(
+    () => buildStatusByPath(git.data?.changes ?? [], git.data?.repoPrefix ?? ''),
+    [git.data],
+  )
+  // 「仅显示变更文件」的命中集合由同一索引派生，不再各自手工归一
+  const changedPaths = useMemo<ChangedPaths>(
+    () => ({ files: new Set(statusIndex.statusByPath.keys()), dirs: statusIndex.untrackedDirs }),
+    [statusIndex],
+  )
+  // 根层幽灵行：路径不含斜杠的 deleted 文件插进根列表文件段（目录之后按名排序），
+  // 与子目录合并同一口径，工作区根层被删文件不会无处出现
+  const rootMerged = useMemo(() => {
+    const existing = new Set(rootItems.map((i) => i.path))
+    const phantoms: FileItem[] = []
+    for (const [p, s] of statusIndex.statusByPath) {
+      if (s === 'deleted' && !p.includes('/') && !existing.has(p)) {
+        phantoms.push({ name: p, type: 'file', path: p })
       }
-      if (!out) continue
-      ;(isDir ? dirs : files).add(out)
     }
-    return { files, dirs }
-  }, [git.data])
+    if (phantoms.length === 0) return rootItems
+    const dirs = rootItems.filter((i) => i.type === 'dir')
+    const files = rootItems.filter((i) => i.type !== 'dir')
+    return [...dirs, ...[...files, ...phantoms].sort(byName)]
+  }, [rootItems, statusIndex])
 
   useEffect(() => {
     const q = filter.trim().toLowerCase()
@@ -370,7 +515,8 @@ function FileTree({ onFileOpen, activePath, onPinFile, workspaceName }: FileTree
     loadFullTree()
       .then((tree) => {
         if (cancelled) return
-        let result = tree
+        // 幽灵行先注入再剪枝，保证仅含被删文件的目录不被剪掉
+        let result = injectPhantomNodes(tree, statusIndex)
         if (showChangedOnly) result = pruneByChanged(result, changedPaths)
         if (q) result = pruneTree(result, q)
         setFilterTree(result)
@@ -382,7 +528,7 @@ function FileTree({ onFileOpen, activePath, onPinFile, workspaceName }: FileTree
     return () => {
       cancelled = true
     }
-  }, [filter, showChangedOnly, changedPaths, refreshTick])
+  }, [filter, showChangedOnly, changedPaths, statusIndex, refreshTick])
 
   // 请求代号：每次发起递增，响应回来对不上号说明已发出更新的请求（如事件风暴
   // 期间叠加工作区快速切换），过期响应直接丢弃，避免旧数据覆盖新数据
@@ -747,8 +893,8 @@ function FileTree({ onFileOpen, activePath, onPinFile, workspaceName }: FileTree
 
       {/* 文件树列表：过滤激活时展示全局过滤结果（懒加载树保持挂载，展开态不丢） */}
       <div key={treeVersion} style={{ flex: 1, overflow: 'auto', padding: '6px 0', display: filterTree !== null ? 'none' : 'block' }}>
-        {rootItems.map((item) => (
-          <FileTreeNode key={item.path} item={item} depth={0} onFileOpen={onFileOpen} activePath={activePath} onPinFile={onPinFile} onNodeContextMenu={handleNodeContextMenu} />
+        {rootMerged.map((item) => (
+          <FileTreeNode key={item.path} item={item} depth={0} onFileOpen={onFileOpen} activePath={activePath} onPinFile={onPinFile} onNodeContextMenu={handleNodeContextMenu} index={statusIndex} />
         ))}
       </div>
       {filterTree !== null && (
@@ -761,7 +907,7 @@ function FileTree({ onFileOpen, activePath, onPinFile, workspaceName }: FileTree
             </div>
           ) : (
             filterTree.map((n) => (
-              <FilteredTreeNode key={n.item.path} node={n} depth={0} q={filter.trim().toLowerCase()} onFileOpen={onFileOpen} activePath={activePath} onPinFile={onPinFile} onNodeContextMenu={handleNodeContextMenu} />
+              <FilteredTreeNode key={n.item.path} node={n} depth={0} q={filter.trim().toLowerCase()} onFileOpen={onFileOpen} activePath={activePath} onPinFile={onPinFile} onNodeContextMenu={handleNodeContextMenu} index={statusIndex} />
             ))
           )}
         </div>

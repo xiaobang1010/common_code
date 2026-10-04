@@ -21,6 +21,9 @@ def _parse_porcelain_line(line: str) -> list[dict]:
 
     --porcelain 输出格式：XY path，X 是暂存区状态，Y 是工作区状态。
     一个文件可能同时有暂存和未暂存的改动，此时返回两项。
+    重命名/复制行形如 `R  旧 -> 新`，展示路径取箭头后的新路径。
+    未跟踪（?）与重命名（R/C）单独成档，不再并入 added/modified，
+    供前端文件树按编辑器惯例着色标识。
     返回 [{"path": "...", "status": "...", "staged": True/False}, ...]，无法解析时返回空列表。
     """
     if len(line) < 4:
@@ -29,14 +32,19 @@ def _parse_porcelain_line(line: str) -> list[dict]:
     y = line[1]
     # 路径从第 4 个字符开始（XY + 空格）
     file_path = line[3:]
+    # 仅重命名/复制行带箭头；其余行原样，避免误伤含 ` -> ` 字样的普通文件名
+    if x in ("R", "C") or y in ("R", "C"):
+        _, sep, new_path = file_path.rpartition(" -> ")
+        if sep:
+            file_path = new_path
 
     status_map = {
         "M": "modified",
         "A": "added",
         "D": "deleted",
-        "R": "modified",  # 重命名按 modified 处理
-        "C": "modified",  # 复制按 modified 处理
-        "?": "added",  # 未跟踪文件按 added 处理
+        "R": "renamed",
+        "C": "renamed",
+        "?": "untracked",
     }
 
     changes: list[dict] = []
