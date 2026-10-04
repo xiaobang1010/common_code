@@ -43,6 +43,10 @@ function safeCall<T>(el: WebviewEl | null | undefined, fn: (e: WebviewEl) => T, 
 // 固定持久化分区：与主进程约定一致，cookie/登录态跨会话保留
 const BROWSER_PARTITION = 'persist:inapp-browser'
 
+// webview 的 allowpopups 必须是 DOM attribute（Electron 建 guest 时读它）；
+// JSX 直接写布尔值 React 会走属性赋值、落不进 attribute，这里用字符串值强制 attribute 形态
+const WEBVIEW_POPUP_ATTRS = { allowpopups: 'true' } as unknown as React.WebViewHTMLAttributes<HTMLWebViewElement>
+
 // 工具栏按钮统一样式
 const toolBtnStyle: React.CSSProperties = {
   border: 'none',
@@ -104,6 +108,7 @@ function WebviewFrame({
 
   return (
     <webview
+      {...WEBVIEW_POPUP_ATTRS}
       data-tab-id={tabId}
       ref={(el) => {
         elRef.current = el as WebviewEl | null

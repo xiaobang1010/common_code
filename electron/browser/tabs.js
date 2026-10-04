@@ -1,7 +1,7 @@
 // 内置浏览器标签注册表：tabId ↔ guest webContentsId 的映射与生命周期管理。
 // 渲染侧（BrowserPane）负责挂载 <webview> 并把 guest 的 webContentsId 与状态回报过来；
 // 智能体经控制服务发起的建标签动作由主进程生成 tabId 转发渲染侧执行，等待回报完成。
-const { app, ipcMain, shell, webContents } = require('electron')
+const { app, ipcMain, webContents } = require('electron')
 
 // 固定持久化分区：cookie/登录态跨会话保留，与用户手动浏览和智能体操作共享同一会话
 const BROWSER_PARTITION = 'persist:inapp-browser'
@@ -27,18 +27,28 @@ class BrowserTabManager {
     this.registerGuestGuards()
   }
 
-  // guest webContents 的弹窗/外链策略与主窗口现行白名单一致：
-  // 仅 webview 类型挂载（该事件对主窗口/devtools 等所有 webContents 触发，不得覆盖主窗口 handler）
+  // guest webContents 的弹窗策略：应用内浏览器语义——页面里的 target=_blank /
+  // window.open 一律改在应用内新建网页标签加载（像浏览器开新标签），不落到系统浏览器、
+  // 也不开新的 Electron 窗口。仅 webview 类型挂载（该事件对所有 webContents 触发，
+  // 不得覆盖主窗口现行 handler——主窗口的外链策略仍是交系统浏览器）
   registerGuestGuards() {
     app.on('web-contents-created', (_event, contents) => {
       if (contents.getType() !== 'webview') return
       contents.setWindowOpenHandler(({ url }) => {
         if (/^https?:\/\//i.test(url)) {
-          shell.openExternal(url)
+          this.openInNewTab(url)
         }
         return { action: 'deny' }
       })
     })
+  }
+
+  // 页面内弹窗链接 → 应用内新标签（不等待渲染侧回报，注册表由回报路径正常登记）
+  openInNewTab(url) {
+    const win = this.getWindow && this.getWindow()
+    if (!win || win.isDestroyed()) return
+    const tabId = `p-${++this.agentCounter}`
+    win.webContents.send('browser:tab-add', { tabId, url: url || '' })
   }
 
   registerIpc() {
