@@ -1,7 +1,7 @@
 // 内置浏览器 JS 片段执行器：技能侧经 Bash 以一次性 node 进程驱动浏览器控制服务。
 // 用法：node browser-runner.mjs <js文件路径>
-// 与参考实现的通道差异：JS 内核工具每调用新建内核、末表达式即结果；
-// 本执行器同样每调用全新进程，观察输出统一走 nodeRepl.write(...)，
+// 每次调用都是全新进程：变量、import、模块缓存不跨调用保留；
+// 观察输出统一走 nodeRepl.write(...)，代码末尾显式 return 的值也会被打印；
 // 图片输出经 nodeRepl.emitImage(...) 落盘为临时 PNG 并打印路径。
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";

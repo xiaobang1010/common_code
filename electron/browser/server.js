@@ -1,8 +1,8 @@
 // 内置浏览器 HTTP 控制服务：仅监听 127.0.0.1，随机端口 + Bearer 令牌鉴权。
 // 技能侧的 runner 经桥接文件发现端口与令牌，把控制命令 POST 进来，由主进程转译执行。
-// 响应包裹与参考实现 SDK 的解包逻辑逐字对齐：{ok:true, <命令对应顶层字段>} /
-// {ok:false, error:{code,message}}，负载键随命令而定（tabs/tab/state/image/value/element），
-// 绝不统一包成 {ok,value}——否则原样移植的 SDK 每个命令都会解包失败。
+// 响应包裹：{ok:true, <命令对应顶层字段>} / {ok:false, error:{code,message}}，
+// 负载键随命令而定（tabs/tab/state/image/value/element）；绝不统一包成 {ok,value}，
+// 否则每个命令都会解包失败。
 const http = require('http')
 const crypto = require('crypto')
 const fs = require('fs')
@@ -14,7 +14,7 @@ const { PAGE_RUNTIME_SOURCE } = require('./page-runtime')
 const REQUEST_TIMEOUT_MS = 5000
 const MAX_BODY_BYTES = 2 * 1024 * 1024
 
-// 描述符：type 固定 iab 是参考实现隐藏门控（unsupportedByDefaultIn）生效的前提，
+// 描述符：type 固定 iab 是能力门控（按 unsupportedByDefaultIn 隐藏成员与文档）生效的前提，
 // 不得改成中性命名；录制类 API 不在 iab 隐藏列表内，靠文档资产裁剪不外泄。
 const BROWSER_DESCRIPTOR = {
   id: 'inapp',
@@ -288,7 +288,7 @@ class BrowserControlServer {
 
       case 'check':
       case 'select':
-        // 参考实现中这两个 tab 级命令仅 dom_cua 面使用（ref 寻址），本项目未实现该面
+        // 这两个 tab 级命令仅 dom_cua 面（ref 寻址）使用，本项目未实现该面
         throw new BrowserError('unsupported', 'dom 节点引用操作不受支持，请经 playwright 定位器完成')
 
       // ---- 结构化不支持（SKILL.md 已删除对应分支，正常流程不会触达）----
