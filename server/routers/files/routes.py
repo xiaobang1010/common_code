@@ -9,7 +9,7 @@ import tempfile
 from typing import Any
 
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from server.file_events import file_event_broker
@@ -176,6 +176,53 @@ def read_file(path: str) -> Any:
         "size": size,
         "editable": size <= MAX_EDITABLE_BYTES,
     }
+
+
+# 原始图片接口的扩展名白名单与媒体类型：只放行图片类，避免该接口变成任意文件的读取入口；
+# svg 经 <img> 加载，浏览器按图片模式解析，内部脚本不会执行
+RAW_IMAGE_MEDIA_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".ico": "image/x-icon",
+    ".svg": "image/svg+xml",
+}
+
+# 单张图片体积上限：预览场景的图片远小于此，超限多半是误引用
+MAX_RAW_IMAGE_BYTES = 20 * 1024 * 1024
+
+
+@router.get("/api/files/raw")
+def read_file_raw(path: str) -> Any:
+    """图片原始字节接口：供 markdown 预览按相对路径加载本地图片。
+
+    校验顺序先安全后存在性（白名单在探文件是否存在之前拦截，
+    避免借错误码差异探测工作区内任意路径的存在性）。
+    """
+    root = project_root()
+    target = os.path.normpath(os.path.join(root, path))
+
+    # 路径安全检查与 read 接口同口径：不允许 .. 路径穿越
+    if not is_within_root(target, root):
+        return JSONResponse(status_code=403, content={"error": "path traversal denied"})
+
+    media_type = RAW_IMAGE_MEDIA_TYPES.get(os.path.splitext(target)[1].lower())
+    if media_type is None:
+        return JSONResponse(status_code=415, content={"error": "unsupported image type"})
+
+    if not os.path.isfile(target):
+        return JSONResponse(status_code=404, content={"error": "file not found"})
+
+    try:
+        if os.path.getsize(target) > MAX_RAW_IMAGE_BYTES:
+            return JSONResponse(status_code=413, content={"error": "image too large"})
+    except OSError:
+        return JSONResponse(status_code=404, content={"error": "file not found"})
+
+    return FileResponse(target, media_type=media_type)
 
 
 @router.post("/api/files/write")

@@ -33,6 +33,23 @@ const bannerActionStyle: React.CSSProperties = {
   textDecoration: 'underline',
 }
 
+// 全屏顶栏压在窗口标题栏的拖拽区上：不显式声明脱离拖拽，原生命中会把
+// 这带的鼠标按下当窗口拖拽，按钮收不到 click（拖拽区口径与标题栏组件一致）
+const noDragRegion = { WebkitAppRegion: 'no-drag' } as React.CSSProperties
+
+// 全屏预览顶栏的小按钮（缩放 −/+ 与退出共用）
+const fsBtnStyle: React.CSSProperties = {
+  border: '1px solid var(--border)',
+  background: 'transparent',
+  color: 'var(--text-primary)',
+  cursor: 'pointer',
+  padding: '2px 10px',
+  borderRadius: 'var(--radius-sm)',
+  fontSize: '12px',
+  fontFamily: 'var(--font-ui)',
+  lineHeight: '18px',
+}
+
 // 自动保存是否需要起手：有未落盘改动、可写、不在途、不处于外部改动或冲突，
 // 且这次编辑还没失败过——失败后不再自动重试，等新的编辑推进序号再放行。
 // 抽成纯函数便于阅读与手测复现（前端无测试基建）
@@ -106,8 +123,14 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
     const [conflict, setConflict] = useState<ConflictInfo | null>(null)
     // 标签右键菜单：屏幕坐标 + 锚点（kind=file 为文件路径，kind=tool 为工具标签 id）
     const [tabMenu, setTabMenu] = useState<{ x: number; y: number; path: string; kind: 'file' | 'tool' } | null>(null)
-    // .md 预览模式：切文件时回到源码态
+    // .md 预览模式：打开/切换到 md 文件默认进预览
     const [previewMode, setPreviewMode] = useState(false)
+    // 预览缩放档位（50%–300%），分屏与全屏共享同一状态
+    const [previewZoom, setPreviewZoom] = useState(1)
+    // 全屏预览：预览容器原地切为 fixed 整窗覆盖层（单点挂载，内容不重挂载）
+    const [previewFullscreen, setPreviewFullscreen] = useState(false)
+    // 预览容器节点：Ctrl+滚轮缩放的原生监听挂在这里
+    const previewRef = useRef<HTMLDivElement>(null)
     // 快速打开（Ctrl+P）
     const [quickOpen, setQuickOpen] = useState(false)
     // 最近打开的文件（会话内前端内存记录，重启不持久化）
@@ -609,10 +632,46 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
     // .md 文件支持「代码 / 预览」切换（预览复用对话区的 markdown 渲染）
     const isMarkdown = !!activeTab && (activeTab.language === 'markdown' || activeTab.name.toLowerCase().endsWith('.md'))
 
-    // 切换激活文件时回到源码态
+    // 切换激活文件时：md 默认进预览（阅读场景开箱即用），非 md 回源码态；退出全屏
     useEffect(() => {
-      setPreviewMode(false)
+      const tab = openTabsRef.current.find((t) => t.path === activePath)
+      const md = !!tab && (tab.language === 'markdown' || tab.name.toLowerCase().endsWith('.md'))
+      setPreviewMode(md)
+      setPreviewFullscreen(false)
     }, [activePath])
+
+    // 预览缩放档位钳制：50%–300%，一档 25%（先乘后 round 消除浮点尾数）
+    const clampZoom = (z: number) => Math.min(3, Math.max(0.5, Math.round(z * 4) / 4))
+
+    // Ctrl+滚轮缩放：React 合成 wheel 监听是 passive 的、拦不住浏览器默认缩放，
+    // 必须用原生监听显式 passive:false；只挂在预览容器上，不劫持其它区域的滚轮
+    const previewActive = isMarkdown && previewMode
+    useEffect(() => {
+      const el = previewRef.current
+      if (!previewActive || !el) return
+      const onWheel = (e: WheelEvent) => {
+        if (!e.ctrlKey) return
+        e.preventDefault()
+        setPreviewZoom((z) => clampZoom(z + (e.deltaY < 0 ? 0.25 : -0.25)))
+      }
+      el.addEventListener('wheel', onWheel, { passive: false })
+      return () => el.removeEventListener('wheel', onWheel)
+    }, [previewActive])
+
+    // 预览激活期间的键盘快捷键：Ctrl+0 缩放复位，ESC 退出全屏
+    useEffect(() => {
+      if (!previewActive) return
+      const onKey = (e: KeyboardEvent) => {
+        if (e.ctrlKey && e.key === '0') {
+          e.preventDefault()
+          setPreviewZoom(1)
+        } else if (e.key === 'Escape') {
+          setPreviewFullscreen(false)
+        }
+      }
+      window.addEventListener('keydown', onKey)
+      return () => window.removeEventListener('keydown', onKey)
+    }, [previewActive])
 
     // 一次性提示（「已保存」「文件已更新」）短暂展示后自动隐去
     useEffect(() => {
@@ -759,9 +818,28 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
             )}
           </div>
         )}
-        {/* .md 预览切换按钮：查看增强，默认源码编辑 */}
+        {/* .md 工具栏：全屏入口 + 代码/预览切换 */}
         {isMarkdown && (
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '6px', padding: '6px 10px 0', flexShrink: 0 }}>
+            <button
+              onClick={() => {
+                setPreviewMode(true)
+                setPreviewFullscreen(true)
+              }}
+              title="全屏预览"
+              style={{
+                border: '1px solid var(--border)',
+                background: 'transparent',
+                color: 'var(--text-secondary)',
+                cursor: 'pointer',
+                padding: '3px 12px',
+                borderRadius: 'var(--radius-sm)',
+                fontSize: '11px',
+                fontFamily: 'var(--font-ui)',
+              }}
+            >
+              全屏
+            </button>
             <button
               onClick={() => setPreviewMode(false)}
               disabled={!previewMode}
@@ -800,8 +878,91 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
         )}
         <div style={{ flex: 1, overflow: 'hidden' }}>
           {isMarkdown && previewMode ? (
-            <div style={{ height: '100%', overflow: 'auto', padding: '4px 16px 16px', fontSize: '13px', color: 'var(--text-primary)' }}>
-              <Markdown content={activeTab.bufferContent} />
+            // 预览子树单点挂载：分屏与全屏的 DOM 结构完全一致，仅切换容器样式
+            // （fixed 覆盖 vs 普通占位、顶栏 display 显隐），切换时内容节点不重挂载，
+            // 滚动位置与缩放状态天然保持
+            <div
+              ref={previewRef}
+              style={{
+                fontSize: '13px',
+                color: 'var(--text-primary)',
+                ...(previewFullscreen
+                  ? {
+                      position: 'fixed',
+                      inset: 0,
+                      zIndex: 1000,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      backgroundColor: 'var(--bg-primary)',
+                    }
+                  : { height: '100%', overflow: 'hidden' }),
+              }}
+            >
+              {/* 全屏顶栏：文件名 + 缩放按钮组 + 退出；分屏下仅隐藏，保持结构一致 */}
+              <div
+                style={
+                  previewFullscreen
+                    ? {
+                        ...noDragRegion,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '12px',
+                        padding: '8px 16px',
+                        borderBottom: '1px solid var(--border)',
+                        flexShrink: 0,
+                      }
+                    : { display: 'none' }
+                }
+              >
+                <span style={{ flex: 1, fontSize: '12px', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {activeTab.name}
+                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <button
+                    disabled={previewZoom <= 0.5}
+                    onClick={() => setPreviewZoom((z) => clampZoom(z - 0.25))}
+                    title="缩小"
+                    style={{ ...fsBtnStyle, cursor: previewZoom <= 0.5 ? 'default' : 'pointer', opacity: previewZoom <= 0.5 ? 0.4 : 1 }}
+                  >
+                    −
+                  </button>
+                  <span style={{ minWidth: '44px', textAlign: 'center', fontSize: '12px', color: 'var(--text-primary)' }}>
+                    {Math.round(previewZoom * 100)}%
+                  </span>
+                  <button
+                    disabled={previewZoom >= 3}
+                    onClick={() => setPreviewZoom((z) => clampZoom(z + 0.25))}
+                    title="放大"
+                    style={{ ...fsBtnStyle, cursor: previewZoom >= 3 ? 'default' : 'pointer', opacity: previewZoom >= 3 ? 0.4 : 1 }}
+                  >
+                    +
+                  </button>
+                </div>
+                <span style={{ flex: 1, textAlign: 'right' }}>
+                  <button onClick={() => setPreviewFullscreen(false)} title="退出全屏（ESC）" style={fsBtnStyle}>
+                    退出
+                  </button>
+                </span>
+              </div>
+              {/* 滚动层：分屏与全屏都是同一个节点承载滚动，切换不清零 scrollTop */}
+              <div
+                style={
+                  previewFullscreen
+                    ? { flex: 1, overflow: 'auto', padding: '24px 16px' }
+                    : { height: '100%', overflow: 'auto', padding: '4px 16px 16px' }
+                }
+              >
+                {/* 居中列在外、缩放层在内：列宽按屏幕像素固定 860 并水平居中，
+                    缩放只作用于列内排版。若反过来（zoom 包 max-width），
+                    放大时列宽随缩放膨胀，文本挤在左半侧，视觉上不再居中 */}
+                {/* 全屏挂 md-doc：整篇阅读恢复常规文档排印（对话压缩尺度只留给对话区与分屏） */}
+                <div className={previewFullscreen ? 'md-doc' : undefined} style={{ maxWidth: previewFullscreen ? '960px' : 'none', margin: '0 auto' }}>
+                  <div style={{ zoom: previewZoom }}>
+                    {/* basePath = md 所在目录（工作区相对，根目录为空串），相对图片路径据此解析 */}
+                    <Markdown content={activeTab.bufferContent} basePath={activeTab.path.slice(0, activeTab.path.lastIndexOf('/') + 1)} />
+                  </div>
+                </div>
+              </div>
             </div>
           ) : (
             <CodeEditor
