@@ -138,10 +138,15 @@ export default function BrowserPane() {
   const canFwd = historyTick >= 0 && !!activeEl()?.canGoForward?.()
 
   const navigate = (url: string) => {
-    const el = activeEl()
-    if (!el) return
     const target = normalizeAddress(url)
-    if (target) void el.loadURL(target)
+    if (!target) return
+    const el = activeEl()
+    if (el) {
+      void el.loadURL(target)
+    } else {
+      // 空态下回车：直接建一个带初始 URL 的标签，webview 挂载即加载
+      ensureTab(undefined, target)
+    }
   }
 
   const handleClose = (tabId: string) => {
@@ -213,41 +218,42 @@ export default function BrowserPane() {
         </div>
       )}
 
-      {/* 导航工具栏 */}
-      {tabs.length > 0 && (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '2px',
-            padding: '5px 8px',
-            borderBottom: '1px solid var(--border-subtle)',
-            flexShrink: 0,
-          }}
+      {/* 导航工具栏：常驻——空态下地址栏就是入口（回车即建标签导航），
+          无网页标签时历史/刷新/devtools 按钮禁用 */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '2px',
+          padding: '5px 8px',
+          borderBottom: '1px solid var(--border-subtle)',
+          flexShrink: 0,
+        }}
+      >
+        <button
+          disabled={!canBack}
+          onClick={() => activeEl()?.goBack()}
+          title="后退"
+          style={{ ...toolBtnStyle, opacity: canBack ? 1 : 0.35 }}
         >
-          <button
-            disabled={!canBack}
-            onClick={() => activeEl()?.goBack()}
-            title="后退"
-            style={{ ...toolBtnStyle, opacity: canBack ? 1 : 0.35 }}
-          >
-            ‹
-          </button>
-          <button
-            disabled={!canFwd}
-            onClick={() => activeEl()?.goForward()}
-            title="前进"
-            style={{ ...toolBtnStyle, opacity: canFwd ? 1 : 0.35 }}
-          >
-            ›
-          </button>
-          <button
-            onClick={() => activeEl()?.reload()}
-            title="刷新"
-            style={toolBtnStyle}
-          >
-            ⟳
-          </button>
+          ‹
+        </button>
+        <button
+          disabled={!canFwd}
+          onClick={() => activeEl()?.goForward()}
+          title="前进"
+          style={{ ...toolBtnStyle, opacity: canFwd ? 1 : 0.35 }}
+        >
+          ›
+        </button>
+        <button
+          disabled={tabs.length === 0}
+          onClick={() => activeEl()?.reload()}
+          title="刷新"
+          style={{ ...toolBtnStyle, opacity: tabs.length === 0 ? 0.35 : 1 }}
+        >
+          ⟳
+        </button>
           <input
             value={address}
             onChange={(e) => setAddress(e.target.value)}
@@ -271,6 +277,7 @@ export default function BrowserPane() {
             }}
           />
           <button
+            disabled={tabs.length === 0}
             onClick={() => {
               const el = activeEl()
               if (!el) return
@@ -284,12 +291,11 @@ export default function BrowserPane() {
               })
             }}
             title="开发者工具"
-            style={toolBtnStyle}
+            style={{ ...toolBtnStyle, opacity: tabs.length === 0 ? 0.35 : 1 }}
           >
             ⚙
           </button>
-        </div>
-      )}
+      </div>
 
       {/* webview 区 / 空态 */}
       {tabs.length === 0 ? (
