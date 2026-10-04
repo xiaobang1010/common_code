@@ -35,6 +35,7 @@ from tools.executor import (
     tool_result_to_openai_message,
 )
 from tools import get_tools
+from tools.subagent.tools import is_subagent_context
 from query.utils.api import (
     build_api_request,
     inject_context_before_last_user,
@@ -731,6 +732,14 @@ async def query_loop(
                 abort_controller=engine_config.abort_event,
                 # 引擎会话标识：子代理注册表按父会话关联与通知投递
                 session_id=getattr(engine, "session_id", ""),
+                # 父会话标识必须同样穿过每轮的执行器上下文重建：
+                # RespondToCoordinator 靠它定位投递目标（runner 挂在子代理上下文上，
+                # 工具实际消费的是这里重建出的执行上下文）
+                parent_session_id=(
+                    tool_use_context.parent_session_id
+                    if tool_use_context is not None
+                    else ""
+                ),
             ),
             permission_check=engine_config.permission_check,
             permission_prompt=engine_config.permission_prompt,
@@ -1036,8 +1045,11 @@ async def query_loop(
 
         engine.mutable_messages = next_messages
 
-        # 刷新工具列表（为未来 MCP 接入预留，当前刷新结果和初始一样）
-        engine_config = replace(engine_config, tools=get_tools())
+        # 刷新工具列表（为未来 MCP 接入预留，当前刷新结果和初始一样）。
+        # 子代理全程锁定派生时解析的工具池：跳过整体重置，
+        # 否则被星形拓扑排除的横向工具会经每轮刷新重新回到子代理池
+        if not is_subagent_context(tool_use_context):
+            engine_config = replace(engine_config, tools=get_tools())
 
         updates = {
             "max_output_tokens_recovery_count": 0,
