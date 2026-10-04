@@ -29,6 +29,17 @@ declare global {
 
 type WebviewEl = HTMLWebViewElement
 
+// webview 元素在 dom-ready 之前调用任何方法都会抛异常（Electron 语义），
+// 渲染期与事件回调里一律经安全包装调用，防止击穿 React 树
+function safeCall<T>(el: WebviewEl | null | undefined, fn: (e: WebviewEl) => T, fallback: T): T {
+  if (!el) return fallback
+  try {
+    return fn(el)
+  } catch {
+    return fallback
+  }
+}
+
 // 固定持久化分区：与主进程约定一致，cookie/登录态跨会话保留
 const BROWSER_PARTITION = 'persist:inapp-browser'
 
@@ -62,8 +73,8 @@ function WebviewFrame({
   const syncState = useCallback(() => {
     const el = elRef.current
     if (!el) return
-    const url = el.getURL?.() ?? ''
-    const title = el.getTitle?.() ?? ''
+    const url = safeCall(el, (e) => e.getURL(), '')
+    const title = safeCall(el, (e) => e.getTitle(), '')
     updateTab(tabId, { url, title })
     reportTabState(tabId, url, title)
     bump() // 驱动工具栏历史按钮可用性刷新
@@ -75,9 +86,10 @@ function WebviewFrame({
     const handlers: Array<[string, () => void]> = [
       ['dom-ready', () => {
         // guest 就绪后才有 webContentsId，回报主进程完成注册/握手
-        try {
-          reportTabCreated(tabId, el.getWebContentsId(), el.getURL?.() ?? '', el.getTitle?.() ?? '', active)
-        } catch { /* 元素已销毁 */ }
+        safeCall(el, (e) => {
+          reportTabCreated(tabId, e.getWebContentsId(), e.getURL(), e.getTitle(), active)
+          return null
+        }, null)
       }],
       ['did-navigate', syncState],
       ['did-navigate-in-page', syncState],
@@ -134,15 +146,15 @@ export default function BrowserPane() {
   const activeEl = (): WebviewEl | null =>
     document.querySelector<WebviewEl>(`webview[data-tab-id="${activeTabId}"]`)
 
-  const canBack = historyTick >= 0 && !!activeEl()?.canGoBack?.()
-  const canFwd = historyTick >= 0 && !!activeEl()?.canGoForward?.()
+  const canBack = historyTick >= 0 && safeCall(activeEl(), (e) => e.canGoBack(), false)
+  const canFwd = historyTick >= 0 && safeCall(activeEl(), (e) => e.canGoForward(), false)
 
   const navigate = (url: string) => {
     const target = normalizeAddress(url)
     if (!target) return
     const el = activeEl()
     if (el) {
-      void el.loadURL(target)
+      safeCall(el, (e) => { void e.loadURL(target); return null }, null)
     } else {
       // 空态下回车：直接建一个带初始 URL 的标签，webview 挂载即加载
       ensureTab(undefined, target)
@@ -232,7 +244,7 @@ export default function BrowserPane() {
       >
         <button
           disabled={!canBack}
-          onClick={() => activeEl()?.goBack()}
+          onClick={() => safeCall(activeEl(), (e) => { e.goBack(); return null }, null)}
           title="后退"
           style={{ ...toolBtnStyle, opacity: canBack ? 1 : 0.35 }}
         >
@@ -240,7 +252,7 @@ export default function BrowserPane() {
         </button>
         <button
           disabled={!canFwd}
-          onClick={() => activeEl()?.goForward()}
+          onClick={() => safeCall(activeEl(), (e) => { e.goForward(); return null }, null)}
           title="前进"
           style={{ ...toolBtnStyle, opacity: canFwd ? 1 : 0.35 }}
         >
@@ -248,7 +260,7 @@ export default function BrowserPane() {
         </button>
         <button
           disabled={tabs.length === 0}
-          onClick={() => activeEl()?.reload()}
+          onClick={() => safeCall(activeEl(), (e) => { e.reload(); return null }, null)}
           title="刷新"
           style={{ ...toolBtnStyle, opacity: tabs.length === 0 ? 0.35 : 1 }}
         >
@@ -283,10 +295,11 @@ export default function BrowserPane() {
               if (!el) return
               // devtools 无同步状态可读，用本地开关量实现开/关切换
               setDevToolsOpen((prev) => {
-                try {
-                  if (prev) el.closeDevTools()
-                  else el.openDevTools()
-                } catch { /* guest 已销毁等场景忽略 */ }
+                safeCall(el, (e) => {
+                  if (prev) e.closeDevTools()
+                  else e.openDevTools()
+                  return null
+                }, null)
                 return !prev
               })
             }}
