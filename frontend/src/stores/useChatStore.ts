@@ -184,6 +184,13 @@ export const lastActivityAtRef = { current: Date.now() }
 // （base64 已剥离），按序用这里的缓存补回 data URL 渲染；任务结束走全量历史接口
 const lastSentImagesRef = { current: [] as UserImage[] }
 
+// 输入队列项：运行中发送的消息在后端 session_input 排队，队列条展示用
+export interface QueueItem {
+  id: string
+  content: string
+  hasImage: boolean
+}
+
 interface ChatState {
   // 规范化工作块：id 列表 + id 索引（未变 block 对象引用稳定，局部订阅才能生效）
   blockIds: string[]
@@ -205,6 +212,10 @@ interface ChatState {
   // 流前被服务端拒绝时的可读文案（sendMessage 返回 false 时由输入区消费并清除）
   lastSendError: string | null
   clearSendError: () => void
+  // 运行中发送的输入队列项（后端 session_input queued 行，轮次边界转正）
+  queueItems: QueueItem[]
+  refreshQueue: () => Promise<void>
+  cancelQueueItem: (id: string) => Promise<void>
   sendMessage: (prompt: string, images?: UserImage[]) => Promise<boolean>
   // 编辑历史用户消息并从该处重发：截断后续块与 DB 历史，用新文本重建该轮
   editAndResend: (blockId: string, newText: string) => Promise<boolean>
@@ -510,6 +521,12 @@ export const useChatStore = create<ChatState>((set, get) => {
           }
           return { ...b, timeline: items }
         })
+      } else if (msg.role === 'user') {
+        // 转正的队列项：直播不重复渲染气泡（历史重建负责呈现），仅从队列条移除
+        const inputId = (msg as Record<string, unknown>)._input_id
+        if (typeof inputId === 'string' && inputId) {
+          set(state => ({ queueItems: state.queueItems.filter(q => q.id !== inputId) }))
+        }
       }
     } else if (evt.type === 'heartbeat') {
       // 心跳，忽略
@@ -648,7 +665,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     prompt: string,
     editUserIndex: number | null = null,
     images: UserImage[] = [],
-  ): Promise<{ ok: boolean; error?: string }> => {
+  ): Promise<{ ok: boolean; error?: string; queued?: boolean }> => {
     try {
       sseAbortRef.current = new AbortController()
       const body: Record<string, unknown> = { prompt, session_id: sessionIdRef.current }
@@ -672,6 +689,16 @@ export const useChatStore = create<ChatState>((set, get) => {
           if (j && typeof j.error === 'string') msg = j.error
         } catch { /* 非 JSON 响应保留状态码文案 */ }
         return { ok: false, error: msg }
+      }
+      // 运行中被后端转入队列：返回 JSON 而非 SSE 流，按入队成功处理
+      const ct = resp.headers.get('content-type') || ''
+      if (ct.includes('application/json')) {
+        const j = await resp.json().catch(() => null)
+        if (j && j.queued) {
+          void get().refreshQueue()
+          return { ok: true, queued: true }
+        }
+        return { ok: false, error: (j && j.error) || '消息排队失败' }
       }
       lastSentImagesRef.current = images
       await parseSSEStream(resp)
@@ -700,6 +727,8 @@ export const useChatStore = create<ChatState>((set, get) => {
       }
     } finally {
       set({ isStreaming: false })
+      // 收尾刷新队列：本轮边界未消化完的残留行（如收尾窗口内新入队）继续呈现
+      void get().refreshQueue()
       // 兜底 flush：异常断开时把缓冲内容落进时间线，避免尾部文本丢失
       flushPending()
       // 如果没有收到 loop_result（流干净断开），强制标记为 done 并标 stream_lost。
@@ -732,10 +761,39 @@ export const useChatStore = create<ChatState>((set, get) => {
 
   // 发送消息。返回 false 表示消息被拒收（任务运行中 / 空内容 / 流前被服务端拒绝），
   // 调用方可据此保留待发附件并用 lastSendError 提示
+  // 运行中入队：POST /api/chat 返回 JSON（非 SSE）即受理成功，队列条随后刷新呈现
+  const enqueueSend = async (prompt: string, images: UserImage[]): Promise<boolean> => {
+    try {
+      const body: Record<string, unknown> = { prompt, session_id: sessionIdRef.current }
+      if (images.length > 0) {
+        body.images = images.map((im) => ({ name: im.name, mime: im.mime, data_url: im.dataUrl }))
+      }
+      const resp = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const j = await resp.json().catch(() => null)
+      if (j && j.queued) {
+        await refreshQueue()
+        return true
+      }
+      set({ lastSendError: (j && j.error) || '消息排队失败' })
+      return false
+    } catch {
+      set({ lastSendError: '消息排队失败' })
+      return false
+    }
+  }
+
   const sendMessage = async (prompt: string, images: UserImage[] = []): Promise<boolean> => {
     // 空文本守卫在存在待发附件时放开（纯图片消息允许发送）
     if (!prompt.trim() && images.length === 0) return false
-    if (get().isStreaming) return false
+    // 运行中发送走统一输入队列（斜杠命令是同步接口，不排队）
+    if (get().isStreaming) {
+      if (prompt.startsWith('/')) return false
+      return enqueueSend(prompt, images)
+    }
 
     // 斜杠命令走同步接口
     if (prompt.startsWith('/')) {
@@ -814,6 +872,12 @@ export const useChatStore = create<ChatState>((set, get) => {
       updateBlock(blockId, b => ({ ...b, userImages: images }))
     }
     const res = await runChatSSE(prompt, null, images)
+    if (res.queued) {
+      // 后台任务在跑被转入队列：回滚本轮空工作块，由队列条接管呈现
+      removeBlock(blockId)
+      await fetchState()
+      return true
+    }
     if (!res.ok) {
       // 流前被拒：回滚本轮工作块、文案交输入区提示，附件由调用方保留重试
       removeBlock(blockId)
@@ -982,6 +1046,48 @@ export const useChatStore = create<ChatState>((set, get) => {
   const setSessionId = (id: string | null) => {
     sessionIdRef.current = id
     set({ sessionId: id })
+    // 切会话同步刷新该会话的待转正队列
+    void get().refreshQueue()
+  }
+
+  // 拉取当前会话未转正队列项（仅用户消息；通知行由后端管线直接注入，不进队列条）
+  const refreshQueue = async () => {
+    const sid = sessionIdRef.current
+    if (!sid) {
+      set({ queueItems: [] })
+      return
+    }
+    try {
+      const resp = await fetch(`/api/session_inputs?session_id=${encodeURIComponent(sid)}`)
+      const j = await resp.json()
+      const items: QueueItem[] = (Array.isArray(j?.items) ? j.items : [])
+        .filter((it: { kind?: string }) => it.kind === 'sendText')
+        .map((it: { id: string; content: unknown }) => {
+          let content = ''
+          let hasImage = false
+          if (typeof it.content === 'string') content = it.content
+          else if (Array.isArray(it.content)) {
+            content = it.content
+              .filter((b: { type?: string }) => b?.type === 'text')
+              .map((b: { text?: string }) => b.text || '')
+              .join(' ')
+            hasImage = it.content.some((b: { type?: string }) => b?.type === 'image_url')
+          }
+          return { id: it.id, content, hasImage }
+        })
+      set({ queueItems: items })
+    } catch {
+      /* 队列视图失败不影响主流程，保留上次状态 */
+    }
+  }
+
+  const cancelQueueItem = async (id: string) => {
+    try {
+      await fetch(`/api/session_inputs/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    } catch {
+      /* 撤销失败由下次刷新兜底呈现真实状态 */
+    }
+    await refreshQueue()
   }
 
   // 断开当前 SSE 连接（切换会话/工作区时调用）：仅断连接不取消后台任务，
@@ -1209,6 +1315,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     blocksById: {},
     isStreaming: false,
     sessionId: null,
+    queueItems: [],
     tokenUsage: {
       input_tokens: 0,
       output_tokens: 0,
@@ -1239,5 +1346,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     setSessionId,
     disconnectStream,
     fetchState,
+    refreshQueue,
+    cancelQueueItem,
   }
 })

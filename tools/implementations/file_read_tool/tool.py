@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from prompts.loader import load_tool_prompt
 from tools.implementations.file_read_tool.handler import (
     format_model_content,
@@ -30,6 +32,26 @@ async def _execute(inp: FileReadInput, context: ToolUseContext) -> ToolResult:
     """执行入口 — handler 返回结构化结果，这里统一转为 ToolResult。"""
     try:
         structured = await handle_read(inp, context)
+        if structured.get("kind") == "image":
+            # OpenAI 的 tool 消息不能携带图像块，以既有 new_messages 通道作
+            # 等价注入：紧随工具结果追加与用户附件同格式的 parts user 消息；
+            # data_url 不进 metadata（避免 SSE/轮询回传整段 base64）
+            placeholder = format_model_content(structured)
+            image_msg = {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": placeholder},
+                    {"type": "image_url", "image_url": {"url": structured["data_url"]}},
+                ],
+                "_ts": time.time() * 1000,
+            }
+            meta = {k: v for k, v in structured.items() if k != "data_url"}
+            return ToolResult(
+                content=placeholder,
+                is_error=False,
+                metadata=meta,
+                new_messages=[image_msg],
+            )
         return ToolResult(
             content=format_model_content(structured),
             is_error=False,

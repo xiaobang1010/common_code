@@ -317,6 +317,7 @@ def _start_run(
     edit_user_index: int | None = None,
     take_view_pointer: bool = True,
     reasoning_level: str = "",
+    promoted_extra: list[dict] | None = None,
 ) -> tuple[server.state.RunContext | None, str | None]:
     """创建会话运行任务：串行守卫 → 前缀快照 → 持久化 → 引擎 → 后台任务。
 
@@ -369,6 +370,18 @@ def _start_run(
         ):
             return None, '编辑位置无效，历史未被修改'
         prefix_messages = prefix_messages[: visible[edit_user_index]]
+
+    # ---- 起轮转正：上一轮运行期入队、尚未等到轮次边界的 queued 行
+    # （用户消息与通知）在本条消息之前全量转正，防新消息插队旧队列；
+    # 唤起路径已自行取走的非文本消息经 promoted_extra 补位 ----
+    try:
+        from tools.subagent.notify import promote_queued_messages
+
+        prefix_messages = [*prefix_messages, *promote_queued_messages(run_session_id)]
+    except Exception:
+        logging.getLogger(__name__).warning("起轮转正队列失败，按无队列继续", exc_info=True)
+    if promoted_extra:
+        prefix_messages = [*prefix_messages, *promoted_extra]
 
     # 任务工作区：会话所属工作区（跨工作区后台任务的 cwd 隔离依据）
     task_workspace = session.workspace_path or project_root()
@@ -623,10 +636,27 @@ async def _wake_run(session_id: str) -> None:
         notices = drain_notifications(session_id)
         if not notices:
             return
-        merged = "\n\n".join(
-            n.get("content", "") for n in notices if isinstance(n.get("content"), str) and n.get("content")
+        # 文本通知合并为一条唤起消息（现状语义）；非文本行（如入队的图片
+        # parts 消息）保持原 dict 经 promoted_extra 补进前缀，不经合并丢内容
+        texts = [
+            n.get("content", "")
+            for n in notices
+            if isinstance(n.get("content"), str) and n.get("content")
+        ]
+        extras = [
+            n for n in notices
+            if not (isinstance(n.get("content"), str) and n.get("content"))
+        ]
+        merged = "\n\n".join(texts)
+        if not merged and extras:
+            prompt_content = extras[0].get("content", "")
+            extras = extras[1:]
+        else:
+            prompt_content = merged
+        run, error = _start_run(
+            session_id, prompt_content,
+            promoted_extra=extras or None, take_view_pointer=False,
         )
-        run, error = _start_run(session_id, merged, take_view_pointer=False)
         if error is not None:
             logging.getLogger(__name__).warning("唤起会话 %s 未启动: %s", session_id, error)
     finally:
@@ -769,6 +799,17 @@ async def chat(body: dict):
         if err:
             return JSONResponse(status_code=400, content={"ok": False, "error": err})
         prompt = _build_user_content(prompt, images)
+    # ---- 运行中入队（对齐统一输入队列）：不再拒绝，写 session_input 排队，
+    # 轮次边界转正注入；编辑重发有截断语义，维持守卫拒绝 ----
+    if session_id and edit_user_index is None and session_id in server.state.running_runs:
+        store = server.state.session_store
+        if store is not None:
+            queue_id = store.admit_session_input(
+                session_id, "sendText", "queue", {"role": "user", "content": prompt}
+            )
+            return JSONResponse(
+                content={"ok": True, "queued": True, "queue_id": queue_id, "session_id": session_id}
+            )
     return StreamingResponse(
         chat_event_stream(prompt, session_id, edit_user_index, reasoning_level),
         media_type="text/event-stream",
@@ -788,6 +829,29 @@ def list_runs() -> dict:
     需要被前端以低频轮询发现（5s），开销必须可忽略。
     """
     return {"running_session_ids": list(server.state.running_runs.keys())}
+
+
+# ---------------------------------------------------------------------------
+# 输入队列观测与撤销（运行中入队消息的前端管理入口）
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/session_inputs")
+def list_session_inputs(session_id: str = "") -> dict:
+    """列该会话未转正队列项（图片 base64 以占位符回传，前端队列条用）。"""
+    store = server.state.session_store
+    if store is None or not session_id:
+        return {"items": []}
+    return {"items": store.list_queued_inputs(session_id)}
+
+
+@router.delete("/api/session_inputs/{row_id}")
+def cancel_session_input(row_id: str) -> dict:
+    """撤销队列项：仅未转正行生效（status=cancelled + user_removed）。"""
+    store = server.state.session_store
+    if store is None:
+        return {"ok": False}
+    return {"ok": store.cancel_session_input(row_id)}
 
 
 # ---------------------------------------------------------------------------

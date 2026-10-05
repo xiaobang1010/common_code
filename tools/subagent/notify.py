@@ -1,9 +1,11 @@
 """子代理通知队列 - 后台任务完成通知的多通道入口。
 
-后台子代理完成时向父会话投递通知：
-- 父会话活跃（query_loop 运行中）：loop 在每轮工具收尾时 drain 注入对话；
-- 父会话不活跃：通知留在队列。server 侧注册的唤起钩子据此自动创建
+通知统一写入 session_input 持久队列（kind=backgroundNotification），与运行中
+入队的用户消息同表同序转正：
+- 父会话活跃（query_loop 运行中）：loop 在每轮工具收尾时 drain 转正注入对话；
+- 父会话不活跃：行留在表内。server 侧注册的唤起钩子据此自动创建
   父会话运行任务（auto-resume），无钩子环境（如单测）保持纯队列语义。
+无 store 实例（单测/无 server）时回退进程内存队列，行为与旧实现一致。
 
 通知为统一的「任务通知」格式（taskType=local_agent），覆盖
 完成/失败/停止/预算停止/提升五类事件。
@@ -15,7 +17,7 @@ from typing import Callable
 
 logger = logging.getLogger(__name__)
 
-# parent_session_id -> 待投递通知消息列表（OpenAI 格式 dict）
+# 无 store 环境的内存回退：parent_session_id -> 待投递通知消息列表（OpenAI 格式 dict）
 _pending_notifications: dict[str, list[dict]] = {}
 _lock = threading.Lock()
 
@@ -29,6 +31,16 @@ def register_wakeup_hook(hook: Callable[[str], None]) -> None:
     _wakeup_hook = hook
 
 
+def _get_store():
+    """取会话存储（懒导入避免 tools→server 环依赖）；无 server 环境返回 None。"""
+    try:
+        import server.state
+
+        return server.state.session_store
+    except Exception:
+        return None
+
+
 def push_notification(session_id: str, message: dict) -> None:
     """向父会话通知队列追加一条消息，并触发唤起钩子。
 
@@ -38,8 +50,19 @@ def push_notification(session_id: str, message: dict) -> None:
     """
     if not session_id:
         return
-    with _lock:
-        _pending_notifications.setdefault(session_id, []).append(message)
+    store = _get_store()
+    stored = False
+    if store is not None:
+        try:
+            store.admit_session_input(
+                session_id, "backgroundNotification", "queue", dict(message)
+            )
+            stored = True
+        except Exception:
+            logger.warning("通知入表失败，回退内存队列 (session=%s)", session_id, exc_info=True)
+    if not stored:
+        with _lock:
+            _pending_notifications.setdefault(session_id, []).append(message)
     # 钩子在锁外触发：回调内部可能再操作队列；异常只记日志，不影响入队
     hook = _wakeup_hook
     if hook is not None:
@@ -49,16 +72,42 @@ def push_notification(session_id: str, message: dict) -> None:
             logger.warning("唤起钩子执行失败 (session=%s): %s", session_id, e)
 
 
+def promote_queued_messages(session_id: str) -> list[dict]:
+    """按准入序转正该会话全部 queued 行（用户消息 + 通知），返回消息 dict。
+
+    起轮点（routes._start_run）与轮次边界（query_loop）共用本函数；
+    行内 payload 即消息本体，转正时补 _ts 与 _input_id（前端去重标记）。
+    """
+    store = _get_store()
+    if store is None:
+        return []
+    try:
+        return store.promote_queued_inputs(session_id)
+    except Exception:
+        logger.warning("队列转正失败 (session=%s)", session_id, exc_info=True)
+        return []
+
+
 def drain_notifications(session_id: str) -> list[dict]:
-    """取出并清空该会话的全部待投递通知。"""
+    """取出该会话全部待投递：表内 queued 行（含运行中入队的用户消息）+ 内存回退。"""
+    promoted = promote_queued_messages(session_id)
     with _lock:
-        return _pending_notifications.pop(session_id, [])
+        legacy = _pending_notifications.pop(session_id, [])
+    return [*promoted, *legacy]
 
 
 def pending_count(session_id: str) -> int:
-    """该会话待投递通知数（观测用）。"""
+    """该会话未转正通知数（收尾唤起补偿判定与观测用，仅统计 backgroundNotification）。"""
+    count = 0
+    store = _get_store()
+    if store is not None:
+        try:
+            count = store.count_queued_inputs(session_id, "backgroundNotification")
+        except Exception:
+            logger.warning("队列计数失败 (session=%s)", session_id, exc_info=True)
     with _lock:
-        return len(_pending_notifications.get(session_id, []))
+        count += len(_pending_notifications.get(session_id, []))
+    return count
 
 
 # ---------------------------------------------------------------------------

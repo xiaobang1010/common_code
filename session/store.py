@@ -15,6 +15,7 @@ import json
 import os
 import sqlite3
 import threading
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -94,6 +95,32 @@ class SessionStore:
                     created_at TEXT NOT NULL
                 )
                 """
+            )
+
+            # 统一输入队列：运行中用户消息与后台通知同表排队，轮次边界转正。
+            # status 终态 promoted/cancelled/discarded，入队初始态 queued；
+            # 撤销与守卫类终态经 status_reason 区分（user_removed 等）
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_input (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    delivery TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    admitted_sequence INTEGER NOT NULL,
+                    promoted_sequence INTEGER,
+                    promoted_message_id TEXT,
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    status_reason TEXT,
+                    time_created REAL NOT NULL,
+                    time_updated REAL NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_session_input_queue "
+                "ON session_input(session_id, status, admitted_sequence)"
             )
 
             conn.execute(
@@ -977,3 +1004,144 @@ class SessionStore:
             return result
         finally:
             conn.close()
+
+    # ------------------------------------------------------------------
+    # session_input 统一输入队列（运行中用户消息 / 后台通知同表排队转正）
+    # ------------------------------------------------------------------
+
+    def admit_session_input(
+        self, session_id: str, kind: str, delivery: str, payload: dict
+    ) -> str:
+        """入队一行（status=queued），返回队列 id。
+
+        admitted_sequence 在会话内递增，转正严格按该序，多来源公平混排。
+        """
+        row_id = f"queue_{uuid.uuid4().hex}"
+        now = time.time() * 1000
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                seq = conn.execute(
+                    "SELECT COALESCE(MAX(admitted_sequence), -1) + 1 "
+                    "FROM session_input WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()[0]
+                conn.execute(
+                    "INSERT INTO session_input "
+                    "(id, session_id, kind, delivery, payload, admitted_sequence, "
+                    "status, time_created, time_updated) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+                    (
+                        row_id,
+                        session_id,
+                        kind,
+                        delivery,
+                        json.dumps(payload, ensure_ascii=False),
+                        seq,
+                        now,
+                        now,
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return row_id
+
+    def promote_queued_inputs(self, session_id: str) -> list[dict]:
+        """按 admitted_sequence 序转正本会话全部 queued 行，返回消息 dict。
+
+        返回的消息带 _ts 与 _input_id（下划线字段发模型前统一剥离，
+        _input_id 供前端把本地队列项与转正消息去重）。观测字段约定：
+        promoted_sequence 沿用准入序号、promoted_message_id 取生成消息的 _ts。
+        """
+        now = time.time() * 1000
+        out: list[dict] = []
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM session_input "
+                    "WHERE session_id = ? AND status = 'queued' "
+                    "ORDER BY admitted_sequence ASC",
+                    (session_id,),
+                ).fetchall()
+                for row in rows:
+                    payload = json.loads(row["payload"])
+                    conn.execute(
+                        "UPDATE session_input SET status='promoted', "
+                        "promoted_sequence=?, promoted_message_id=?, time_updated=? "
+                        "WHERE id=?",
+                        (row["admitted_sequence"], str(now), now, row["id"]),
+                    )
+                    out.append({**payload, "_ts": now, "_input_id": row["id"]})
+                conn.commit()
+            finally:
+                conn.close()
+        return out
+
+    def count_queued_inputs(self, session_id: str, kind: str | None = None) -> int:
+        """未转正行数（可按 kind 过滤，pending_count 唤醒补偿判定用）。"""
+        conn = self._get_conn()
+        try:
+            if kind is None:
+                return conn.execute(
+                    "SELECT COUNT(*) FROM session_input "
+                    "WHERE session_id = ? AND status = 'queued'",
+                    (session_id,),
+                ).fetchone()[0]
+            return conn.execute(
+                "SELECT COUNT(*) FROM session_input "
+                "WHERE session_id = ? AND status = 'queued' AND kind = ?",
+                (session_id, kind),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+    def list_queued_inputs(self, session_id: str) -> list[dict]:
+        """队列视图（前端展示用）：base64 图片以占位符替换，不回传大 payload。"""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM session_input "
+                "WHERE session_id = ? AND status = 'queued' "
+                "ORDER BY admitted_sequence ASC",
+                (session_id,),
+            ).fetchall()
+            result: list[dict] = []
+            for row in rows:
+                content = json.loads(row["payload"]).get("content", "")
+                if isinstance(content, list):
+                    # parts 形态：文本块保留，image_url 换占位哨兵（与轮询脱敏同记号）
+                    slim = []
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "image_url":
+                            slim.append({"type": "image_url", "image_url": {"url": "__omitted__"}})
+                        else:
+                            slim.append(block)
+                    content = slim
+                result.append({
+                    "id": row["id"],
+                    "kind": row["kind"],
+                    "delivery": row["delivery"],
+                    "content": content,
+                    "admitted_sequence": row["admitted_sequence"],
+                    "time_created": row["time_created"],
+                })
+            return result
+        finally:
+            conn.close()
+
+    def cancel_session_input(self, row_id: str, reason: str = "user_removed") -> bool:
+        """撤销仅对 queued 行生效：status=cancelled + status_reason。"""
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "UPDATE session_input SET status='cancelled', status_reason=?, "
+                    "time_updated=? WHERE id=? AND status='queued'",
+                    (reason, time.time() * 1000, row_id),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()

@@ -133,6 +133,9 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
   const permMenuRef = useRef<HTMLDivElement>(null)
   // 当前会话 id：区分"本会话在跑"与"其他会话在跑"
   const currentSessionId = useChatStore(s => s.sessionId)
+  // 待转正输入队列（运行中发送的消息排队条）
+  const queueItems = useChatStore(s => s.queueItems)
+  const cancelQueueItem = useChatStore(s => s.cancelQueueItem)
   // 当前会话任务进行中：前台流式，或当前查看的会话正好是后台运行任务的会话。
   // 两种形态都禁用输入、显示停止按钮（停止作用于当前查看会话）
   const taskActive = isStreaming || (currentTaskSessionId !== null && currentSessionId === currentTaskSessionId)
@@ -300,8 +303,8 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
 
   const handleSend = () => {
     const trimmed = text.trim()
-    // 存在待发附件时空文本也允许发送
-    if ((!trimmed && pendingImages.length === 0) || taskActive) return
+    // 存在待发附件时空文本也允许发送；运行中不再拦截（store 转入输入队列排队发送）
+    if (!trimmed && pendingImages.length === 0) return
     if (trimmed.startsWith('/') && pendingImages.length > 0) {
       showHint('命令消息不支持携带图片')
       return
@@ -740,10 +743,38 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
           </div>
         )}
 
+        {/* 待转正输入队列条：运行中发送的消息排队于此，轮次边界自动注入，可撤销 */}
+        {queueItems.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', paddingBottom: '6px' }}>
+            {queueItems.map(q => (
+              <div
+                key={q.id}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '6px',
+                  fontSize: '12px', color: 'var(--text-secondary)',
+                  background: 'var(--bg-secondary)', borderRadius: '6px', padding: '4px 8px',
+                }}
+              >
+                <span style={{ flexShrink: 0, opacity: 0.7 }}>排队中</span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                  {q.hasImage ? '[图片] ' : ''}{q.content}
+                </span>
+                <button
+                  onClick={() => void cancelQueueItem(q.id)}
+                  title="撤销排队消息"
+                  style={{ border: 'none', background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer', padding: '0 2px', fontSize: '14px', lineHeight: '1' }}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* 富文本输入：文件引用以 chip 内联在文字流中，随文本一起序列化发送 */}
         <RichChatInput
           ref={richInputRef}
-          disabled={taskActive}
+          disabled={false}
           onTextChange={setText}
           onSubmit={handleSend}
           onKeyDown={handleKeyDown}
@@ -752,7 +783,7 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
           onImageFiles={addImageFiles}
           placeholder={
             taskActive
-              ? 'AI 正在思考...'
+              ? '任务运行中 · 消息将排队，轮次边界自动发送'
               : currentTaskSessionId && currentSessionId !== currentTaskSessionId
                 ? '当前有任务运行中，可继续输入草稿'
                 : '描述你想做什么，或输入 / 命令（支持粘贴/拖拽图片）'
@@ -911,10 +942,9 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
           </div>
           {/* 右侧组：附件 + 进度圈 + 模型 + 等级 + 发送/停止（整组靠右） */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', pointerEvents: 'auto' }}>
-            {/* 「+」添加图片附件（隐藏 file input 触发） */}
+            {/* 「+」添加图片附件（隐藏 file input 触发）；运行中同样可附件（排队消息携带） */}
             <button
               onClick={() => fileInputRef.current?.click()}
-              disabled={taskActive}
               title={canAttachImage ? '添加图片附件（也支持粘贴/拖拽）' : '当前模型不支持图片输入'}
               aria-label="添加图片"
               style={{
@@ -925,7 +955,7 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
                 borderRadius: '50%',
                 background: 'transparent',
                 color: 'var(--text-tertiary)',
-                cursor: taskActive ? 'not-allowed' : 'pointer',
+                cursor: 'pointer',
                 display: 'inline-flex',
                 alignItems: 'center',
                 justifyContent: 'center',
