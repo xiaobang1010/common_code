@@ -40,6 +40,10 @@ class FakeEngine:
         await self.release.wait()
         self.mutable_messages.append({"role": "assistant", "content": "回复内容"})
         yield {"role": "assistant", "content": "回复内容"}
+        # 与真引擎对齐：以 LoopResult 收尾。收尾退出原因分类依赖它，
+        # 缺失会被归为「未产出结果即结束」的 error，干扰队列自动暂停等收尾逻辑的测试语义
+        from query.loop import LoopResult
+        yield LoopResult(reason="completed")
 
 
 class FakeAppState:

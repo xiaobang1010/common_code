@@ -65,6 +65,8 @@ export interface WorkBlock {
   phase?: string
   // 斜杠技能触发来源（如 "spec"）：用户气泡显示技能徽章而非纯文本输入
   skillName?: string
+  // 该用户消息由队列「立即」转向注入（guide 转正带 _steer）：气泡挂「已引导对话」标
+  userSteered?: boolean
 }
 
 // token 用量
@@ -189,6 +191,13 @@ export interface QueueItem {
   id: string
   content: string
   hasImage: boolean
+  delivery: string
+}
+
+// 空闲发送时队列非空的三态确认（保留/清除/取消）
+export interface QueueConfirm {
+  prompt: string
+  images: UserImage[]
 }
 
 interface ChatState {
@@ -214,9 +223,20 @@ interface ChatState {
   clearSendError: () => void
   // 运行中发送的输入队列项（后端 session_input queued 行，轮次边界转正）
   queueItems: QueueItem[]
+  // 已点「立即」但未转正的转向行：不入队列条，在对话内挂「等待引导当前任务…」
+  pendingGuides: QueueItem[]
+  queueState: { auto_drain: boolean; pause_reason: string | null }
+  // 空闲发送且队列非空时的三态确认现场（null=无待确认）
+  queueConfirm: QueueConfirm | null
   refreshQueue: () => Promise<void>
   cancelQueueItem: (id: string) => Promise<void>
-  sendMessage: (prompt: string, images?: UserImage[]) => Promise<boolean>
+  steerQueueItem: (id: string) => Promise<void>
+  editQueueItem: (id: string, content: string) => Promise<void>
+  reorderQueueItem: (id: string, beforeId: string | null) => Promise<void>
+  clearQueue: () => Promise<void>
+  toggleQueuePause: (paused: boolean) => Promise<void>
+  resolveQueueConfirm: (choice: 'keep' | 'clear' | 'cancel') => Promise<void>
+  sendMessage: (prompt: string, images?: UserImage[], opts?: { skipConfirm?: boolean }) => Promise<boolean>
   // 编辑历史用户消息并从该处重发：截断后续块与 DB 历史，用新文本重建该轮
   editAndResend: (blockId: string, newText: string) => Promise<boolean>
   abort: () => Promise<void>
@@ -522,10 +542,18 @@ export const useChatStore = create<ChatState>((set, get) => {
           return { ...b, timeline: items }
         })
       } else if (msg.role === 'user') {
-        // 转正的队列项：直播不重复渲染气泡（历史重建负责呈现），仅从队列条移除
+        // 转正的队列项：直播不重复渲染气泡（历史重建负责呈现），
+        // 从队列条/挂起列表移除；guide 转正给当前块挂「已引导对话」标
         const inputId = (msg as Record<string, unknown>)._input_id
         if (typeof inputId === 'string' && inputId) {
-          set(state => ({ queueItems: state.queueItems.filter(q => q.id !== inputId) }))
+          set(state => ({
+            queueItems: state.queueItems.filter(q => q.id !== inputId),
+            pendingGuides: state.pendingGuides.filter(q => q.id !== inputId),
+          }))
+        }
+        if ((msg as Record<string, unknown>)._steer === true) {
+          const blockId = currentBlockId.current
+          if (blockId) updateBlock(blockId, b => ({ ...b, userSteered: true }))
         }
       }
     } else if (evt.type === 'heartbeat') {
@@ -786,9 +814,24 @@ export const useChatStore = create<ChatState>((set, get) => {
     }
   }
 
-  const sendMessage = async (prompt: string, images: UserImage[] = []): Promise<boolean> => {
+  const sendMessage = async (
+    prompt: string,
+    images: UserImage[] = [],
+    opts?: { skipConfirm?: boolean },
+  ): Promise<boolean> => {
     // 空文本守卫在存在待发附件时放开（纯图片消息允许发送）
     if (!prompt.trim() && images.length === 0) return false
+    // 空闲发送且队列非空：先过三态确认（旧行将随起轮全量转正，需问处置）；
+    // 运行中排队与裁决后的补发（skipConfirm）不拦截；纯同步命令不起轮、在本分支后豁免
+    if (
+      !opts?.skipConfirm
+      && !get().isStreaming
+      && !prompt.startsWith('/')
+      && get().queueItems.length > 0
+    ) {
+      set({ queueConfirm: { prompt, images } })
+      return false
+    }
     // 运行中发送走统一输入队列（斜杠命令是同步接口，不排队）
     if (get().isStreaming) {
       if (prompt.startsWith('/')) return false
@@ -806,6 +849,12 @@ export const useChatStore = create<ChatState>((set, get) => {
         })
         const data = await resp.json()
         if (data.is_skill) {
+          // 技能续跑同样起轮：队列非空先过三态确认。裁决后以 skipConfirm 重发，
+          // /api/command 对技能无副作用、重跑到达同分支
+          if (!opts?.skipConfirm && get().queueItems.length > 0) {
+            set({ queueConfirm: { prompt, images: [] } })
+            return false
+          }
           // skill 触发：创建工作块。用户气泡显示「技能徽章 + 去掉 /name 前缀的
           // 原始描述」，技能正文经 skill_prompt 发到 /api/chat
           const blockId = createBlock(`Launching skill: ${data.skill_name}`)
@@ -1050,35 +1099,59 @@ export const useChatStore = create<ChatState>((set, get) => {
     void get().refreshQueue()
   }
 
-  // 拉取当前会话未转正队列项（仅用户消息；通知行由后端管线直接注入，不进队列条）
+  // 拉取当前会话未转正队列：按 delivery 分流——guide 行进对话挂起列表
+  // （「等待引导当前任务…」），其余进队列条；同时带回队列态
   const refreshQueue = async () => {
     const sid = sessionIdRef.current
     if (!sid) {
-      set({ queueItems: [] })
+      set({ queueItems: [], pendingGuides: [], queueState: { auto_drain: true, pause_reason: null } })
       return
     }
     try {
       const resp = await fetch(`/api/session_inputs?session_id=${encodeURIComponent(sid)}`)
       const j = await resp.json()
+      const toItem = (it: { id: string; delivery?: string; content: unknown }): QueueItem => {
+        let content = ''
+        let hasImage = false
+        if (typeof it.content === 'string') content = it.content
+        else if (Array.isArray(it.content)) {
+          content = it.content
+            .filter((b: { type?: string }) => b?.type === 'text')
+            .map((b: { text?: string }) => b.text || '')
+            .join(' ')
+          hasImage = it.content.some((b: { type?: string }) => b?.type === 'image_url')
+        }
+        return { id: it.id, content, hasImage, delivery: it.delivery || 'queue' }
+      }
       const items: QueueItem[] = (Array.isArray(j?.items) ? j.items : [])
         .filter((it: { kind?: string }) => it.kind === 'sendText')
-        .map((it: { id: string; content: unknown }) => {
-          let content = ''
-          let hasImage = false
-          if (typeof it.content === 'string') content = it.content
-          else if (Array.isArray(it.content)) {
-            content = it.content
-              .filter((b: { type?: string }) => b?.type === 'text')
-              .map((b: { text?: string }) => b.text || '')
-              .join(' ')
-            hasImage = it.content.some((b: { type?: string }) => b?.type === 'image_url')
-          }
-          return { id: it.id, content, hasImage }
-        })
-      set({ queueItems: items })
+        .map(toItem)
+      const qs = j?.queue_state || {}
+      set({
+        queueItems: items.filter((it) => it.delivery !== 'guide'),
+        pendingGuides: items.filter((it) => it.delivery === 'guide'),
+        queueState: {
+          auto_drain: qs.auto_drain !== false,
+          pause_reason: qs.pause_reason ?? null,
+        },
+      })
     } catch {
       /* 队列视图失败不影响主流程，保留上次状态 */
     }
+  }
+
+  // 队列动作统一收口：POST 后刷新视图，失败由刷新兜底呈现真实状态
+  const postQueueAction = async (path: string, body: Record<string, unknown>) => {
+    try {
+      await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    } catch {
+      /* 动作失败由下次刷新兜底呈现真实状态 */
+    }
+    await refreshQueue()
   }
 
   const cancelQueueItem = async (id: string) => {
@@ -1088,6 +1161,33 @@ export const useChatStore = create<ChatState>((set, get) => {
       /* 撤销失败由下次刷新兜底呈现真实状态 */
     }
     await refreshQueue()
+  }
+
+  const steerQueueItem = (id: string) => postQueueAction('/api/session_inputs/steer', { id })
+  const editQueueItem = (id: string, content: string) =>
+    postQueueAction('/api/session_inputs/edit', { id, content })
+  const reorderQueueItem = (id: string, beforeId: string | null) =>
+    postQueueAction('/api/session_inputs/reorder', { id, before_id: beforeId })
+  const clearQueue = async () => {
+    const sid = sessionIdRef.current
+    if (!sid) return
+    await postQueueAction('/api/session_inputs/clear', { session_id: sid })
+  }
+  const toggleQueuePause = async (paused: boolean) => {
+    const sid = sessionIdRef.current
+    if (!sid) return
+    // 恢复路径可能在服务端同步起轮，重拉状态让运行卡片即时浮现
+    await postQueueAction('/api/session_inputs/pause', { session_id: sid, paused })
+    void get().fetchState()
+  }
+
+  // 三态确认裁决：keep=原样补发；clear=先清空再补发；cancel=放弃（草稿留在输入框）
+  const resolveQueueConfirm = async (choice: 'keep' | 'clear' | 'cancel') => {
+    const pending = get().queueConfirm
+    set({ queueConfirm: null })
+    if (!pending || choice === 'cancel') return
+    if (choice === 'clear') await clearQueue()
+    await get().sendMessage(pending.prompt, pending.images, { skipConfirm: true })
   }
 
   // 断开当前 SSE 连接（切换会话/工作区时调用）：仅断连接不取消后台任务，
@@ -1179,6 +1279,8 @@ export const useChatStore = create<ChatState>((set, get) => {
           userImages: images.length > 0 ? images : undefined,
           // skill：渐进披露重写提示 → 「技能徽章 + 任务描述」展示
           skillName: parsed.kind === 'skill' ? parsed.skillName : undefined,
+          // 队列转向注入的历史消息：气泡挂「已引导对话」标（与直播分支同源）
+          userSteered: raw._steer === true,
           timeline: [],
           status: 'done',
           startTime: start,
@@ -1316,6 +1418,9 @@ export const useChatStore = create<ChatState>((set, get) => {
     isStreaming: false,
     sessionId: null,
     queueItems: [],
+    pendingGuides: [],
+    queueState: { auto_drain: true, pause_reason: null },
+    queueConfirm: null,
     tokenUsage: {
       input_tokens: 0,
       output_tokens: 0,
@@ -1348,5 +1453,11 @@ export const useChatStore = create<ChatState>((set, get) => {
     fetchState,
     refreshQueue,
     cancelQueueItem,
+    steerQueueItem,
+    editQueueItem,
+    reorderQueueItem,
+    clearQueue,
+    toggleQueuePause,
+    resolveQueueConfirm,
   }
 })
