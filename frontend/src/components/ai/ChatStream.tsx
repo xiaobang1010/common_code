@@ -12,6 +12,22 @@ interface Props {
   onOpenWorkspace: () => void
 }
 
+// 未转正的 guide 转向行：挂在对话块列表尾部（当前工作卡下方），
+// 与输入框上方的队列条分属两处——对齐目标 pendingGuides/visibleQueue 分流
+function PendingGuidesRow() {
+  const pendingGuides = useChatStore(s => s.pendingGuides)
+  if (pendingGuides.length === 0) return null
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '2px 2px 6px' }}>
+      {pendingGuides.map(g => (
+        <div key={g.id} style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+          等待引导当前任务… {g.hasImage ? '[图片] ' : ''}{g.content}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function ChatStream({ hasWorkspace, onOpenWorkspace }: Props) {
   // 只订阅 id 列表：新增/删除块时更新，单块内容变化不触发本组件重渲
   const blockIds = useChatStore(s => s.blockIds)
@@ -365,6 +381,8 @@ function ChatStream({ hasWorkspace, onOpenWorkspace }: Props) {
             <WorkBlockView key={id} blockId={id} />
           ))
         )}
+        {/* 未转正的 guide 转向行：挂在当前工作卡下方（对话区），不入输入框上方的队列条 */}
+        <PendingGuidesRow />
         {/* 底部哨兵：可见表示用户贴底（随消息列包裹在内容列内） */}
         <div ref={sentinelRef} style={{ height: '1px', flexShrink: 0 }} />
         </div>

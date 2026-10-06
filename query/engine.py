@@ -346,6 +346,7 @@ class QueryEngine:
         prompt: str | list,
         user_context: dict[str, str] | None = None,
         system_context: dict[str, str] | None = None,
+        message_meta: dict | None = None,
     ) -> AsyncGenerator[Any, None]:
         """提交用户输入，启动一轮 agentic 循环。
 
@@ -357,6 +358,8 @@ class QueryEngine:
                 （含图时为 [{"type":"text"...},{"type":"image_url"...}]）
             user_context: 用户上下文字典
             system_context: 系统上下文字典
+            message_meta: 追加进 user 消息的观测字段（如队列转正行的
+                _steer/_input_id，随下划线剥离机制不外发模型）
 
         Yields:
             流式事件或结果消息
@@ -406,8 +409,11 @@ class QueryEngine:
                 user_context = {}
             user_context["hook_context"] = hook_result.reason
 
-        # 把 user 消息加到 mutable_messages
-        self._mutable_messages.append({"role": "user", "content": prompt, "_ts": time.time() * 1000})
+        # 把 user 消息加到 mutable_messages（message_meta 携带队列转正行的观测字段）
+        user_msg: dict[str, Any] = {"role": "user", "content": prompt, "_ts": time.time() * 1000}
+        if message_meta:
+            user_msg.update(message_meta)
+        self._mutable_messages.append(user_msg)
 
         # 新用户回合：重置压缩连败与快速再满计数；
         # 冷却基线（last_compact_time）与上次压缩计数快照保留，跨回合生效

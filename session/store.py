@@ -15,6 +15,7 @@ import json
 import os
 import sqlite3
 import threading
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -92,6 +93,45 @@ class SessionStore:
                     name TEXT NOT NULL,
                     color TEXT DEFAULT '',
                     created_at TEXT NOT NULL
+                )
+                """
+            )
+
+            # 统一输入队列：运行中用户消息与后台通知同表排队，轮次边界转正。
+            # status 终态 promoted/cancelled/discarded，入队初始态 queued；
+            # 撤销与守卫类终态经 status_reason 区分（user_removed 等）
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_input (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    delivery TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    admitted_sequence INTEGER NOT NULL,
+                    promoted_sequence INTEGER,
+                    promoted_message_id TEXT,
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    status_reason TEXT,
+                    time_created REAL NOT NULL,
+                    time_updated REAL NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_session_input_queue "
+                "ON session_input(session_id, status, admitted_sequence)"
+            )
+
+            # 会话级队列状态：auto_drain 关时两个转正点位全跳过；
+            # pause_reason 取值 manual/error/stopped
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_queue_state (
+                    session_id TEXT PRIMARY KEY,
+                    auto_drain INTEGER NOT NULL DEFAULT 1,
+                    pause_reason TEXT,
+                    time_updated REAL NOT NULL
                 )
                 """
             )
@@ -977,3 +1017,366 @@ class SessionStore:
             return result
         finally:
             conn.close()
+
+    # ------------------------------------------------------------------
+    # session_input 统一输入队列（运行中用户消息 / 后台通知同表排队转正）
+    # ------------------------------------------------------------------
+
+    def admit_session_input(
+        self, session_id: str, kind: str, delivery: str, payload: dict
+    ) -> str:
+        """入队一行（status=queued），返回队列 id。
+
+        admitted_sequence 在会话内递增，转正严格按该序，多来源公平混排。
+        """
+        row_id = f"queue_{uuid.uuid4().hex}"
+        now = time.time() * 1000
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                seq = conn.execute(
+                    "SELECT COALESCE(MAX(admitted_sequence), -1) + 1 "
+                    "FROM session_input WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()[0]
+                conn.execute(
+                    "INSERT INTO session_input "
+                    "(id, session_id, kind, delivery, payload, admitted_sequence, "
+                    "status, time_created, time_updated) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+                    (
+                        row_id,
+                        session_id,
+                        kind,
+                        delivery,
+                        json.dumps(payload, ensure_ascii=False),
+                        seq,
+                        now,
+                        now,
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return row_id
+
+    def promote_queued_inputs(self, session_id: str) -> list[dict]:
+        """按序转正本会话全部 queued 行，返回消息 dict（带 _ts/_input_id）。
+
+        auto_drain=0 时直接返回空——暂停语义在 store 层统一把关，
+        起轮与轮次边界两个转正点位共享同一道门。
+        转正顺序：guide 行优先、组内按 admitted_sequence；guide 行转正消息
+        附 `_steer`（下划线字段发模型前剥离，供前端渲染「已引导对话」标）。
+        观测字段约定：promoted_sequence 沿用准入序号、promoted_message_id 取生成消息的 _ts。
+        """
+        if not self.get_queue_state(session_id)["auto_drain"]:
+            return []
+        now = time.time() * 1000
+        out: list[dict] = []
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM session_input "
+                    "WHERE session_id = ? AND status = 'queued' "
+                    "ORDER BY CASE WHEN delivery = 'guide' THEN 0 ELSE 1 END, "
+                    "admitted_sequence ASC",
+                    (session_id,),
+                ).fetchall()
+                for row in rows:
+                    payload = json.loads(row["payload"])
+                    conn.execute(
+                        "UPDATE session_input SET status='promoted', "
+                        "promoted_sequence=?, promoted_message_id=?, time_updated=? "
+                        "WHERE id=?",
+                        (row["admitted_sequence"], str(now), now, row["id"]),
+                    )
+                    msg = {**payload, "_ts": now, "_input_id": row["id"]}
+                    if row["delivery"] == "guide":
+                        msg["_steer"] = True
+                    out.append(msg)
+                conn.commit()
+            finally:
+                conn.close()
+        return out
+
+    def count_queued_inputs(self, session_id: str, kind: str | None = None) -> int:
+        """未转正行数（可按 kind 过滤，pending_count 唤醒补偿判定用）。"""
+        conn = self._get_conn()
+        try:
+            if kind is None:
+                return conn.execute(
+                    "SELECT COUNT(*) FROM session_input "
+                    "WHERE session_id = ? AND status = 'queued'",
+                    (session_id,),
+                ).fetchone()[0]
+            return conn.execute(
+                "SELECT COUNT(*) FROM session_input "
+                "WHERE session_id = ? AND status = 'queued' AND kind = ?",
+                (session_id, kind),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+    def list_queued_inputs(self, session_id: str) -> list[dict]:
+        """队列视图（前端展示用）：base64 图片以占位符替换，不回传大 payload。"""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM session_input "
+                "WHERE session_id = ? AND status = 'queued' "
+                "ORDER BY admitted_sequence ASC",
+                (session_id,),
+            ).fetchall()
+            result: list[dict] = []
+            for row in rows:
+                content = json.loads(row["payload"]).get("content", "")
+                if isinstance(content, list):
+                    # parts 形态：文本块保留，image_url 换占位哨兵（与轮询脱敏同记号）
+                    slim = []
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "image_url":
+                            slim.append({"type": "image_url", "image_url": {"url": "__omitted__"}})
+                        else:
+                            slim.append(block)
+                    content = slim
+                result.append({
+                    "id": row["id"],
+                    "kind": row["kind"],
+                    "delivery": row["delivery"],
+                    "content": content,
+                    "admitted_sequence": row["admitted_sequence"],
+                    "time_created": row["time_created"],
+                })
+            return result
+        finally:
+            conn.close()
+
+    def cancel_session_input(self, row_id: str, reason: str = "user_removed") -> bool:
+        """撤销仅对 queued 行生效：status=cancelled + status_reason。"""
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "UPDATE session_input SET status='cancelled', status_reason=?, "
+                    "time_updated=? WHERE id=? AND status='queued'",
+                    (reason, time.time() * 1000, row_id),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    # ------------------------------------------------------------------
+    # 队列会话态（auto_drain / pause_reason）
+    # ------------------------------------------------------------------
+
+    def get_queue_state(self, session_id: str) -> dict:
+        """读队列状态；无行即默认开（保证未暂停会话零回归）。"""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT auto_drain, pause_reason FROM session_queue_state WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return {"auto_drain": True, "pause_reason": None}
+        return {"auto_drain": bool(row["auto_drain"]), "pause_reason": row["pause_reason"]}
+
+    def set_queue_auto_drain(self, session_id: str, auto_drain: bool, reason: str | None = None) -> None:
+        """幂等 upsert 队列状态；恢复（auto_drain=1）时 reason 置空。"""
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "INSERT INTO session_queue_state (session_id, auto_drain, pause_reason, time_updated) "
+                    "VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(session_id) DO UPDATE SET "
+                    "auto_drain=excluded.auto_drain, pause_reason=excluded.pause_reason, "
+                    "time_updated=excluded.time_updated",
+                    (session_id, 1 if auto_drain else 0, reason, time.time() * 1000),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    # ------------------------------------------------------------------
+    # 队列条目操作：取行 / 编辑 / 转向 / 排序 / 清空 / 单行取出
+    # ------------------------------------------------------------------
+
+    def get_queued_input(self, row_id: str) -> dict | None:
+        """按 id 取未转正行（端点校验与 helper 定位用）。"""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM session_input WHERE id = ? AND status = 'queued'",
+                (row_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "session_id": row["session_id"],
+            "kind": row["kind"],
+            "delivery": row["delivery"],
+            "payload": json.loads(row["payload"]),
+            "admitted_sequence": row["admitted_sequence"],
+        }
+
+    def edit_queued_input(self, row_id: str, content: str) -> bool:
+        """编辑仅 queued 纯文本行生效：重写 payload content 文本，保序不动。"""
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT payload FROM session_input WHERE id = ? AND status = 'queued'",
+                    (row_id,),
+                ).fetchone()
+                if row is None:
+                    return False
+                payload = json.loads(row["payload"])
+                if not isinstance(payload.get("content"), str):
+                    return False
+                payload["content"] = content
+                cur = conn.execute(
+                    "UPDATE session_input SET payload = ?, time_updated = ? "
+                    "WHERE id = ? AND status = 'queued'",
+                    (json.dumps(payload, ensure_ascii=False), time.time() * 1000, row_id),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    def steer_input(self, row_id: str) -> str:
+        """把 queued 行置为 guide 转向投递。
+
+        返回 ok / not_queued / attachments_unsupported——带图片 parts 的行
+        不可转向（对齐目标同规则），行保持 queue 原位。
+        """
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT payload, delivery FROM session_input "
+                    "WHERE id = ? AND status = 'queued'",
+                    (row_id,),
+                ).fetchone()
+                if row is None:
+                    return "not_queued"
+                payload = json.loads(row["payload"])
+                content = payload.get("content")
+                if isinstance(content, list) and any(
+                    isinstance(b, dict) and b.get("type") == "image_url" for b in content
+                ):
+                    return "attachments_unsupported"
+                cur = conn.execute(
+                    "UPDATE session_input SET delivery = 'guide', time_updated = ? "
+                    "WHERE id = ? AND status = 'queued'",
+                    (time.time() * 1000, row_id),
+                )
+                conn.commit()
+                return "ok" if cur.rowcount > 0 else "not_queued"
+            finally:
+                conn.close()
+
+    def reorder_input(self, row_id: str, before_id: str | None) -> bool:
+        """before-插入重排：把行移到同会话目标行之前，before_id 空=追加末尾。
+
+        仅 queued 行参与重排（已转正/取消行不动），重排后按新序连续编号，
+        转正顺序即随之前移/后移。
+        """
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                rows = conn.execute(
+                    "SELECT id FROM session_input "
+                    "WHERE session_id = (SELECT session_id FROM session_input WHERE id = ?) "
+                    "AND status = 'queued' ORDER BY admitted_sequence ASC",
+                    (row_id,),
+                ).fetchall()
+                ids = [r["id"] for r in rows]
+                if row_id not in ids:
+                    return False
+                # 目标指向自身：视作无操作（陈旧拖拽态/直调端点防御），不抛错不重排
+                if before_id == row_id:
+                    return True
+                if before_id is not None and before_id not in ids:
+                    return False
+                ids.remove(row_id)
+                insert_at = len(ids) if before_id is None else ids.index(before_id)
+                ids.insert(insert_at, row_id)
+                now = time.time() * 1000
+                for seq, rid in enumerate(ids):
+                    conn.execute(
+                        "UPDATE session_input SET admitted_sequence = ?, time_updated = ? "
+                        "WHERE id = ?",
+                        (seq, now, rid),
+                    )
+                conn.commit()
+                return True
+            finally:
+                conn.close()
+
+    def clear_queued_inputs(self, session_id: str) -> int:
+        """整会话清空：全部 queued 行置 cancelled+user_removed，返回条数。"""
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    "UPDATE session_input SET status='cancelled', status_reason=?, "
+                    "time_updated=? WHERE session_id=? AND status='queued'",
+                    ("user_removed", time.time() * 1000, session_id),
+                )
+                conn.commit()
+                return cur.rowcount
+            finally:
+                conn.close()
+
+    def take_input_for_now(self, row_id: str) -> dict | None:
+        """单行取出转正（空闲立即/恢复起队尾行共用），返回该行的消息 dict。
+
+        该行脱离 queued 集合，起轮点位的全量转正不会再碰它（防双注入）；
+        guide 行同样补 `_steer`（恢复路径取到的队尾行可能已被转向）。
+        """
+        now = time.time() * 1000
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM session_input WHERE id = ? AND status = 'queued'",
+                    (row_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+                conn.execute(
+                    "UPDATE session_input SET status='promoted', "
+                    "promoted_sequence=?, promoted_message_id=?, time_updated=? "
+                    "WHERE id=?",
+                    (row["admitted_sequence"], str(now), now, row_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        msg = {**json.loads(row["payload"]), "_ts": now, "_input_id": row_id}
+        if row["delivery"] == "guide":
+            msg["_steer"] = True
+        return msg
+
+    def tail_queued_input(self, session_id: str) -> dict | None:
+        """取该会话 admitted_sequence 最大的 queued 行（恢复起轮的 prompt 行）。"""
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT id FROM session_input "
+                "WHERE session_id = ? AND status = 'queued' "
+                "ORDER BY admitted_sequence DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        return self.get_queued_input(row["id"]) if row is not None else None

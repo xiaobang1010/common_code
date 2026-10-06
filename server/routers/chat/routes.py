@@ -317,6 +317,8 @@ def _start_run(
     edit_user_index: int | None = None,
     take_view_pointer: bool = True,
     reasoning_level: str = "",
+    promoted_extra: list[dict] | None = None,
+    prompt_meta: dict | None = None,
 ) -> tuple[server.state.RunContext | None, str | None]:
     """创建会话运行任务：串行守卫 → 前缀快照 → 持久化 → 引擎 → 后台任务。
 
@@ -370,6 +372,18 @@ def _start_run(
             return None, '编辑位置无效，历史未被修改'
         prefix_messages = prefix_messages[: visible[edit_user_index]]
 
+    # ---- 起轮转正：上一轮运行期入队、尚未等到轮次边界的 queued 行
+    # （用户消息与通知）在本条消息之前全量转正，防新消息插队旧队列；
+    # 唤起路径已自行取走的非文本消息经 promoted_extra 补位 ----
+    try:
+        from tools.subagent.notify import promote_queued_messages
+
+        prefix_messages = [*prefix_messages, *promote_queued_messages(run_session_id)]
+    except Exception:
+        logging.getLogger(__name__).warning("起轮转正队列失败，按无队列继续", exc_info=True)
+    if promoted_extra:
+        prefix_messages = [*prefix_messages, *promoted_extra]
+
     # 任务工作区：会话所属工作区（跨工作区后台任务的 cwd 隔离依据）
     task_workspace = session.workspace_path or project_root()
 
@@ -379,7 +393,11 @@ def _start_run(
     if session_store is not None:
         try:
             session_store.save_messages(
-                run_session_id, [*prefix_messages, {"role": "user", "content": prompt, "_ts": time.time() * 1000}]
+                run_session_id,
+                [
+                    *prefix_messages,
+                    {"role": "user", "content": prompt, "_ts": time.time() * 1000, **(prompt_meta or {})},
+                ],
             )
             if not session.title:
                 if prompt_text.strip():
@@ -442,7 +460,11 @@ def _start_run(
             session_token = server.state.session_var.set(run_session_id)
             try:
                 # user_context 必须传 None：引擎以「user_context 为 None」判定首轮记忆注入
-                async for ev in task_engine.submitMessage(prompt, user_context=None, system_context=None):
+                # message_meta 仅在非空时传递：兼容未声明该参数的既有测试假引擎
+                submit_kwargs: dict = {"user_context": None, "system_context": None}
+                if prompt_meta:
+                    submit_kwargs["message_meta"] = prompt_meta
+                async for ev in task_engine.submitMessage(prompt, **submit_kwargs):
                     # 拦截 usage 事件，累加 token 和成本到 AppState
                     if isinstance(ev, StreamEvent) and ev.type == "usage" and ev.usage:
                         state = app_state.get_state()
@@ -534,6 +556,8 @@ def _start_run(
                     turn_meta["reason"] = "error"
                     turn_meta["error"] = "回合未产出结果即结束"
                 session_store.set_session_last_turn(run_session_id, turn_meta)
+                # 队列自动暂停：aborted/error 收尾且仍有未转正行 → 关 auto_drain
+                _auto_pause_queue(session_store, run_session_id, str(turn_meta.get("reason") or ""))
             except Exception:
                 # 落库失败不再静默：上下文可能回退旧快照，必须留痕可查
                 logging.getLogger(__name__).warning(
@@ -623,10 +647,27 @@ async def _wake_run(session_id: str) -> None:
         notices = drain_notifications(session_id)
         if not notices:
             return
-        merged = "\n\n".join(
-            n.get("content", "") for n in notices if isinstance(n.get("content"), str) and n.get("content")
+        # 文本通知合并为一条唤起消息（现状语义）；非文本行（如入队的图片
+        # parts 消息）保持原 dict 经 promoted_extra 补进前缀，不经合并丢内容
+        texts = [
+            n.get("content", "")
+            for n in notices
+            if isinstance(n.get("content"), str) and n.get("content")
+        ]
+        extras = [
+            n for n in notices
+            if not (isinstance(n.get("content"), str) and n.get("content"))
+        ]
+        merged = "\n\n".join(texts)
+        if not merged and extras:
+            prompt_content = extras[0].get("content", "")
+            extras = extras[1:]
+        else:
+            prompt_content = merged
+        run, error = _start_run(
+            session_id, prompt_content,
+            promoted_extra=extras or None, take_view_pointer=False,
         )
-        run, error = _start_run(session_id, merged, take_view_pointer=False)
         if error is not None:
             logging.getLogger(__name__).warning("唤起会话 %s 未启动: %s", session_id, error)
     finally:
@@ -769,6 +810,17 @@ async def chat(body: dict):
         if err:
             return JSONResponse(status_code=400, content={"ok": False, "error": err})
         prompt = _build_user_content(prompt, images)
+    # ---- 运行中入队（对齐统一输入队列）：不再拒绝，写 session_input 排队，
+    # 轮次边界转正注入；编辑重发有截断语义，维持守卫拒绝 ----
+    if session_id and edit_user_index is None and session_id in server.state.running_runs:
+        store = server.state.session_store
+        if store is not None:
+            queue_id = store.admit_session_input(
+                session_id, "sendText", "queue", {"role": "user", "content": prompt}
+            )
+            return JSONResponse(
+                content={"ok": True, "queued": True, "queue_id": queue_id, "session_id": session_id}
+            )
     return StreamingResponse(
         chat_event_stream(prompt, session_id, edit_user_index, reasoning_level),
         media_type="text/event-stream",
@@ -788,6 +840,166 @@ def list_runs() -> dict:
     需要被前端以低频轮询发现（5s），开销必须可忽略。
     """
     return {"running_session_ids": list(server.state.running_runs.keys())}
+
+
+# ---------------------------------------------------------------------------
+# 输入队列观测与撤销（运行中入队消息的前端管理入口）
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/session_inputs")
+def list_session_inputs(session_id: str = "") -> dict:
+    """列该会话未转正队列项与队列态（图片 base64 以占位符回传，前端队列条用）。"""
+    store = server.state.session_store
+    if store is None or not session_id:
+        return {"items": [], "queue_state": {"auto_drain": True, "pause_reason": None}}
+    return {
+        "items": store.list_queued_inputs(session_id),
+        "queue_state": store.get_queue_state(session_id),
+    }
+
+
+@router.delete("/api/session_inputs/{row_id}")
+def cancel_session_input(row_id: str) -> dict:
+    """撤销队列项：仅未转正行生效（status=cancelled + user_removed）。"""
+    store = server.state.session_store
+    if store is None:
+        return {"ok": False}
+    return {"ok": store.cancel_session_input(row_id)}
+
+
+def _auto_pause_queue(store, session_id: str, reason: str) -> None:
+    """aborted/error 收尾且队列仍有未转正行 → 关 auto_drain 并记 pause_reason。
+
+    对齐目标滞留态语义：已 manual 暂停时不覆写 reason；判定与写入收敛在此，
+    run_engine 收尾只调用一次（也便于单测直接驱动）。
+    """
+    if reason not in ("aborted", "error") or store is None:
+        return
+    try:
+        if store.count_queued_inputs(session_id) > 0:
+            if store.get_queue_state(session_id)["pause_reason"] != "manual":
+                store.set_queue_auto_drain(
+                    session_id, False,
+                    "stopped" if reason == "aborted" else "error",
+                )
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "会话 %s 队列自动暂停失败", session_id, exc_info=True
+        )
+
+
+def _start_run_from_queued(store, session_id: str, row_id: str) -> str | None:
+    """单行取出起轮（空闲立即/恢复起队尾行共用），返回错误文案或 None。
+
+    目标行先经 take 脱离 queued 集合（起轮点位的全量转正不会再碰它，防双注入），
+    其余 queued 行由起轮转正按 FIFO 先行注入；guide 行的 `_steer` 经
+    prompt_meta 透传进本轮 user 消息。用户显式操作，起轮带查看指针（与通知唤起的 False 区分）。
+    """
+    msg = store.take_input_for_now(row_id)
+    if msg is None:
+        return "队列项已被处理"
+    meta = {k: msg[k] for k in ("_steer", "_input_id") if k in msg}
+    _run, error = _start_run(
+        session_id, msg.get("content", ""),
+        prompt_meta=meta or None, take_view_pointer=True,
+    )
+    return error
+
+
+@router.post("/api/session_inputs/steer")
+def steer_session_input(body: dict):
+    """队列项「立即」：运行中→该行转 guide 待边界注入；空闲→以该行起轮。
+
+    带图片 parts 的行不可转向（对齐目标同规则），保持 queue 原位。
+    """
+    store = server.state.session_store
+    row_id = str(body.get("id", ""))
+    if store is None or not row_id:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "参数缺失"})
+    row = store.get_queued_input(row_id)
+    if row is None:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "队列项不存在或已被处理"})
+    sid = row["session_id"]
+    if sid in server.state.running_runs:
+        status = store.steer_input(row_id)
+        if status == "attachments_unsupported":
+            return JSONResponse(status_code=400, content={"ok": False, "error": "带附件的消息不可转向"})
+        if status != "ok":
+            return JSONResponse(status_code=400, content={"ok": False, "error": "队列项已被处理"})
+        return {"ok": True, "mode": "guide"}
+    if store.get_session(sid) is None:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "会话不存在"})
+    error = _start_run_from_queued(store, sid, row_id)
+    if error is not None:
+        return JSONResponse(status_code=400, content={"ok": False, "error": error})
+    return {"ok": True, "mode": "started", "session_id": sid}
+
+
+@router.post("/api/session_inputs/edit")
+def edit_session_input(body: dict):
+    """编辑 queued 纯文本行（保序不动；带图 parts 行不可编辑）。"""
+    store = server.state.session_store
+    row_id = str(body.get("id", ""))
+    content = body.get("content")
+    if store is None or not row_id or not isinstance(content, str) or not content.strip():
+        return JSONResponse(status_code=400, content={"ok": False, "error": "参数不合法"})
+    if not store.edit_queued_input(row_id, content):
+        return JSONResponse(status_code=400, content={"ok": False, "error": "仅待转正的纯文本行可编辑"})
+    return {"ok": True}
+
+
+@router.post("/api/session_inputs/reorder")
+def reorder_session_input(body: dict):
+    """before-插入排序：把行移到目标行之前，before_id 空=追加末尾。"""
+    store = server.state.session_store
+    row_id = str(body.get("id", ""))
+    before_raw = body.get("before_id")
+    before_id = before_raw if isinstance(before_raw, str) and before_raw else None
+    if store is None or not row_id:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "参数不合法"})
+    if not store.reorder_input(row_id, before_id):
+        return JSONResponse(status_code=400, content={"ok": False, "error": "排序目标无效"})
+    return {"ok": True}
+
+
+@router.post("/api/session_inputs/clear")
+def clear_session_inputs(body: dict):
+    """整会话清空未转正队列项。"""
+    store = server.state.session_store
+    sid = str(body.get("session_id", ""))
+    if store is None or not sid:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "参数不合法"})
+    return {"ok": True, "cleared": store.clear_queued_inputs(sid)}
+
+
+@router.post("/api/session_inputs/pause")
+def pause_session_inputs(body: dict):
+    """暂停/继续队列消化。
+
+    恢复时若队列非空且无运行任务 → 以队尾行单行起轮消化残留（不经通知合并
+    唤起、不受 auto_resume 开关影响）；暂停写 pause_reason=manual，恢复清 reason。
+    """
+    store = server.state.session_store
+    sid = str(body.get("session_id", ""))
+    paused = body.get("paused")
+    if store is None or not sid or not isinstance(paused, bool):
+        return JSONResponse(status_code=400, content={"ok": False, "error": "参数不合法"})
+    if paused:
+        store.set_queue_auto_drain(sid, False, "manual")
+        return {"ok": True, "auto_drain": False, "resumed_run": False}
+    store.set_queue_auto_drain(sid, True, None)
+    resumed_run = False
+    if (
+        sid not in server.state.running_runs
+        and store.count_queued_inputs(sid) > 0
+        and store.get_session(sid) is not None
+    ):
+        tail = store.tail_queued_input(sid)
+        if tail is not None:
+            error = _start_run_from_queued(store, sid, tail["id"])
+            resumed_run = error is None
+    return {"ok": True, "auto_drain": True, "resumed_run": resumed_run}
 
 
 # ---------------------------------------------------------------------------

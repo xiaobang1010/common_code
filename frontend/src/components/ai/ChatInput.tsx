@@ -120,6 +120,136 @@ const BUILTIN_COMMANDS = [
   { name: '/exit', desc: '退出' },
 ]
 
+// 队列条/确认面板内的轻量文字按钮统一形态
+const queueLinkBtn = {
+  border: 'none', background: 'transparent', color: 'var(--text-tertiary)',
+  cursor: 'pointer', fontSize: '12px', padding: 0,
+}
+
+// 输入队列条：待发送消息管理（编辑/立即/移除/拖拽排序/暂停继续）。
+// guide 未转正行不在本条（分流到对话区 PendingGuidesRow，见 ChatStream）
+function QueueBar() {
+  const queueItems = useChatStore(s => s.queueItems)
+  const queueState = useChatStore(s => s.queueState)
+  const cancelQueueItem = useChatStore(s => s.cancelQueueItem)
+  const steerQueueItem = useChatStore(s => s.steerQueueItem)
+  const editQueueItem = useChatStore(s => s.editQueueItem)
+  const reorderQueueItem = useChatStore(s => s.reorderQueueItem)
+  const toggleQueuePause = useChatStore(s => s.toggleQueuePause)
+  // 行内编辑态（仅纯文本行提供编辑入口）
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editText, setEditText] = useState('')
+  // 拖拽源行：落到目标行=before-插入，落到条空位=追加末尾
+  const dragIdRef = useRef<string | null>(null)
+
+  // 暂停态即使 0 行也保留条体：恢复入口与暂停原因不能随队列清空一起消失
+  if (queueItems.length === 0 && queueState.auto_drain) return null
+
+  const pauseHint = queueState.pause_reason === 'manual' ? '已暂停'
+    : queueState.pause_reason === 'error' ? '出错后已暂停'
+    : queueState.pause_reason === 'stopped' ? '停止后已暂停'
+    : null
+
+  const commitEdit = async (id: string) => {
+    const t = editText.trim()
+    setEditingId(null)
+    if (t) await editQueueItem(id, t)
+  }
+
+  return (
+    <div
+      style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '4px 8px', marginBottom: '6px' }}
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => {
+        e.preventDefault()
+        const from = dragIdRef.current
+        dragIdRef.current = null
+        if (from) void reorderQueueItem(from, null)
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--text-secondary)', padding: '2px 0' }}>
+        <span style={{ fontWeight: 600 }}>待发送消息（{queueItems.length}）</span>
+        {pauseHint && <span style={{ color: 'var(--text-tertiary)' }}>· {pauseHint}</span>}
+        <button
+          onClick={() => void toggleQueuePause(queueState.auto_drain)}
+          title={queueState.auto_drain ? '暂停队列消化' : '继续队列消化'}
+          style={{ ...queueLinkBtn, marginLeft: 'auto' }}
+        >
+          {queueState.auto_drain ? '暂停' : '继续'}
+        </button>
+      </div>
+      {queueItems.map(q => (
+        editingId === q.id ? (
+          <div key={q.id} style={{ display: 'flex', gap: '6px', alignItems: 'center', padding: '2px 0' }}>
+            <input
+              value={editText}
+              autoFocus
+              onChange={(e) => setEditText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void commitEdit(q.id)
+                if (e.key === 'Escape') setEditingId(null)
+              }}
+              style={{ flex: 1, fontSize: '12px', background: 'var(--bg-primary)', color: 'var(--text-primary)', border: '1px solid var(--border-primary)', borderRadius: '4px', padding: '2px 6px' }}
+            />
+            <button onClick={() => void commitEdit(q.id)} style={queueLinkBtn}>保存</button>
+            <button onClick={() => setEditingId(null)} style={queueLinkBtn}>取消</button>
+          </div>
+        ) : (
+          <div
+            key={q.id}
+            draggable
+            onDragStart={() => { dragIdRef.current = q.id }}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              const from = dragIdRef.current
+              dragIdRef.current = null
+              if (from && from !== q.id) void reorderQueueItem(from, q.id)
+            }}
+            style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--text-secondary)', padding: '2px 0', cursor: 'grab' }}
+          >
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+              {q.hasImage ? '[图片] ' : ''}{q.content}
+            </span>
+            {!q.hasImage && (
+              <button
+                onClick={() => { setEditingId(q.id); setEditText(q.content) }}
+                title="编辑该排队消息"
+                style={queueLinkBtn}
+              >
+                编辑
+              </button>
+            )}
+            <button onClick={() => void steerQueueItem(q.id)} title="立即转向；空闲时立即起轮" style={queueLinkBtn}>立即</button>
+            <button onClick={() => void cancelQueueItem(q.id)} title="移除排队消息" style={queueLinkBtn}>移除</button>
+          </div>
+        )
+      ))}
+    </div>
+  )
+}
+
+// 空闲发送且队列非空的三态确认：清除并发送 / 保留并发送 / 取消
+function QueueConfirmPanel({ onResolved }: { onResolved: (choice: 'keep' | 'clear' | 'cancel') => void }) {
+  const queueConfirm = useChatStore(s => s.queueConfirm)
+  const queueItems = useChatStore(s => s.queueItems)
+  const resolveQueueConfirm = useChatStore(s => s.resolveQueueConfirm)
+  if (!queueConfirm) return null
+  const decide = (choice: 'keep' | 'clear' | 'cancel') => {
+    onResolved(choice)
+    void resolveQueueConfirm(choice)
+  }
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '12px', color: 'var(--text-secondary)', background: 'var(--bg-secondary)', borderRadius: '6px', padding: '4px 8px', marginBottom: '6px' }}>
+      <span>你即将发送一条消息。要清除之前已排队的 {queueItems.length} 条消息吗？</span>
+      <button onClick={() => decide('clear')} style={queueLinkBtn}>清除并发送</button>
+      <button onClick={() => decide('keep')} style={queueLinkBtn}>发送消息</button>
+      <button onClick={() => decide('cancel')} style={queueLinkBtn}>取消</button>
+    </div>
+  )
+}
+
 function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, questionRequest, onAnswer, permissionMode, onPermissionModeChange, currentTaskSessionId }: Props) {
   // 输入框序列化文本（chip 已还原为 @路径），供补全过滤与发送按钮状态用
   const [text, setText] = useState('')
@@ -300,8 +430,8 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
 
   const handleSend = () => {
     const trimmed = text.trim()
-    // 存在待发附件时空文本也允许发送
-    if ((!trimmed && pendingImages.length === 0) || taskActive) return
+    // 存在待发附件时空文本也允许发送；运行中不再拦截（store 转入输入队列排队发送）
+    if (!trimmed && pendingImages.length === 0) return
     if (trimmed.startsWith('/') && pendingImages.length > 0) {
       showHint('命令消息不支持携带图片')
       return
@@ -313,6 +443,9 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
     Promise.resolve(onSend(trimmed, images)).then(sent => {
       if (sent) {
         richInputRef.current?.clear()
+      } else if (useChatStore.getState().queueConfirm) {
+        // 转入空闲发送三态确认：附件先还原待发区，保留/清除时由确认面板清空、取消则留下
+        setPendingImages(images.map((im, i) => ({ id: `confirm-${i}-${Date.now()}`, ...im })))
       } else {
         setPendingImages(prev => (prev.length > 0 ? prev : images.map((im, i) => ({ id: `restore-${i}-${Date.now()}`, ...im }))))
         // 被拒：服务端流前拒绝的文案优先展示
@@ -740,10 +873,22 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
           </div>
         )}
 
+        {/* 输入队列条与空闲发送三态确认（组件自订阅 store，见文件头部定义） */}
+        <QueueBar />
+        <QueueConfirmPanel
+          onResolved={(choice) => {
+            // keep/clear：草稿与附件已移交确认流发送，清空输入区；cancel 保留草稿与附件
+            if (choice !== 'cancel') {
+              richInputRef.current?.clear()
+              setPendingImages([])
+            }
+          }}
+        />
+
         {/* 富文本输入：文件引用以 chip 内联在文字流中，随文本一起序列化发送 */}
         <RichChatInput
           ref={richInputRef}
-          disabled={taskActive}
+          disabled={false}
           onTextChange={setText}
           onSubmit={handleSend}
           onKeyDown={handleKeyDown}
@@ -752,7 +897,7 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
           onImageFiles={addImageFiles}
           placeholder={
             taskActive
-              ? 'AI 正在思考...'
+              ? '继续输入以排队后续修改'
               : currentTaskSessionId && currentSessionId !== currentTaskSessionId
                 ? '当前有任务运行中，可继续输入草稿'
                 : '描述你想做什么，或输入 / 命令（支持粘贴/拖拽图片）'
@@ -911,10 +1056,9 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
           </div>
           {/* 右侧组：附件 + 进度圈 + 模型 + 等级 + 发送/停止（整组靠右） */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', pointerEvents: 'auto' }}>
-            {/* 「+」添加图片附件（隐藏 file input 触发） */}
+            {/* 「+」添加图片附件（隐藏 file input 触发）；运行中同样可附件（排队消息携带） */}
             <button
               onClick={() => fileInputRef.current?.click()}
-              disabled={taskActive}
               title={canAttachImage ? '添加图片附件（也支持粘贴/拖拽）' : '当前模型不支持图片输入'}
               aria-label="添加图片"
               style={{
@@ -925,7 +1069,7 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
                 borderRadius: '50%',
                 background: 'transparent',
                 color: 'var(--text-tertiary)',
-                cursor: taskActive ? 'not-allowed' : 'pointer',
+                cursor: 'pointer',
                 display: 'inline-flex',
                 alignItems: 'center',
                 justifyContent: 'center',

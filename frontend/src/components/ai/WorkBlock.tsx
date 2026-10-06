@@ -880,6 +880,12 @@ function WorkBlockView({ blockId }: Props) {
             {block.userImages && block.userImages.length > 0 && (
               <UserImageStrip images={block.userImages} />
             )}
+            {/* 队列「立即」转向注入的消息：挂已引导标记（直播与历史重建同源） */}
+            {block.userSteered && (
+              <div style={{ marginTop: '4px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                已引导对话
+              </div>
+            )}
           </div>
         </div>
       )}
