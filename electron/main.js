@@ -1,6 +1,7 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, Menu, Notification, shell } = require('electron')
 const path = require('path')
 const fs = require('fs')
+const crypto = require('crypto')
 const pty = require('node-pty')
 const { BrowserTabManager } = require('./browser/tabs')
 const { CdpExecutor } = require('./browser/cdp')
@@ -15,6 +16,45 @@ const browserServer = new BrowserControlServer(browserTabs, browserCdp)
 let win = null
 // 项目根目录，作为终端默认工作目录
 let projectRoot = path.join(__dirname, '..')
+
+// userData 按检出目录派生：同名项目的不同检出（如两处 common_code）若共用
+// Electron userData，会出现 Chromium 缓存目录被另一实例锁定（拒绝访问 0x5）、
+// 缓存创建失败甚至实例静默退出。取项目根路径哈希做后缀，各检出互不干扰
+app.setPath(
+  'userData',
+  path.join(
+    app.getPath('appData'),
+    'common-code-electron-' +
+      crypto
+        .createHash('sha256')
+        .update(path.resolve(projectRoot).toLowerCase().replace(/\\/g, '/'))
+        .digest('hex')
+        .slice(0, 8),
+  ),
+)
+
+// 单实例锁（锁文件在上面的 userData 内，即按检出隔离）：
+// 同目录重复启动时聚焦已有窗口并提示，本实例退出
+if (!app.requestSingleInstanceLock()) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (win && !win.isDestroyed()) {
+      if (win.isMinimized()) win.restore()
+      win.show()
+      win.focus()
+      win.flashFrame(true)
+      try {
+        new Notification({
+          title: 'common_code 已在运行',
+          body: '已聚焦到原有窗口，本次重复启动被忽略',
+        }).show()
+      } catch {
+        // 系统不支持通知时仅聚焦，不打断
+      }
+    }
+  })
+}
 // 终端实例表，id -> pty 进程
 const terminals = new Map()
 // 终端 id 自增计数器
