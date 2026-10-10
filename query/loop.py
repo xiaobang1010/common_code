@@ -28,13 +28,18 @@ from query.stop_hooks import run_stop_hooks
 from query.services.api.errors import APIError, classify_error, is_recoverable_error
 from query.services.api.llm import StreamEvent, collect_tool_calls
 from query.services.compact.auto_compact import CompactTracking
-from query.utils.messages import get_messages_after_compact_boundary
+from query.utils.messages import (
+    ABORTED_TOOL_RESULT_CONTENT,
+    _synthetic_tool_result,
+    get_messages_after_compact_boundary,
+)
 from tools.executor import (
     StreamingToolExecutor,
     ToolExecutionResult,
     tool_result_to_openai_message,
 )
 from tools import get_tools
+from tools.subagent.tools import is_subagent_context
 from query.utils.api import (
     build_api_request,
     inject_context_before_last_user,
@@ -270,6 +275,72 @@ def _build_assistant_message(
         msg["_reasoning"] = reasoning
         msg["_reasoning_ms"] = int(reasoning_last_ts - reasoning_first_ts)
     return msg
+
+
+# ---------------------------------------------------------------------------
+# 取消落盘：在途回合写回引擎
+# ---------------------------------------------------------------------------
+
+
+def _cancellation_message_for(tools: list[Any], tool_name: str) -> str:
+    """被取消工具的合成结果正文：优先工具自带取消文案，找不到工具回退通用文案。"""
+    for t in tools or []:
+        if getattr(t, "name", None) == tool_name:
+            return t.get_cancellation().user_visible_message
+    return ABORTED_TOOL_RESULT_CONTENT
+
+
+def _harvest_completed(tool_executor: "StreamingToolExecutor", tool_result_messages: list[dict]) -> None:
+    """收割流式期间已完成、但尚未被轮次取走的工具结果。
+
+    取消处理器必须先于 tool_executor.cancel() 调用它：cancel 会清空完成列表，
+    不收割就把已跑完的真实结果误当缺口补成合成消息。
+    """
+    for completed in tool_executor.get_completed_results():
+        tool_result_messages.append(tool_result_to_openai_message(completed))
+        if completed.new_messages:
+            tool_result_messages.extend(completed.new_messages)
+
+
+def _flush_interrupted_turn(
+    engine: QueryEngine,
+    messages: list[dict],
+    content_parts: list[str],
+    reasoning_parts: list[str],
+    reasoning_first_ts: float | None,
+    reasoning_last_ts: float | None,
+    stream_events: list[StreamEvent],
+    tool_result_messages: list[dict],
+    tools: list[Any],
+) -> None:
+    """取消兜底：把在途回合写回 engine.mutable_messages，保住回合完整性与配对。
+
+    正常提交点在流式+工具收集之后，cancel 落在这段窗口里整轮会从历史蒸发
+    （在途 assistant 消息与其工具结果都只活在局部变量），后续通知沦为无源悬案。
+    重建式写回以轮次起点快照为底、幂等：正常路径已提交过时内容等价。
+    顺序约束：assistant → 全部 tool-role 结果（真实在前、缺口补合成）→
+    非 tool-role 注入消息置尾——注入消息夹在工具结果之间会让收尾清洗器
+    为其后消息提前补结果，造成 id 重复。
+    """
+    tool_calls = collect_tool_calls(stream_events)
+    if not "".join(content_parts) and not reasoning_parts and not tool_calls:
+        return
+    assistant_msg = _build_assistant_message(
+        content_parts, tool_calls, reasoning_parts, reasoning_first_ts, reasoning_last_ts
+    )
+    real_tools = [m for m in tool_result_messages if m.get("role") == "tool"]
+    injected = [m for m in tool_result_messages if m.get("role") != "tool"]
+    have_ids = {m.get("tool_call_id") for m in real_tools}
+    synths: list[dict] = []
+    for tc in tool_calls:
+        cid = tc.get("id")
+        if cid and cid not in have_ids:
+            synth = _synthetic_tool_result(cid)
+            synth["content"] = _cancellation_message_for(
+                tools, str((tc.get("function") or {}).get("name", ""))
+            )
+            synths.append(synth)
+    engine.mutable_messages = [*messages, assistant_msg, *real_tools, *synths, *injected]
 
 
 # ---------------------------------------------------------------------------
@@ -731,6 +802,14 @@ async def query_loop(
                 abort_controller=engine_config.abort_event,
                 # 引擎会话标识：子代理注册表按父会话关联与通知投递
                 session_id=getattr(engine, "session_id", ""),
+                # 父会话标识必须同样穿过每轮的执行器上下文重建：
+                # RespondToCoordinator 靠它定位投递目标（runner 挂在子代理上下文上，
+                # 工具实际消费的是这里重建出的执行上下文）
+                parent_session_id=(
+                    tool_use_context.parent_session_id
+                    if tool_use_context is not None
+                    else ""
+                ),
             ),
             permission_check=engine_config.permission_check,
             permission_prompt=engine_config.permission_prompt,
@@ -839,6 +918,18 @@ async def query_loop(
                     if pf_event:
                         yield pf_event
 
+        except (asyncio.CancelledError, GeneratorExit):
+            # 用户点停止（task.cancel 强杀）或消费端关闭生成器：
+            # 先收割已完成的结果，再把在途回合写回引擎；
+            # unwind 期禁止 yield，只改引擎状态，收尾保存与 turn_meta 由 routes 照常完成
+            _harvest_completed(tool_executor, tool_result_messages)
+            _flush_interrupted_turn(
+                engine, messages, content_parts, reasoning_parts,
+                reasoning_first_ts, reasoning_last_ts, stream_events,
+                tool_result_messages, engine_config.tools,
+            )
+            tool_executor.cancel()
+            raise
         except Exception as e:
             # 模型调用异常
             yield StreamEvent(
@@ -852,7 +943,17 @@ async def query_loop(
             return
 
         # 流式结束后收尾等待剩余工具
-        remaining_results = await tool_executor.get_remaining_results()
+        try:
+            remaining_results = await tool_executor.get_remaining_results()
+        except (asyncio.CancelledError, GeneratorExit):
+            _harvest_completed(tool_executor, tool_result_messages)
+            _flush_interrupted_turn(
+                engine, messages, content_parts, reasoning_parts,
+                reasoning_first_ts, reasoning_last_ts, stream_events,
+                tool_result_messages, engine_config.tools,
+            )
+            tool_executor.cancel()
+            raise
         for result in remaining_results:
             tr_msg = tool_result_to_openai_message(result)
             yield tr_msg
@@ -1036,8 +1137,11 @@ async def query_loop(
 
         engine.mutable_messages = next_messages
 
-        # 刷新工具列表（为未来 MCP 接入预留，当前刷新结果和初始一样）
-        engine_config = replace(engine_config, tools=get_tools())
+        # 刷新工具列表（为未来 MCP 接入预留，当前刷新结果和初始一样）。
+        # 子代理全程锁定派生时解析的工具池：跳过整体重置，
+        # 否则被星形拓扑排除的横向工具会经每轮刷新重新回到子代理池
+        if not is_subagent_context(tool_use_context):
+            engine_config = replace(engine_config, tools=get_tools())
 
         updates = {
             "max_output_tokens_recovery_count": 0,

@@ -91,13 +91,32 @@ interface AgentTraceCardProps {
 // transcript 端点返回的消息（get_agent_transcript 视图模式重建，含过程字段）
 interface TranscriptMessage {
   role: string
-  content: string
+  content: string | MultimodalPart[] | null
   timestamp?: number | null
   ts?: number
   reasoning?: string
   reasoning_ms?: number
   tool_calls?: Array<{ id: string; pending?: boolean; function: { name: string; arguments: string } }>
   tool_call_id?: string
+}
+
+// 多模态消息的图片注入 parts（content 为数组时的元素形态）
+interface MultimodalPart {
+  type?: string
+  text?: string
+}
+
+// content 归一为文本：图片视觉注入的消息 content 是 parts 数组，直接当
+// 字符串用会在渲染期抛错；这里统一压平兜底（后端视图模式已压平，双保险）
+function contentText(content: string | MultimodalPart[] | null | undefined): string {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content
+      .map((p) => (p?.type === 'text' ? p.text ?? '' : p?.type === 'image_url' ? '[图片]' : ''))
+      .filter(Boolean)
+      .join('\n')
+  }
+  return ''
 }
 
 // 轨迹步骤：任务/上下文/思考/正文/工具五类，按转录顺序排列
@@ -136,12 +155,13 @@ function buildTraceSteps(messages: TranscriptMessage[]): TraceStep[] {
     const offsetSec = t !== null && baseTs !== null ? Math.max(0, Math.round(t - baseTs)) : null
 
     if (m.role === 'user') {
-      if (!(m.content ?? '').trim()) return
+      const text = contentText(m.content)
+      if (!text.trim()) return
       userCount += 1
       steps.push({
         id: `u${i}`,
         kind: userCount === 1 ? 'task' : 'context',
-        content: m.content,
+        content: text,
         offsetSec,
         resultDone: false,
       })
@@ -160,8 +180,9 @@ function buildTraceSteps(messages: TranscriptMessage[]): TraceStep[] {
           resultDone: false,
         })
       }
-      if ((m.content ?? '').trim()) {
-        steps.push({ id: `a${i}`, kind: 'text', content: m.content, offsetSec, resultDone: false })
+      const text = contentText(m.content)
+      if (text.trim()) {
+        steps.push({ id: `a${i}`, kind: 'text', content: text, offsetSec, resultDone: false })
       }
       for (const tc of m.tool_calls ?? []) {
         const step: TraceStep = {
@@ -182,7 +203,7 @@ function buildTraceSteps(messages: TranscriptMessage[]): TraceStep[] {
     if (m.role === 'tool') {
       const step = m.tool_call_id ? byCallId.get(m.tool_call_id) : undefined
       if (step) {
-        step.result = m.content ?? ''
+        step.result = contentText(m.content)
         step.resultDone = true
       }
     }

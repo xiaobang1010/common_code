@@ -116,14 +116,22 @@ def get_tools(context_filter: ToolContextFilter | None = None) -> list[Tool]:
     except ImportError:
         pass
 
-    # 5. SendMessage 工具
+    # 5. 消息类工具（星形拓扑：全权通道只在父侧，子代理只有对父汇报）
     #    主循环注册 subagent 的 SendMessage（续接子代理）
-    #    teammate 上下文注册 team 的 SendMessage（teammate 间通信）
+    #    子代理上下文注册 RespondToCoordinator（向父会话中途汇报，无横向通道）
+    #    teammate 上下文注册 team 的 SendMessage（teammate 间邮箱通信）
     if context_filter is not None and context_filter.is_teammate:
         # teammate 上下文：team 邮箱通信
         try:
             from tools.team.send_message_tool import get_send_message_tool
             tools.append(get_send_message_tool())
+        except ImportError:
+            pass
+    elif context_filter is not None and context_filter.is_subagent:
+        # 子代理上下文：仅子→父汇报通道
+        try:
+            from tools.subagent.respond_tool import get_respond_to_coordinator_tool
+            tools.append(get_respond_to_coordinator_tool())
         except ImportError:
             pass
     else:
@@ -134,16 +142,18 @@ def get_tools(context_filter: ToolContextFilter | None = None) -> list[Tool]:
         except ImportError:
             pass
 
-    # 5.5 子代理任务管理工具（主循环/子代理均可管理后台任务）
-    try:
-        from tools.subagent.task_tools import (
-            get_get_subagent_output_tool,
-            get_stop_subagent_tool,
-        )
-        tools.append(get_get_subagent_output_tool())
-        tools.append(get_stop_subagent_tool())
-    except ImportError:
-        pass
+    # 5.5 子代理任务管理工具：仅主循环注册。
+    #     子代理不开放——能读/停其他代理即绕过父会话的横向通道，与星形拓扑冲突
+    if context_filter is None or not context_filter.is_subagent:
+        try:
+            from tools.subagent.task_tools import (
+                get_get_subagent_output_tool,
+                get_stop_subagent_tool,
+            )
+            tools.append(get_get_subagent_output_tool())
+            tools.append(get_stop_subagent_tool())
+        except ImportError:
+            pass
 
     # 6. TeamCreate 工具（teammate 上下文跳过，不能建子团队）
     if context_filter is None or not context_filter.is_teammate:

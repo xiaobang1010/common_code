@@ -246,7 +246,8 @@ async def _execute(inp: AgentInput, context: ToolUseContext) -> ToolResult:
             content=(
                 f"Subagent launched in background "
                 f"(agent_id: {spawn_result.agent_id}). "
-                f"结果将在完成后自动通知，不要轮询或等待；"
+                f"结果将在完成后自动通知，不要轮询或等待，"
+                f"也不要重复该任务正在做的事；"
                 f"StopSubagent 可停止，SendMessage 可续聊。"
             ),
             is_error=False,

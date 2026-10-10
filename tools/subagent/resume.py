@@ -84,6 +84,15 @@ async def resume_agent_background(
     parent_session_id = (
         parent_context.session_id if parent_context is not None else ""
     ) or None
+    # 父会话标识：注册表记录优先（stopped 态仍在，evicted 后可能没有），缺省回退调用方上下文。
+    # 汇报工具实际消费的是克隆上下文里的字段，两处同步为最终值
+    from tools.subagent.registry import get_subagent_registry
+
+    rec = get_subagent_registry().get(agent_id)
+    if rec is not None and rec.parent_session_id:
+        parent_session_id = rec.parent_session_id
+    ctx.parent_session_id = parent_session_id or ""
+    ctx.tool_use_context.parent_session_id = ctx.parent_session_id
     try:
         from server.paths import effective_root
 
@@ -110,12 +119,13 @@ async def resume_agent_background(
         ctx.child_session_id = ""
 
     # 5. 工具池与系统提示词，注册后台任务并启动驱动
-    from tools import get_tools
+    from tools import ToolContextFilter, get_tools
     from tools.subagent.context import build_subagent_system_prompt
     from tools.subagent.lifecycle import launch_background_subagent
     from tools.subagent.tools import resolve_agent_tools
 
-    all_tools = get_tools()
+    # 调用点显式传子代理过滤器：与 lifecycle 派生路径同口径，复活后仍保持星形工具池
+    all_tools = get_tools(ToolContextFilter.for_subagent(agent_def.agent_type))
     worker_tools = resolve_agent_tools(agent_def, all_tools)
     # 与 lifecycle 派生路径同一组装：恢复的子代理同样带 Notes/env（model 取 ctx.model）
     system_prompt = build_subagent_system_prompt(agent_def, ctx.model)

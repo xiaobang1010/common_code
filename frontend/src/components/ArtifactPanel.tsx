@@ -12,6 +12,7 @@ import BrowserPane from './browser/BrowserPane'
 import TabPicker from './editor/TabPicker'
 import QuickOpen from './editor/QuickOpen'
 import Markdown from './ai/Markdown'
+import ErrorBoundary from './ErrorBoundary'
 import { TOOL_META, type ToolId } from './editor/toolMeta'
 import { filesApi, type FileWriteError } from '../api/client'
 
@@ -1247,8 +1248,13 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
         {/* 中部：内容区（文件/工具二选一）。文件树已迁至左侧栏文件树视图 */}
         <div style={{ flex: 1, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
           <div style={{ flex: 1, minWidth: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-            {/* 文件视图：面板的基础视图（无工具激活时展示，内容见 fileViewNode） */}
-            {activeToolId === null && fileViewNode}
+            {/* 文件视图：面板的基础视图（无工具激活时展示，内容见 fileViewNode）；
+                单文件渲染崩溃由边界接住，切换文件自动清错重试 */}
+            {activeToolId === null && (
+              <ErrorBoundary label="文件" resetKey={activePath}>
+                {fileViewNode}
+              </ErrorBoundary>
+            )}
 
             {/* 工具视图：激活工具标签时展示（面板与文件共用中部区域，一次只显示一个）。
                 整体保持挂载、仅 CSS 隐藏，工具标签关闭后后台状态不销毁 */}
@@ -1261,7 +1267,7 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
                 overflow: 'hidden',
               }}
             >
-              {TOOL_META.map(({ id }) => (
+              {TOOL_META.map(({ id, title }) => (
                 <div
                   key={id}
                   style={{
@@ -1272,7 +1278,11 @@ const ArtifactPanel = forwardRef<ArtifactPanelHandle, ArtifactPanelProps>(
                     flexDirection: 'column',
                   }}
                 >
-                  {toolContents[id]}
+                  {/* 单面板崩溃只影响自己：渲染异常被边界接住显示兜底卡，
+                      重新激活该标签（resetKey 变化）自动清错重试 */}
+                  <ErrorBoundary label={title} resetKey={activeToolId === id}>
+                    {toolContents[id]}
+                  </ErrorBoundary>
                 </div>
               ))}
             </div>

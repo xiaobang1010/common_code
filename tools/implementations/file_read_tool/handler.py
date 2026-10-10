@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import os
 
 from tools.implementations.file_read_tool.schema import FileReadInput
 from tools.implementations.runtime.errors import (
+    ToolExecutionError,
     file_not_found_error,
     not_a_file_error,
 )
@@ -15,6 +18,13 @@ from tools.protocol import ToolUseContext
 
 # 不带 offset/limit 时默认读取的最大行数，避免整文件灌进上下文
 DEFAULT_READ_LINES = 2000
+
+# 图片扩展名 → 格式标识（占位文案用后者）；命中走视觉分支，绝不再按文本解码
+_IMAGE_SUFFIXES = {".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg", ".gif": "gif", ".webp": "webp"}
+
+# 图片大小上限：与聊天附件同口径（按解码后字节计）；常量在工具层自定义，
+# 避免 tools 反向依赖 server 层
+_MAX_IMAGE_DECODED_BYTES = 5 * 1024 * 1024
 
 
 async def handle_read(inp: FileReadInput, context: ToolUseContext) -> dict:
@@ -48,6 +58,11 @@ def _read_sync(inp: FileReadInput) -> dict:
         raise not_a_file_error(inp.file_path)
 
     st = file_path.stat()
+
+    # 图片分支：能力/大小闸门通过后返回 data URL，由 tool.py 转成视觉注入
+    suffix = file_path.suffix.lower()
+    if suffix in _IMAGE_SUFFIXES:
+        return _read_image_sync(file_path, suffix, st)
 
     # 分段读取：offset 为 1 起始行号；不带 limit 时默认只读前 DEFAULT_READ_LINES 行
     offset = max(1, inp.offset if inp.offset is not None else 1)
@@ -90,12 +105,49 @@ def _read_sync(inp: FileReadInput) -> dict:
     }
 
 
+def _read_image_sync(file_path, suffix: str, st) -> dict:
+    """图片读取内核：视觉能力与大小闸门 → base64 data URL。
+
+    工具结果正文只放占位文案，图片块经 new_messages 注入（见 tool.py）；
+    图片不参与行号基线登记（Edit 对其无意义）。
+    """
+    from query.services.api.client import get_default_model
+    from startup.model.config import get_model_config
+
+    model = os.environ.get("COMMON_CODE_MODEL") or get_default_model()
+    if not get_model_config(model).supports_vision:
+        raise ToolExecutionError(
+            code="vision_unsupported",
+            message="这是图片文件，当前模型不支持图片输入，无法呈现其内容。",
+        )
+    if st.st_size > _MAX_IMAGE_DECODED_BYTES:
+        raise ToolExecutionError(
+            code="image_too_large",
+            message=(
+                f"图片大小 {st.st_size} 字节超过上限 {_MAX_IMAGE_DECODED_BYTES} 字节，"
+                "无法读取；请先压缩或裁剪后重试。"
+            ),
+        )
+    fmt = _IMAGE_SUFFIXES[suffix]
+    data_url = f"data:image/{fmt};base64," + base64.b64encode(file_path.read_bytes()).decode("ascii")
+    return {
+        "kind": "image",
+        "file_path": str(file_path),
+        "fmt": fmt,
+        "size": st.st_size,
+        "mtime": int(st.st_mtime),
+        "data_url": data_url,
+    }
+
+
 def format_model_content(structured: dict) -> str:
     """结构化结果 → 给模型的文本。
 
     一致性基线（mtime/size）置于开头，避免被结果预算按头部保留截断。
     基线已由系统自动登记，此处展示仅供模型知悉文件状态。
     """
+    if structured.get("kind") == "image":
+        return f"[Attached image/{structured.get('fmt', 'png')}: Read image]"
     mtime = structured.get("mtime")
     size = structured.get("size")
     header = ""

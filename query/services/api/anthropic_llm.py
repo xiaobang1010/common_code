@@ -386,6 +386,16 @@ def _to_anthropic_messages(
                     "content": tool_msg.get("content") or "",
                 })
                 i += 1
+            # 紧随 tool 结果的注入 user 消息（如 Read 图片的 parts 消息）并入
+            # 同一 user turn：Anthropic 不允许连续两条 user 消息；
+            # parts 走 _convert_user_content 转块，纯字符串包成 text block
+            if i < len(openai_messages) and openai_messages[i].get("role") == "user":
+                injected_blocks = _convert_user_content(openai_messages[i].get("content"))
+                if isinstance(injected_blocks, list):
+                    tool_results.extend(injected_blocks)
+                elif injected_blocks:
+                    tool_results.append({"type": "text", "text": str(injected_blocks)})
+                i += 1
             anthropic_messages.append({
                 "role": "user",
                 "content": tool_results,

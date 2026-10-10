@@ -162,6 +162,7 @@ class ToolUseContext:
         tool_use_id: 工具执行标识；子代理场景携带 agent_id（agent_ 前缀），
             供 is_subagent_context 判定
         session_id: 所属引擎会话标识（聊天会话 id），供子代理注册表做父会话关联
+        parent_session_id: 子代理场景的父会话标识（RespondToCoordinator 汇报投递用）
     """
 
     permission_decision: str | None = None
@@ -173,6 +174,9 @@ class ToolUseContext:
     # 签名 async (question: str, options: list[dict]) -> str，None 表示无前端可问
     question_callback: Any = None
     session_id: str = ""
+    # 子代理克隆上下文携带父会话 id；与 session_id 分字段（后者语义是「所属引擎会话」），
+    # 空串表示未绑定父会话，汇报工具据此拒绝投递
+    parent_session_id: str = ""
 
 
 # ---------------------------------------------------------------------------
