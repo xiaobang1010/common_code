@@ -304,6 +304,12 @@ def get_agent_transcript(agent_id: str, *, for_view: bool = False) -> list[dict]
         messages.append(msg)
 
     if for_view:
+        # 视图模式：图片视觉注入的 user 消息 content 是多模态 parts 列表，
+        # 压平为纯文本——轨迹面板只读展示不渲染图片，既保证前端拿到的一律
+        # 是字符串，也避免每张图的 base64 随轮询反复下发
+        for m in messages:
+            if isinstance(m.get("content"), list):
+                m["content"] = _flatten_parts_text(m["content"])
         # 视图模式不剥离调用：顺序无关标记没有结果的调用（真实行序是结果行
         # 先于调用行落盘，既有向后扫描在此序下永不命中，不能复用）
         _mark_pending_tool_calls(messages)
@@ -319,6 +325,27 @@ def get_agent_transcript(agent_id: str, *, for_view: bool = False) -> list[dict]
     ]
 
     return messages if messages else None
+
+
+# ---------------------------------------------------------------------------
+# _flatten_parts_text — 视图模式的多模态 content 压平
+# ---------------------------------------------------------------------------
+
+
+def _flatten_parts_text(parts: list) -> str:
+    """多模态 parts 列表压平为纯文本：text 段原样拼接，图片段以占位符标记。"""
+    segs: list[str] = []
+    for p in parts:
+        if not isinstance(p, dict):
+            continue
+        ptype = p.get("type")
+        if ptype == "text":
+            text = (p.get("text") or "").strip()
+            if text:
+                segs.append(text)
+        elif ptype == "image_url":
+            segs.append("[图片]")
+    return "\n".join(segs)
 
 
 # ---------------------------------------------------------------------------
