@@ -1,4 +1,8 @@
-"""输入队列交互测试（input-queue-interactions）：队列态/转向/编辑/排序/清空/端点。"""
+"""输入队列交互测试：队列态/转向/撤回（编辑回切）/排序/清空/端点/转正重放/竞态兜底。
+
+input-composer-queue-handoff 起，原位编辑（edit_queued_input 与 /edit 端点）
+删除，编辑语义由原子撤回 withdraw 替代。
+"""
 
 from __future__ import annotations
 
@@ -10,6 +14,15 @@ import pytest
 
 import server.state
 from session.store import SessionStore
+
+
+async def collect(gen):
+    """消费 SSE 生成器，返回解析后的事件列表（流以 None 哨兵正常结束）。"""
+    events = []
+    async for chunk in gen:
+        line = chunk.split("data: ", 1)[1].strip()
+        events.append(json.loads(line))
+    return events
 
 
 @pytest.fixture
@@ -62,21 +75,41 @@ def test_promote_guide_priority_and_steer_mark(store):
 # ---------------------------------------------------------------------------
 
 
-def test_edit_text_only_keeps_order(store):
+def test_withdraw_returns_payload_and_removes_row(store):
     sid = "sess_c"
     q1 = store.admit_session_input(sid, "sendText", "queue", {"role": "user", "content": "一"})
-    q2 = store.admit_session_input(sid, "sendText", "queue", {"role": "user", "content": [
-        {"type": "text", "text": "t"},
-        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
-    ]})
-    assert store.edit_queued_input(q1, "一改") is True
-    assert store.edit_queued_input(q2, "不该成功") is False
+    store.admit_session_input(sid, "sendText", "queue", {"role": "user", "content": "二"})
+    # 撤回成功回传行 payload 原文；其余行原位
+    assert store.withdraw_queued_input(q1) == {"role": "user", "content": "一"}
     items = store.list_queued_inputs(sid)
-    assert [i["id"] for i in items] == [q1, q2]  # 保序
-    assert items[0]["content"] == "一改"
-    # 已转正行不可编辑
-    store.promote_queued_inputs(sid)
-    assert store.edit_queued_input(q1, "再改") is False
+    assert [i["content"] for i in items] == ["二"]
+    conn = store._get_conn()
+    try:
+        row = conn.execute(
+            "SELECT status, status_reason FROM session_input WHERE id = ?", (q1,)
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row["status"] == "cancelled" and row["status_reason"] == "user_withdraw"
+    # 重复撤回 / 不存在行：None（不复活、不覆写）
+    assert store.withdraw_queued_input(q1) is None
+    assert store.withdraw_queued_input("queue_不存在") is None
+    # 已转正行不可撤回：与轮次边界转正的竞态由此原子条件裁决
+    promoted = store.promote_queued_inputs(sid)
+    assert [m["content"] for m in promoted] == ["二"]
+    assert store.withdraw_queued_input(items[0]["id"]) is None
+
+
+def test_promote_attaches_kind_field(store):
+    sid = "sess_k"
+    qa = store.admit_session_input(sid, "sendText", "queue", {"role": "user", "content": "文本行"})
+    store.admit_session_input(sid, "backgroundNotification", "queue", {"role": "user", "content": "通知行"})
+    out = store.promote_queued_inputs(sid)
+    # 转正消息统一带 _kind（前端按此分流：sendText 画气泡、通知行静默）
+    assert [(m["content"], m["_kind"], m["_input_id"]) for m in out] == [
+        ("文本行", "sendText", qa),
+        ("通知行", "backgroundNotification", out[1]["_input_id"]),
+    ]
 
 
 def test_reorder_before_insert_append_end_and_invalid(store):
@@ -389,3 +422,85 @@ async def test_pause_resume_ignores_auto_resume_switch(store, workspace, monkeyp
     assert r["resumed_run"] is True
     assert store.count_queued_inputs(sid) == 0
     await asyncio.sleep(0.1)  # 让起轮任务收尾，避免悬挂协程告警
+
+
+# ---------------------------------------------------------------------------
+# input-composer-queue-handoff：撤回端点 / 起轮重放 / 守卫竞态兜底
+# ---------------------------------------------------------------------------
+
+
+def test_withdraw_endpoint(store, workspace):
+    from server.routers.chat.routes import withdraw_session_input
+    from starlette.responses import JSONResponse
+
+    sid = store.create_session(str(workspace)).id
+    q = store.admit_session_input(sid, "sendText", "queue", {"role": "user", "content": "排队要改"})
+    assert withdraw_session_input({"id": q}) == {"ok": True, "content": "排队要改"}
+    assert store.list_queued_inputs(sid) == []
+    # 已撤回行再撤：400 统一文案（与 spec/checklist 口径一致）
+    resp = withdraw_session_input({"id": q})
+    assert isinstance(resp, JSONResponse) and resp.status_code == 400
+    assert _body(resp)["error"] == "该消息已注入对话或已被移除"
+    # 参数缺失
+    assert withdraw_session_input({}).status_code == 400  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_startup_promoted_replay_after_session_meta(store, workspace, monkeypatch):
+    """起轮转正的 sendText 行在 session_meta 后重放；通知行不重放但照常消化。"""
+    from server.routers.chat.routes import chat_event_stream
+
+    sid = store.create_session(str(workspace)).id
+    store.save_messages(sid, [])
+    qa = store.admit_session_input(sid, "sendText", "queue", {"role": "user", "content": "排队甲"})
+    store.admit_session_input(sid, "backgroundNotification", "queue", {"role": "user", "content": "通知"})
+    box: dict = {}
+    _wire_run_env(monkeypatch, store, workspace, box)
+
+    events = await collect(chat_event_stream("新提问", sid))
+    assert events[0]["type"] == "session_meta"
+    replayed = [
+        e for e in events
+        if e.get("type") == "message" and isinstance(e.get("message"), dict) and e["message"].get("_input_id")
+    ]
+    # 仅用户行重放、且带 _kind 供前端分流；通知行不出现
+    assert [(e["message"]["content"], e["message"]["_kind"]) for e in replayed] == [("排队甲", "sendText")]
+    assert replayed[0]["message"]["_input_id"] == qa
+    # 通知行同批被起轮转正消化（不重放不等于不注入）
+    assert store.count_queued_inputs(sid) == 0
+    # 消息本体只作前缀进入引擎一次：转正行在引擎缓冲中出现且不重复
+    engine = box["engine"]
+    texts = [m.get("content") for m in engine.mutable_messages]
+    assert texts.count("排队甲") == 1
+
+
+@pytest.mark.asyncio
+async def test_guard_race_falls_back_to_queue(store, workspace):
+    """常规发送撞 _start_run 串行守卫：兜底写队列 + queued 事件，消息不丢。"""
+    from server.routers.chat.routes import chat_event_stream
+
+    sid = store.create_session(str(workspace)).id
+    store.save_messages(sid, [{"role": "user", "content": "旧"}])
+    # 模拟竞态窗口：入口判定放行后，流内守卫撞上已有运行任务
+    server.state.running_runs[sid] = object()
+    events = await collect(chat_event_stream("竞态后条", sid))
+    assert [e["type"] for e in events] == ["queued"]
+    assert events[0]["queue_id"]
+    assert [i["content"] for i in store.list_queued_inputs(sid)] == ["竞态后条"]
+    server.state.running_runs.pop(sid)
+
+
+@pytest.mark.asyncio
+async def test_guard_race_edit_resend_still_rejected(store, workspace):
+    """编辑重发撞守卫：维持 error 直拒、不入队、历史不截断（截断语义对称规则）。"""
+    from server.routers.chat.routes import chat_event_stream
+
+    sid = store.create_session(str(workspace)).id
+    store.save_messages(sid, [{"role": "user", "content": "旧"}, {"role": "assistant", "content": "答"}])
+    server.state.running_runs[sid] = object()
+    events = await collect(chat_event_stream("编辑内容", sid, edit_user_index=0))
+    assert [e["type"] for e in events] == ["error"]
+    assert "运行" in events[0]["error"]
+    assert store.list_queued_inputs(sid) == []
+    assert [m["content"] for m in store.get_session(sid).messages] == ["旧", "答"]
+    server.state.running_runs.pop(sid)

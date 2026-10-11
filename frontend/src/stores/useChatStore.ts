@@ -14,10 +14,13 @@ import { openFilesInPanel } from './panelBridge'
 export interface TimelineItem {
   id: string
   // text = 正文（过渡叙述与最终回复）；reasoning = 思维链；tool = 工具调用；
-  // compact = 上下文压缩分隔线（进行中/完成/失败）
-  type: 'text' | 'reasoning' | 'tool' | 'compact'
-  // text 正文 / reasoning 思维链全文
+  // compact = 上下文压缩分隔线（进行中/完成/失败）；
+  // user = 转正注入排队消息的用户气泡（折叠态恒可见、不计入过程步数）
+  type: 'text' | 'reasoning' | 'tool' | 'compact' | 'user'
+  // text 正文 / reasoning 思维链全文 / user 气泡文本
   content?: string
+  // 仅 user 项：guide 转向注入行挂「已引导对话」标
+  steered?: boolean
   // text/reasoning 是否仍在流式追加（open）；类型切换或回合结束时关闭
   open?: boolean
   // ---- 以下仅 tool 项 ----
@@ -144,6 +147,11 @@ interface SSEEvent {
     explanation?: string
     // 压缩摘要标记（role === 'user' 且携带）：前端隐藏不入时间线
     _compact_summary?: boolean
+    // 转正队列行标记：_input_id 供队列条去重移除、_kind 分流呈现
+    // （sendText 画用户气泡、backgroundNotification 维持静默）、_steer 引导标
+    _input_id?: string
+    _kind?: string
+    _steer?: boolean
   }
   request_id?: string
   tool_name?: string
@@ -157,6 +165,23 @@ interface SSEEvent {
 // 自增 id 生成器
 let idCounter = 0
 const genId = () => `msg-${Date.now()}-${idCounter++}`
+
+// 转正队列行文本提取：str 原样；parts 拼 text 块、含图片块时前缀「[图片]」标记
+function promotedUserText(raw: unknown): string {
+  if (typeof raw === 'string') return raw
+  if (Array.isArray(raw)) {
+    let text = ''
+    let hasImage = false
+    for (const block of raw) {
+      if (!block || typeof block !== 'object') continue
+      const b = block as Record<string, unknown>
+      if (b.type === 'text' && typeof b.text === 'string') text += b.text
+      else if (b.type === 'image_url') hasImage = true
+    }
+    return (hasImage ? '[图片] ' : '') + text
+  }
+  return ''
+}
 
 // 格式化耗时为 "X分Y秒" 或 "Y秒"
 export function formatDuration(ms: number): string {
@@ -231,11 +256,16 @@ interface ChatState {
   refreshQueue: () => Promise<void>
   cancelQueueItem: (id: string) => Promise<void>
   steerQueueItem: (id: string) => Promise<void>
-  editQueueItem: (id: string, content: string) => Promise<void>
+  // 编辑撤回：原子撤下 queued 行并回传内容文本（失败带 error 文案、已写 queueActionError）
+  withdrawQueueItem: (id: string) => Promise<{ ok: boolean; content?: string; error?: string }>
   reorderQueueItem: (id: string, beforeId: string | null) => Promise<void>
   clearQueue: () => Promise<void>
   toggleQueuePause: (paused: boolean) => Promise<void>
-  resolveQueueConfirm: (choice: 'keep' | 'clear' | 'cancel') => Promise<void>
+  // 队列动作失败的可见提示文案（编辑撤回竞争等），输入区消费后清除
+  queueActionError: string | null
+  clearQueueActionError: () => void
+  // 三态确认裁决：返回补发受理结果（cancel/无待裁决恒 false）
+  resolveQueueConfirm: (choice: 'keep' | 'clear' | 'cancel') => Promise<boolean>
   sendMessage: (prompt: string, images?: UserImage[], opts?: { skipConfirm?: boolean }) => Promise<boolean>
   // 编辑历史用户消息并从该处重发：截断后续块与 DB 历史，用新文本重建该轮
   editAndResend: (blockId: string, newText: string) => Promise<boolean>
@@ -542,20 +572,45 @@ export const useChatStore = create<ChatState>((set, get) => {
           return { ...b, timeline: items }
         })
       } else if (msg.role === 'user') {
-        // 转正的队列项：直播不重复渲染气泡（历史重建负责呈现），
-        // 从队列条/挂起列表移除；guide 转正给当前块挂「已引导对话」标
-        const inputId = (msg as Record<string, unknown>)._input_id
+        // 转正的队列项：从队列条/挂起列表移除；sendText 行同时在当前块
+        // 追加用户气泡（前台即时可见，消除「队列蒸发」观感），
+        // 通知行维持现状纯静默（无前台呈现形态）；guide 转正给当前块挂「已引导对话」标
+        const inputId = msg._input_id
         if (typeof inputId === 'string' && inputId) {
           set(state => ({
             queueItems: state.queueItems.filter(q => q.id !== inputId),
             pendingGuides: state.pendingGuides.filter(q => q.id !== inputId),
           }))
         }
-        if ((msg as Record<string, unknown>)._steer === true) {
+        if (msg._steer === true) {
           const blockId = currentBlockId.current
           if (blockId) updateBlock(blockId, b => ({ ...b, userSteered: true }))
         }
+        if (typeof inputId === 'string' && inputId && msg._kind === 'sendText') {
+          const blockId = currentBlockId.current
+          if (blockId) {
+            updateBlock(blockId, b => ({
+              ...b,
+              timeline: [
+                ...b.timeline,
+                {
+                  id: genId(),
+                  type: 'user' as const,
+                  content: promotedUserText((msg as Record<string, unknown>).content),
+                  steered: msg._steer === true,
+                  open: false,
+                },
+              ],
+            }))
+          }
+        }
       }
+    } else if (evt.type === 'queued') {
+      // 同会话串行守卫竞态兜底的入队受理信号：回滚本轮空工作块，
+      // 队列条接管呈现（与 JSON 入队受理路径同语义）
+      const blockId = currentBlockId.current
+      if (blockId) removeBlock(blockId)
+      void get().refreshQueue()
     } else if (evt.type === 'heartbeat') {
       // 心跳，忽略
     } else if (evt.type === 'permission_request') {
@@ -684,96 +739,128 @@ export const useChatStore = create<ChatState>((set, get) => {
     }
   }
 
+  // 流式收尾统一路径：全局复位 + 队列/状态刷新 + 块兜底关闭。
+  // 早 resolve 语义下由分离后台链或各提前返回点共享（对应旧 runChatSSE finally）
+  const finalizeStream = () => {
+    set({ isStreaming: false })
+    // 收尾刷新队列：本轮边界未消化完的残留行（如收尾窗口内新入队）继续呈现
+    void get().refreshQueue()
+    // 兜底 flush：异常断开时把缓冲内容落进时间线，避免尾部文本丢失
+    flushPending()
+    // 如果没有收到 loop_result（流干净断开），强制标记为 done 并标 stream_lost。
+    // 注意：真实停止由 abort() 先行写入 aborted（且已把 currentBlockId 置空，
+    // 这里整段跳过），所以此兜底只命中「未收到结果流就断了」的异常形态，
+    // 不再复用 aborted——「用户主动停止」的标签只留给真实停止操作
+    const blockId = currentBlockId.current
+    if (blockId) {
+      updateBlock(blockId, b => ({
+        ...closeOpenIn(b),
+        status: 'done' as const,
+        endTime: Date.now(),
+        exitReason: b.exitReason || 'stream_lost',
+      }))
+      currentBlockId.current = null
+    }
+    // 运行结束刷新汇总状态（usage/成本/模型等，对应旧 sendMessage 收尾的 fetchState）
+    void get().fetchState()
+  }
+
+  // 网络/流异常提示写进块（形态保持旧 catch 分支）；currentBlockId 已被
+  // abort/disconnect 置空时自然跳过，与旧流微任务时序语义一致
+  const reportStreamFailure = (e: unknown) => {
+    const blockId = currentBlockId.current
+    if (!blockId) return
+    updateBlock(blockId, b => {
+      const base = closeOpenIn(b)
+      return {
+        ...base,
+        status: 'done' as const,
+        endTime: Date.now(),
+        exitReason: 'error',
+        timeline: [
+          ...base.timeline,
+          {
+            id: genId(),
+            type: 'text' as const,
+            content: `请求失败: ${e instanceof Error ? e.message : String(e)}`,
+            open: false,
+          },
+        ],
+      }
+    })
+  }
+
+  // 流体消费（分离后台链）：resolve 之后继续驱动工作块渲染，收尾走 finalizeStream。
+  // 旧 sendMessage 的 catch/finally 在本轮微任务里跑完的时序假设不变：
+  // abort 先把 currentBlockId 置空，这里捕获的 AbortError 自然跳过块写入
+  const consumeChatStream = async (response: Response) => {
+    try {
+      await parseSSEStream(response)
+    } catch (e) {
+      reportStreamFailure(e)
+    } finally {
+      finalizeStream()
+    }
+  }
+
   // 发起 /api/chat SSE 并驱动工作块渲染。
+  // resolve 时机=受理：入队 JSON 受理或 SSE 流建立（响应头到达且非 4xx）即返回，
+  // 不等执行完成——调用方（输入区）拿到受理结果立即交接草稿，流体由分离后台链接管。
   // editUserIndex 非 null 时走编辑重发通道（后端截断该可见用户消息之后的历史）。
   // images 仅首发路径传入（编辑重发恒空）；reasoning_level 随会话所选等级携带。
   // 返回 {ok:false,error} 表示流前被服务端拒绝（400），调用方回滚本轮工作块；
-  // 流中断等异常仍按原语义把失败提示写进块内并返回 ok:true
+  // 建流前的网络异常维持旧语义（失败提示写块内、按受理返回 ok:true）
   const runChatSSE = async (
     prompt: string,
     editUserIndex: number | null = null,
     images: UserImage[] = [],
   ): Promise<{ ok: boolean; error?: string; queued?: boolean }> => {
+    sseAbortRef.current = new AbortController()
+    const body: Record<string, unknown> = { prompt, session_id: sessionIdRef.current }
+    if (editUserIndex !== null) body.edit_user_index = editUserIndex
+    const level = get().reasoningLevel
+    if (level) body.reasoning_level = level
+    if (images.length > 0) {
+      body.images = images.map((im) => ({ name: im.name, mime: im.mime, data_url: im.dataUrl }))
+    }
+    let resp: Response
     try {
-      sseAbortRef.current = new AbortController()
-      const body: Record<string, unknown> = { prompt, session_id: sessionIdRef.current }
-      if (editUserIndex !== null) body.edit_user_index = editUserIndex
-      const level = get().reasoningLevel
-      if (level) body.reasoning_level = level
-      if (images.length > 0) {
-        body.images = images.map((im) => ({ name: im.name, mime: im.mime, data_url: im.dataUrl }))
-      }
-      const resp = await fetch('/api/chat', {
+      resp = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
         signal: sseAbortRef.current.signal,
       })
-      if (!resp.ok) {
-        // 流前拒绝：解析服务端 ok/error 文案上抛，不改动块（由调用方回滚）
-        let msg = `HTTP ${resp.status}`
-        try {
-          const j = await resp.json()
-          if (j && typeof j.error === 'string') msg = j.error
-        } catch { /* 非 JSON 响应保留状态码文案 */ }
-        return { ok: false, error: msg }
-      }
-      // 运行中被后端转入队列：返回 JSON 而非 SSE 流，按入队成功处理
-      const ct = resp.headers.get('content-type') || ''
-      if (ct.includes('application/json')) {
-        const j = await resp.json().catch(() => null)
-        if (j && j.queued) {
-          void get().refreshQueue()
-          return { ok: true, queued: true }
-        }
-        return { ok: false, error: (j && j.error) || '消息排队失败' }
-      }
-      lastSentImagesRef.current = images
-      await parseSSEStream(resp)
     } catch (e) {
-      const blockId = currentBlockId.current
-      if (blockId) {
-        // 请求失败提示以 text 项形态入列
-        updateBlock(blockId, b => {
-          const base = closeOpenIn(b)
-          return {
-            ...base,
-            status: 'done' as const,
-            endTime: Date.now(),
-            exitReason: 'error',
-            timeline: [
-              ...base.timeline,
-              {
-                id: genId(),
-                type: 'text',
-                content: `请求失败: ${e instanceof Error ? e.message : String(e)}`,
-                open: false,
-              },
-            ],
-          }
-        })
-      }
-    } finally {
-      set({ isStreaming: false })
-      // 收尾刷新队列：本轮边界未消化完的残留行（如收尾窗口内新入队）继续呈现
-      void get().refreshQueue()
-      // 兜底 flush：异常断开时把缓冲内容落进时间线，避免尾部文本丢失
-      flushPending()
-      // 如果没有收到 loop_result（流干净断开），强制标记为 done 并标 stream_lost。
-      // 注意：真实停止由 abort() 先行写入 aborted（且已把 currentBlockId 置空，
-      // 这里整段跳过），所以此兜底只命中「未收到结果流就断了」的异常形态，
-      // 不再复用 aborted——「用户主动停止」的标签只留给真实停止操作
-      const blockId = currentBlockId.current
-      if (blockId) {
-        updateBlock(blockId, b => ({
-          ...closeOpenIn(b),
-          status: 'done' as const,
-          endTime: Date.now(),
-          exitReason: b.exitReason || 'stream_lost',
-        }))
-        currentBlockId.current = null
-      }
+      // 建流前网络异常：按旧语义写提示进块并走收尾，调用方视为受理
+      reportStreamFailure(e)
+      finalizeStream()
+      return { ok: true }
     }
+    if (!resp.ok) {
+      // 流前拒绝：解析服务端 ok/error 文案上抛，不改动块（由调用方回滚）
+      let msg = `HTTP ${resp.status}`
+      try {
+        const j = await resp.json()
+        if (j && typeof j.error === 'string') msg = j.error
+      } catch { /* 非 JSON 响应保留状态码文案 */ }
+      finalizeStream()
+      return { ok: false, error: msg }
+    }
+    // 运行中被后端转入队列：返回 JSON 而非 SSE 流，按入队成功处理
+    const ct = resp.headers.get('content-type') || ''
+    if (ct.includes('application/json')) {
+      const j = await resp.json().catch(() => null)
+      finalizeStream()
+      if (j && j.queued) {
+        void get().refreshQueue()
+        return { ok: true, queued: true }
+      }
+      return { ok: false, error: (j && j.error) || '消息排队失败' }
+    }
+    lastSentImagesRef.current = images
+    // 流建立=受理：流体转后台链接管，本函数在受理点立即返回
+    void consumeChatStream(resp)
     return { ok: true }
   }
 
@@ -841,6 +928,8 @@ export const useChatStore = create<ChatState>((set, get) => {
     // 斜杠命令走同步接口
     if (prompt.startsWith('/')) {
       set({ isStreaming: true })
+      // 技能续跑走流式路径且已移交后台链时置位：外层 finally 不得提前复位
+      let skillDetached = false
       try {
         const resp = await fetch('/api/command', {
           method: 'POST',
@@ -872,7 +961,9 @@ export const useChatStore = create<ChatState>((set, get) => {
             signal: sseAbortRef.current.signal,
           })
           if (!chatResp.ok) throw new Error(`HTTP ${chatResp.status}`)
-          await parseSSEStream(chatResp)
+          // 流建立=受理：流体转后台链驱动与收尾，本函数不再等执行完成
+          skillDetached = true
+          void consumeChatStream(chatResp)
         } else {
           // 普通命令：输出作为 text 项入列，块直接标记完成
           const blockId = createBlock(prompt)
@@ -907,8 +998,11 @@ export const useChatStore = create<ChatState>((set, get) => {
           }))
         }
       } finally {
-        set({ isStreaming: false })
-        currentBlockId.current = null
+        // 技能续跑已移交后台链时跳过复位（流还在跑，收尾由 finalizeStream 负责）
+        if (!skillDetached) {
+          set({ isStreaming: false })
+          currentBlockId.current = null
+        }
       }
       await fetchState()
       return true
@@ -934,7 +1028,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       await fetchState()
       return false
     }
-    await fetchState()
+    // 流建立即受理返回；运行结束的汇总刷新由分离后台链收尾负责
     return true
   }
 
@@ -1164,8 +1258,37 @@ export const useChatStore = create<ChatState>((set, get) => {
   }
 
   const steerQueueItem = (id: string) => postQueueAction('/api/session_inputs/steer', { id })
-  const editQueueItem = (id: string, content: string) =>
-    postQueueAction('/api/session_inputs/edit', { id, content })
+  // 编辑撤回：原子撤下 queued 行并回传内容；失败（已被转正/移除）写 queueActionError，
+  // 无论成败都刷新队列呈现真实状态
+  const withdrawQueueItem = async (
+    id: string,
+  ): Promise<{ ok: boolean; content?: string; error?: string }> => {
+    try {
+      const resp = await fetch('/api/session_inputs/withdraw', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      })
+      const j = await resp.json().catch(() => null)
+      if (j && j.ok) {
+        // 成功动作顺带清除旧失败提示（组件短时卸载场景下定时器随卸载清理，避免重挂闪现残留文案）
+        set({ queueActionError: null })
+        await refreshQueue()
+        const raw = j.content
+        return { ok: true, content: typeof raw === 'string' ? raw : '' }
+      }
+      const err = (j && j.error) || '该消息已注入对话或已被移除'
+      set({ queueActionError: err })
+      await refreshQueue()
+      return { ok: false, error: err }
+    } catch {
+      const err = '撤回失败，请稍后重试'
+      set({ queueActionError: err })
+      await refreshQueue()
+      return { ok: false, error: err }
+    }
+  }
+  const clearQueueActionError = () => set({ queueActionError: null })
   const reorderQueueItem = (id: string, beforeId: string | null) =>
     postQueueAction('/api/session_inputs/reorder', { id, before_id: beforeId })
   const clearQueue = async () => {
@@ -1181,13 +1304,14 @@ export const useChatStore = create<ChatState>((set, get) => {
     void get().fetchState()
   }
 
-  // 三态确认裁决：keep=原样补发；clear=先清空再补发；cancel=放弃（草稿留在输入框）
-  const resolveQueueConfirm = async (choice: 'keep' | 'clear' | 'cancel') => {
+  // 三态确认裁决：keep=原样补发；clear=先清空再补发；cancel=放弃（草稿留在输入框）。
+  // 返回补发受理结果，调用方据此决定输入区交接时机（受理成功才清空）
+  const resolveQueueConfirm = async (choice: 'keep' | 'clear' | 'cancel'): Promise<boolean> => {
     const pending = get().queueConfirm
     set({ queueConfirm: null })
-    if (!pending || choice === 'cancel') return
+    if (!pending || choice === 'cancel') return false
     if (choice === 'clear') await clearQueue()
-    await get().sendMessage(pending.prompt, pending.images, { skipConfirm: true })
+    return await get().sendMessage(pending.prompt, pending.images, { skipConfirm: true })
   }
 
   // 断开当前 SSE 连接（切换会话/工作区时调用）：仅断连接不取消后台任务，
@@ -1421,6 +1545,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     pendingGuides: [],
     queueState: { auto_drain: true, pause_reason: null },
     queueConfirm: null,
+    queueActionError: null,
     tokenUsage: {
       input_tokens: 0,
       output_tokens: 0,
@@ -1454,7 +1579,8 @@ export const useChatStore = create<ChatState>((set, get) => {
     refreshQueue,
     cancelQueueItem,
     steerQueueItem,
-    editQueueItem,
+    withdrawQueueItem,
+    clearQueueActionError,
     reorderQueueItem,
     clearQueue,
     toggleQueuePause,

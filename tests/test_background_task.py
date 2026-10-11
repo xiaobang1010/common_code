@@ -184,7 +184,11 @@ async def test_concurrent_sessions_isolated(workspace, env):
 
 @pytest.mark.asyncio
 async def test_same_session_serial_rejected(workspace, env):
-    """同会话已有运行任务时再发消息：被拒绝并提示。"""
+    """同会话已有运行任务时再发消息（竞态兜底）：转排队受理、不起第二个任务、不丢消息。
+
+    input-composer-queue-handoff 起，守卫撞车不再以 error 直拒：
+    常规发送兜底写队列并以 queued 事件受理（消除双发竞态真实丢消息窗口）。
+    """
     engine, store = env
     store.add_workspace(str(workspace))
     sid = store.create_session(str(workspace)).id
@@ -194,7 +198,10 @@ async def test_same_session_serial_rejected(workspace, env):
     await inst.started.wait()
 
     events = await collect(chat_event_stream("第二条", sid))
-    assert events[0]["type"] == "error"
+    assert events[0]["type"] == "queued"
+    assert [i["content"] for i in store.list_queued_inputs(sid)] == ["第二条"]
+    # 第二条不起新任务：引擎实例仍只有一个
+    assert len(engine.instances) == 1
 
     inst.release.set()
     await consumer

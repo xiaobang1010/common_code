@@ -272,6 +272,10 @@ def _resolve_reasoning_level(raw: Any) -> str:
     return ""
 
 
+# 同会话串行守卫文案：_start_run 直拒与 SSE 入口竞态兜底判定共用同一字符串，
+# 防止两处各写一份后静默失配
+_RUNNING_GUARD_ERROR = '当前会话已有任务在运行，请先停止或等待完成'
+
 # 系统注入消息前缀：与前端 parseUserMessage（frontend/src/utils/skillParse.ts）
 # 的 startsWith 判定一致（不 strip），编辑重发的可见序号两侧必须同规则
 _SYSTEM_REMINDER_PREFIX = "<system-reminder>"
@@ -348,7 +352,7 @@ def _start_run(
 
     # ---- 同会话串行约束：同一会话同时只允许一个运行任务 ----
     if run_session_id in server.state.running_runs:
-        return None, '当前会话已有任务在运行，请先停止或等待完成'
+        return None, _RUNNING_GUARD_ERROR
 
     session = session_store.get_session(run_session_id) if session_store is not None else None
     if session is None:
@@ -375,10 +379,15 @@ def _start_run(
     # ---- 起轮转正：上一轮运行期入队、尚未等到轮次边界的 queued 行
     # （用户消息与通知）在本条消息之前全量转正，防新消息插队旧队列；
     # 唤起路径已自行取走的非文本消息经 promoted_extra 补位 ----
+    startup_promoted: list[dict] = []
     try:
         from tools.subagent.notify import promote_queued_messages
 
-        prefix_messages = [*prefix_messages, *promote_queued_messages(run_session_id)]
+        promoted_rows = promote_queued_messages(run_session_id)
+        prefix_messages = [*prefix_messages, *promoted_rows]
+        # 用户行记录后由前台 SSE 重放成气泡（重放仅呈现用，消息本体已在
+        # 前缀进入模型上下文）；通知行维持静默
+        startup_promoted = [m for m in promoted_rows if m.get("_kind") == "sendText"]
     except Exception:
         logging.getLogger(__name__).warning("起轮转正队列失败，按无队列继续", exc_info=True)
     if promoted_extra:
@@ -434,6 +443,7 @@ def _start_run(
         engine=task_engine,
         started_at=time.time(),
         abort_event=run_abort_event,
+        startup_promoted=startup_promoted,
     )
     server.state.running_runs[run_session_id] = run
     # 查看指针按来源参数化：用户路径注册时指向本会话；唤起路径保持不变
@@ -729,6 +739,22 @@ async def chat_event_stream(
         edit_user_index=edit_user_index, reasoning_level=reasoning_level,
     )
     if error is not None:
+        # 串行守卫竞态兜底：常规发送穿过入口入队判定后撞上本守卫时，
+        # 消息转写队列并以 queued 事件受理——消除入口检查与守卫之间
+        # 双发竞态的真实丢消息窗口；编辑重发有截断语义、撞守卫维持
+        # 直拒（与入口判定排除编辑重发的规则对称），其余错误原样透传
+        if (
+            error == _RUNNING_GUARD_ERROR
+            and edit_user_index is None
+            and session_store is not None
+        ):
+            queue_id = session_store.admit_session_input(
+                run_session_id, "sendText", "queue", {"role": "user", "content": prompt}
+            )
+            yield (
+                f"data: {json.dumps({'type': 'queued', 'queue_id': queue_id, 'session_id': run_session_id}, ensure_ascii=False)}\n\n"
+            )
+            return
         yield f"data: {json.dumps({'type': 'error', 'error': error}, ensure_ascii=False)}\n\n"
         return
 
@@ -753,6 +779,12 @@ async def chat_event_stream(
         yield (
             f"data: {json.dumps({'type': 'session_meta', 'session_id': run_session_id, 'title': meta_session.title if meta_session else ''}, ensure_ascii=False)}\n\n"
         )
+
+        # 起轮转正的用户行重放：这些行已在起轮点位被消化、不会再经轮次边界
+        # 注入到本流，逐条按既有消息事件形态补发给前端画气泡（仅呈现用，
+        # 消息本体已作为前缀进入模型上下文，不重复注入）
+        for promoted_msg in run.startup_promoted:
+            yield f"data: {json.dumps(serialize_event(promoted_msg), ensure_ascii=False, default=str)}\n\n"
 
         while True:
             try:
@@ -936,17 +968,24 @@ def steer_session_input(body: dict):
     return {"ok": True, "mode": "started", "session_id": sid}
 
 
-@router.post("/api/session_inputs/edit")
-def edit_session_input(body: dict):
-    """编辑 queued 纯文本行（保序不动；带图 parts 行不可编辑）。"""
+@router.post("/api/session_inputs/withdraw")
+def withdraw_session_input(body: dict):
+    """队列项「编辑」：原子撤回 queued 行并回传内容文本，供前端回切输入区。
+
+    与轮次边界转正的行级互斥由 store 的 UPDATE 条件裁决：行已被转正/撤销
+    时撤回失败（无部分效果），前端据此提示真实状态。
+    """
     store = server.state.session_store
     row_id = str(body.get("id", ""))
-    content = body.get("content")
-    if store is None or not row_id or not isinstance(content, str) or not content.strip():
+    if store is None or not row_id:
         return JSONResponse(status_code=400, content={"ok": False, "error": "参数不合法"})
-    if not store.edit_queued_input(row_id, content):
-        return JSONResponse(status_code=400, content={"ok": False, "error": "仅待转正的纯文本行可编辑"})
-    return {"ok": True}
+    payload = store.withdraw_queued_input(row_id)
+    if payload is None:
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "error": "该消息已注入对话或已被移除"},
+        )
+    return {"ok": True, "content": payload.get("content", "")}
 
 
 @router.post("/api/session_inputs/reorder")
