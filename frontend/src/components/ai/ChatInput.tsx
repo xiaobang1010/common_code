@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import type { PermissionRequest, QuestionRequest, UserImage } from '../../stores/useChatStore'
+import type { PermissionRequest, QuestionRequest, QueueItem, UserImage } from '../../stores/useChatStore'
 import { useChatStore } from '../../stores/useChatStore'
 import { llmApi, type PermissionMode, type CustomLLMProviderInfo } from '../../api/client'
 import { useSettingsStore } from '../../stores/useSettingsStore'
@@ -126,21 +126,25 @@ const queueLinkBtn = {
   cursor: 'pointer', fontSize: '12px', padding: 0,
 }
 
-// 输入队列条：待发送消息管理（编辑/立即/移除/拖拽排序/暂停继续）。
+// 输入队列条：待发送消息管理（编辑回切/立即/移除/拖拽排序/暂停继续）。
+// 「编辑」为原子撤回：该行撤下队列并把内容切回主输入框（onEditRestored），
+// 与轮次边界转正的竞争由后端裁决，输家经 queueActionError 提示。
 // guide 未转正行不在本条（分流到对话区 PendingGuidesRow，见 ChatStream）
-function QueueBar() {
+function QueueBar({ onEditRestored }: { onEditRestored: (content: string) => void }) {
   const queueItems = useChatStore(s => s.queueItems)
   const queueState = useChatStore(s => s.queueState)
   const cancelQueueItem = useChatStore(s => s.cancelQueueItem)
   const steerQueueItem = useChatStore(s => s.steerQueueItem)
-  const editQueueItem = useChatStore(s => s.editQueueItem)
+  const withdrawQueueItem = useChatStore(s => s.withdrawQueueItem)
   const reorderQueueItem = useChatStore(s => s.reorderQueueItem)
   const toggleQueuePause = useChatStore(s => s.toggleQueuePause)
-  // 行内编辑态（仅纯文本行提供编辑入口）
-  const [editingId, setEditingId] = useState<string | null>(null)
-  const [editText, setEditText] = useState('')
   // 拖拽源行：落到目标行=before-插入，落到条空位=追加末尾
   const dragIdRef = useRef<string | null>(null)
+
+  const startEdit = async (q: QueueItem) => {
+    const r = await withdrawQueueItem(q.id)
+    if (r.ok) onEditRestored(r.content ?? '')
+  }
 
   // 暂停态即使 0 行也保留条体：恢复入口与暂停原因不能随队列清空一起消失
   if (queueItems.length === 0 && queueState.auto_drain) return null
@@ -149,12 +153,6 @@ function QueueBar() {
     : queueState.pause_reason === 'error' ? '出错后已暂停'
     : queueState.pause_reason === 'stopped' ? '停止后已暂停'
     : null
-
-  const commitEdit = async (id: string) => {
-    const t = editText.trim()
-    setEditingId(null)
-    if (t) await editQueueItem(id, t)
-  }
 
   return (
     <div
@@ -179,66 +177,48 @@ function QueueBar() {
         </button>
       </div>
       {queueItems.map(q => (
-        editingId === q.id ? (
-          <div key={q.id} style={{ display: 'flex', gap: '6px', alignItems: 'center', padding: '2px 0' }}>
-            <input
-              value={editText}
-              autoFocus
-              onChange={(e) => setEditText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') void commitEdit(q.id)
-                if (e.key === 'Escape') setEditingId(null)
-              }}
-              style={{ flex: 1, fontSize: '12px', background: 'var(--bg-primary)', color: 'var(--text-primary)', border: '1px solid var(--border-primary)', borderRadius: '4px', padding: '2px 6px' }}
-            />
-            <button onClick={() => void commitEdit(q.id)} style={queueLinkBtn}>保存</button>
-            <button onClick={() => setEditingId(null)} style={queueLinkBtn}>取消</button>
-          </div>
-        ) : (
-          <div
-            key={q.id}
-            draggable
-            onDragStart={() => { dragIdRef.current = q.id }}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => {
-              e.preventDefault()
-              e.stopPropagation()
-              const from = dragIdRef.current
-              dragIdRef.current = null
-              if (from && from !== q.id) void reorderQueueItem(from, q.id)
-            }}
-            style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--text-secondary)', padding: '2px 0', cursor: 'grab' }}
-          >
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-              {q.hasImage ? '[图片] ' : ''}{q.content}
-            </span>
-            {!q.hasImage && (
-              <button
-                onClick={() => { setEditingId(q.id); setEditText(q.content) }}
-                title="编辑该排队消息"
-                style={queueLinkBtn}
-              >
-                编辑
-              </button>
-            )}
-            <button onClick={() => void steerQueueItem(q.id)} title="立即转向；空闲时立即起轮" style={queueLinkBtn}>立即</button>
-            <button onClick={() => void cancelQueueItem(q.id)} title="移除排队消息" style={queueLinkBtn}>移除</button>
-          </div>
-        )
+        <div
+          key={q.id}
+          draggable
+          onDragStart={() => { dragIdRef.current = q.id }}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            const from = dragIdRef.current
+            dragIdRef.current = null
+            if (from && from !== q.id) void reorderQueueItem(from, q.id)
+          }}
+          style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--text-secondary)', padding: '2px 0', cursor: 'grab' }}
+        >
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+            {q.hasImage ? '[图片] ' : ''}{q.content}
+          </span>
+          {!q.hasImage && (
+            <button
+              onClick={() => void startEdit(q)}
+              title="撤回该排队消息并回到输入框编辑"
+              style={queueLinkBtn}
+            >
+              编辑
+            </button>
+          )}
+          <button onClick={() => void steerQueueItem(q.id)} title="立即转向；空闲时立即起轮" style={queueLinkBtn}>立即</button>
+          <button onClick={() => void cancelQueueItem(q.id)} title="移除排队消息" style={queueLinkBtn}>移除</button>
+        </div>
       ))}
     </div>
   )
 }
 
-// 空闲发送且队列非空的三态确认：清除并发送 / 保留并发送 / 取消
+// 空闲发送且队列非空的三态确认：清除并发送 / 保留并发送 / 取消。
+// 裁决后的补发交由外层执行，「受理成功」回调才做输入区清空（onResolved 语义）
 function QueueConfirmPanel({ onResolved }: { onResolved: (choice: 'keep' | 'clear' | 'cancel') => void }) {
   const queueConfirm = useChatStore(s => s.queueConfirm)
   const queueItems = useChatStore(s => s.queueItems)
-  const resolveQueueConfirm = useChatStore(s => s.resolveQueueConfirm)
   if (!queueConfirm) return null
   const decide = (choice: 'keep' | 'clear' | 'cancel') => {
     onResolved(choice)
-    void resolveQueueConfirm(choice)
   }
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '12px', color: 'var(--text-secondary)', background: 'var(--bg-secondary)', borderRadius: '6px', padding: '4px 8px', marginBottom: '6px' }}>
@@ -263,6 +243,8 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
   const permMenuRef = useRef<HTMLDivElement>(null)
   // 当前会话 id：区分"本会话在跑"与"其他会话在跑"
   const currentSessionId = useChatStore(s => s.sessionId)
+  // 三态确认裁决（补发受理结果决定是否交接输入区）
+  const resolveQueueConfirm = useChatStore(s => s.resolveQueueConfirm)
   // 当前会话任务进行中：前台流式，或当前查看的会话正好是后台运行任务的会话。
   // 两种形态都禁用输入、显示停止按钮（停止作用于当前查看会话）
   const taskActive = isStreaming || (currentTaskSessionId !== null && currentSessionId === currentTaskSessionId)
@@ -375,6 +357,17 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
     rejectTimerRef.current = window.setTimeout(() => setRejectHint(null), 3000)
   }
 
+  // 队列动作失败提示（编辑撤回竞争等）：渲染在本组件常驻挂载层——
+  // 竞争发生瞬间队列即清空、QueueBar 早退，条体内无法承载提示；
+  // 定时器也必须在常驻层，否则随队列条卸载失效、旧提示跨队列存续期滞留
+  const queueActionError = useChatStore(s => s.queueActionError)
+  const clearQueueActionError = useChatStore(s => s.clearQueueActionError)
+  useEffect(() => {
+    if (!queueActionError) return
+    const timer = window.setTimeout(() => clearQueueActionError(), 3000)
+    return () => window.clearTimeout(timer)
+  }, [queueActionError, clearQueueActionError])
+
   // ---- 图片附件状态 ----
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -439,12 +432,14 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
     const images = pendingImages.map(({ name, mime, dataUrl }) => ({ name, mime, dataUrl }))
     // 提交即清空待发附件（附件已随本轮消息移交）；被拒时整体还原供重试
     setPendingImages([])
-    // 序列化文本已含内联 [文件名](./路径) 引用，直接发送
+    // 序列化文本已含内联 [文件名](./路径) 引用，直接发送。
+    // onSend 的 resolve 时机=受理（流建立/入队），因此 sent=true 时清空即发生在受理那一刻，
+    // 不再等执行完成；执行结束后不会再有任何回写清空动作
     Promise.resolve(onSend(trimmed, images)).then(sent => {
       if (sent) {
         richInputRef.current?.clear()
       } else if (useChatStore.getState().queueConfirm) {
-        // 转入空闲发送三态确认：附件先还原待发区，保留/清除时由确认面板清空、取消则留下
+        // 转入空闲发送三态确认：附件先还原待发区，保留/清除补发受理后由裁决回调清空、取消则留下
         setPendingImages(images.map((im, i) => ({ id: `confirm-${i}-${Date.now()}`, ...im })))
       } else {
         setPendingImages(prev => (prev.length > 0 ? prev : images.map((im, i) => ({ id: `restore-${i}-${Date.now()}`, ...im }))))
@@ -580,6 +575,24 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
           }}
         >
           {rejectHint}
+        </div>
+      )}
+
+      {/* 队列动作失败提示（撤回竞争等）：独立于队列条是否清空，常驻层渲染 */}
+      {queueActionError && (
+        <div
+          style={{
+            margin: '0 0 8px',
+            padding: '6px 12px',
+            borderRadius: 'var(--radius-md)',
+            border: '1px solid var(--warning)',
+            background: 'var(--warning-soft)',
+            color: 'var(--text-primary)',
+            fontSize: '12px',
+            fontFamily: 'var(--font-ui)',
+          }}
+        >
+          {queueActionError}
         </div>
       )}
 
@@ -874,14 +887,29 @@ function ChatInput({ onSend, isStreaming, onStop, permissionRequest, onResolve, 
         )}
 
         {/* 输入队列条与空闲发送三态确认（组件自订阅 store，见文件头部定义） */}
-        <QueueBar />
+        <QueueBar
+          onEditRestored={(content) => {
+            richInputRef.current?.setText(content)
+            richInputRef.current?.focus()
+          }}
+        />
         <QueueConfirmPanel
           onResolved={(choice) => {
-            // keep/clear：草稿与附件已移交确认流发送，清空输入区；cancel 保留草稿与附件
-            if (choice !== 'cancel') {
-              richInputRef.current?.clear()
-              setPendingImages([])
-            }
+            // 补发受理成功才交接输入区；被拒时草稿与附件保留并提示
+            void resolveQueueConfirm(choice).then((accepted) => {
+              if (accepted) {
+                richInputRef.current?.clear()
+                setPendingImages([])
+              } else if (choice !== 'cancel') {
+                const err = useChatStore.getState().lastSendError
+                if (err) {
+                  showHint(err)
+                  useChatStore.getState().clearSendError()
+                } else {
+                  showHint('消息补发失败，草稿已保留')
+                }
+              }
+            })
           }}
         />
 

@@ -566,6 +566,45 @@ const StatusLine = memo(function StatusLine({ block, expanded, onToggle }: {
   )
 })
 
+// 转正注入的排队消息用户气泡：与块顶主气泡同源视觉（右对齐、文件引用还原），
+// 折叠态恒可见、不计入「已处理 N 步」；guide 转向行带「已引导对话」标
+function PromotedUserBubble({ item }: { item: TimelineItem }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '2px 0' }}>
+      <div
+        style={{
+          maxWidth: '80%',
+          padding: '6px 12px',
+          borderRadius: 'var(--radius-lg)',
+          background: 'var(--bg-tertiary)',
+          color: 'var(--text-primary)',
+          fontSize: '13px',
+          lineHeight: 1.5,
+          wordBreak: 'break-word',
+          whiteSpace: 'pre-wrap',
+          boxShadow: 'var(--shadow-sm)',
+        }}
+      >
+        {item.steered && (
+          <span
+            style={{
+              marginRight: '6px',
+              padding: '0 6px',
+              borderRadius: 'var(--radius-sm)',
+              background: 'var(--selected-bg)',
+              color: 'var(--text-secondary)',
+              fontSize: '11px',
+            }}
+          >
+            已引导对话
+          </span>
+        )}
+        {renderUserMessage(item.content || '')}
+      </div>
+    </div>
+  )
+}
+
 function WorkBlockView({ blockId }: Props) {
   // 局部订阅：只监听自己的工作块，其他 block 更新时不重渲
   const block = useChatStore(s => s.blocksById[blockId])
@@ -603,8 +642,9 @@ function WorkBlockView({ blockId }: Props) {
   if (!block) return null
 
   const hasItems = block.timeline.length > 0
-  // 过程行判定排除 text 与 compact 分隔线：纯压缩块不应因分隔线误触发折叠条
-  const hasProcessRows = block.timeline.some(s => s.type !== 'text' && s.type !== 'compact')
+  // 过程行判定排除 text、compact 分隔线与转正用户气泡：均非过程步骤，
+  // 不应触发/计入折叠条（纯压缩块或只有气泡的块不应出现「已处理 N 步」）
+  const hasProcessRows = block.timeline.some(s => s.type !== 'text' && s.type !== 'compact' && s.type !== 'user')
   // 流程区显示规则：有时间线始终显示；无内容运行中显示等待占位；
   // 无内容异常结束保留状态行（行尾灰字承载异常）；其余组合让位给空
   const showFlow = hasItems
@@ -615,7 +655,7 @@ function WorkBlockView({ blockId }: Props) {
   // 不做「最近 N 条 + 折叠组」的窗口化；结束后整体交由 expanded 折叠为「已处理 N 步」。
   // show_widget 是交付内容而非过程行：恒可见、不计入步数（与正文同级按时序渲染）
   const processIdx = block.timeline
-    .map((it, i) => (it.type === 'text' || it.type === 'compact' || it.toolName === 'show_widget' ? -1 : i))
+    .map((it, i) => (it.type === 'text' || it.type === 'compact' || it.type === 'user' || it.toolName === 'show_widget' ? -1 : i))
     .filter(i => i >= 0)
 
   // 异常结束原因行：过程行可见时在时间线首行显示；若块没有任何过程行，
@@ -643,6 +683,11 @@ function WorkBlockView({ blockId }: Props) {
     // 上下文压缩分隔线：进行中/完成/失败三态，独立于折叠条恒可见
     if (item.type === 'compact') {
       timelineNodes.push(<CompactDivider key={item.id} item={item} />)
+      return
+    }
+    // 转正注入的排队消息用户气泡：与正文同级恒可见、不计入步数
+    if (item.type === 'user') {
+      timelineNodes.push(<PromotedUserBubble key={item.id} item={item} />)
       return
     }
     if (!expanded) {

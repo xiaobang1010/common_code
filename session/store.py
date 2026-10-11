@@ -1091,7 +1091,8 @@ class SessionStore:
                         "WHERE id=?",
                         (row["admitted_sequence"], str(now), now, row["id"]),
                     )
-                    msg = {**payload, "_ts": now, "_input_id": row["id"]}
+                    # _kind 供前端分流呈现（用户行画气泡、通知行静默），随下划线剥离不发模型
+                    msg = {**payload, "_ts": now, "_input_id": row["id"], "_kind": row["kind"]}
                     if row["delivery"] == "guide":
                         msg["_steer"] = True
                     out.append(msg)
@@ -1203,7 +1204,7 @@ class SessionStore:
                 conn.close()
 
     # ------------------------------------------------------------------
-    # 队列条目操作：取行 / 编辑 / 转向 / 排序 / 清空 / 单行取出
+    # 队列条目操作：取行 / 撤回 / 转向 / 排序 / 清空 / 单行取出
     # ------------------------------------------------------------------
 
     def get_queued_input(self, row_id: str) -> dict | None:
@@ -1227,29 +1228,29 @@ class SessionStore:
             "admitted_sequence": row["admitted_sequence"],
         }
 
-    def edit_queued_input(self, row_id: str, content: str) -> bool:
-        """编辑仅 queued 纯文本行生效：重写 payload content 文本，保序不动。"""
+    def withdraw_queued_input(self, row_id: str) -> dict | None:
+        """撤回 queued 行（编辑回切输入区）：翻状态成功才回 payload。
+
+        与轮次边界转正共用行级互斥：竞态胜负以 UPDATE 的 queued 条件判定，
+        先翻者生效，输者得 None（行已被转正/撤销/不存在），不产生部分效果。
+        """
         with self._lock:
             conn = self._get_conn()
             try:
-                row = conn.execute(
-                    "SELECT payload FROM session_input WHERE id = ? AND status = 'queued'",
-                    (row_id,),
-                ).fetchone()
-                if row is None:
-                    return False
-                payload = json.loads(row["payload"])
-                if not isinstance(payload.get("content"), str):
-                    return False
-                payload["content"] = content
                 cur = conn.execute(
-                    "UPDATE session_input SET payload = ?, time_updated = ? "
-                    "WHERE id = ? AND status = 'queued'",
-                    (json.dumps(payload, ensure_ascii=False), time.time() * 1000, row_id),
+                    "UPDATE session_input SET status='cancelled', "
+                    "status_reason='user_withdraw', time_updated=? "
+                    "WHERE id=? AND status='queued'",
+                    (time.time() * 1000, row_id),
                 )
-                conn.commit()
-                return cur.rowcount > 0
+                if cur.rowcount == 0:
+                    return None
+                row = conn.execute(
+                    "SELECT payload FROM session_input WHERE id = ?", (row_id,)
+                ).fetchone()
+                return json.loads(row["payload"]) if row is not None else None
             finally:
+                conn.commit()
                 conn.close()
 
     def steer_input(self, row_id: str) -> str:
