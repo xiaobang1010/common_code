@@ -79,13 +79,22 @@ async def cmd_compact(context: CommandContext) -> str:
         try:
             from query.utils.tokens import count_context_tokens
 
-            model = "gpt-4o"
+            # 摘要模型必须与聊天链路同源：优先引擎快照与会话状态，
+            # 都为空时走 COMMON_CODE_MODEL/供应商默认解析——硬编码模型名
+            # 兜底在非 OpenAI 协议的供应商上会直接报模型不存在
+            model = ""
             if context.config is not None:
                 model = context.config.model
             elif context.app_state is not None:
                 state = context.app_state.get_state()
                 if state.model:
                     model = state.model
+            if not model:
+                import os
+
+                from query.services.api.client import get_default_model
+
+                model = os.environ.get("COMMON_CODE_MODEL") or get_default_model()
 
             tokens_before = count_context_tokens(list(context.messages))
             # 手动压缩保留 0 组（全量摘要）；/compact 后的参数作为摘要聚焦指令

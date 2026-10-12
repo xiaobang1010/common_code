@@ -77,6 +77,53 @@ def test_compact_compacts_real_engine_messages(monkeypatch, view_engine):
     assert view_engine[4]["content"] == "[摘要]"
 
 
+def test_compact_model_falls_back_to_chat_default(monkeypatch, view_engine):
+    """config 与会话状态都未携带模型时，摘要模型取聊天链路同源解析。
+
+    回归：曾因硬编码 gpt-4o 兜底，在非 OpenAI 供应商上直接 404，
+    手动 /compact 的 LLM 摘要路径整体不可用。
+    """
+    seen: dict = {}
+
+    async def fake(messages, model, keep_groups=0, transcript_path=None, custom_instructions=None):
+        seen["model"] = model
+        return [*messages, *_insertion_products()]
+
+    monkeypatch.setattr(auto_compact, "compact_conversation", fake)
+    # 服务刚启动的真实形态：state.model 未设、COMMON_CODE_MODEL 未设
+    monkeypatch.setattr(
+        server.state, "app_state", AppStateProvider(AppState(model=None))
+    )
+    monkeypatch.delenv("COMMON_CODE_MODEL", raising=False)
+    monkeypatch.setattr(
+        "query.services.api.client.get_default_model", lambda: "provider-real-model"
+    )
+
+    result = asyncio.run(run_command({"command": "/compact"}))
+
+    assert "compacted" in result["output"]
+    assert seen["model"] == "provider-real-model"
+
+
+def test_compact_model_respects_env_override(monkeypatch, view_engine):
+    """COMMON_CODE_MODEL 环境变量与 build_engine_config 同优先级生效。"""
+    seen: dict = {}
+
+    async def fake(messages, model, keep_groups=0, transcript_path=None, custom_instructions=None):
+        seen["model"] = model
+        return [*messages, *_insertion_products()]
+
+    monkeypatch.setattr(auto_compact, "compact_conversation", fake)
+    monkeypatch.setattr(
+        server.state, "app_state", AppStateProvider(AppState(model=None))
+    )
+    monkeypatch.setenv("COMMON_CODE_MODEL", "env-model")
+
+    asyncio.run(run_command({"command": "/compact"}))
+
+    assert seen["model"] == "env-model"
+
+
 def test_compact_empty_session_returns_hint(monkeypatch, view_engine):
     """空会话：返回原提示，引擎消息不动。"""
     view_engine.clear()
