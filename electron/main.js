@@ -10,6 +10,8 @@ const { BrowserControlServer } = require('./browser/server')
 // 内置浏览器：标签注册表 + CDP 执行器 + 本地控制服务（技能经桥接文件连入）
 const browserTabs = new BrowserTabManager()
 const browserCdp = new CdpExecutor(browserTabs)
+// guest 视口唯一可靠来源是 CDP 页面指标：注册表经该读取器取数，避免 tabs↔cdp 循环依赖
+browserTabs.setViewportResolver((tabId) => browserCdp.layoutMetrics(tabId))
 const browserServer = new BrowserControlServer(browserTabs, browserCdp)
 
 // 主窗口引用

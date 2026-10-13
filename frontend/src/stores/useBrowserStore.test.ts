@@ -52,6 +52,14 @@ describe('useBrowserStore：网页标签状态机', () => {
     expect(t.title).toBe('X')
   })
 
+  it('initialUrl 建标签时捕获且不随导航变化（webview src 须为创建期常量，重写属性会打断进行中导航）', () => {
+    const id = useBrowserStore.getState().ensureTab('a-1', 'https://start.test/')
+    useBrowserStore.getState().updateTab(id, { url: 'https://next.test/', title: 'Next' })
+    const t = useBrowserStore.getState().tabs[0]
+    expect(t.url).toBe('https://next.test/')
+    expect(t.initialUrl).toBe('https://start.test/')
+  })
+
   it('reset 清空全部标签（回收语义）', () => {
     useBrowserStore.getState().ensureTab('a-1')
     useBrowserStore.getState().ensureTab('a-2')

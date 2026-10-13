@@ -343,7 +343,7 @@ export default function BrowserPane() {
             <WebviewFrame
               key={t.tabId}
               tabId={t.tabId}
-              initialUrl={t.url}
+              initialUrl={t.initialUrl}
               active={t.tabId === activeTabId}
             />
           ))}
