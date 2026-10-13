@@ -62,6 +62,20 @@ class CdpExecutor {
     return { base64: data }
   }
 
+  // guest 实际视口（CSS 像素，反映 setViewport 的设备指标覆盖）。
+  // WebContents 没有任何尺寸同步 API，视口尺寸只能经 CDP 读页面指标；
+  // attach 失败（devtools 占用）、响应缺字段或尺寸非正一律回退 null，由调用方走默认值
+  async layoutMetrics(tabId) {
+    try {
+      const metrics = await this.withDebugger(tabId, (dbg) => dbg.sendCommand('Page.getLayoutMetrics'))
+      const vp = metrics && (metrics.cssLayoutViewport || metrics.layoutViewport)
+      if (!vp || !(vp.clientWidth > 0) || !(vp.clientHeight > 0)) return null
+      return { width: Math.round(vp.clientWidth), height: Math.round(vp.clientHeight) }
+    } catch {
+      return null
+    }
+  }
+
   // 页面求值：表达式求值并回传值（awaitPromise 支持顶层 await 形态）
   async evaluate(tabId, expression, arg) {
     const expressionText = arg === undefined
