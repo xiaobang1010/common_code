@@ -58,6 +58,7 @@ class Workspace:
         session_count: 该工作区下的会话数量
         pinned: 是否置顶（排序 pinned 优先）
         alias: 别名（显示 alias||name，用于区分同名项目）
+        created_at: 添加时间（ISO 格式，列表按此降序定位一次，不随使用变化）
     """
 
     path: str
@@ -66,6 +67,7 @@ class Workspace:
     session_count: int = 0
     pinned: bool = False
     alias: str = ""
+    created_at: str = ""
 
 
 @dataclass

@@ -56,6 +56,14 @@ export function sortSessions(sessions: SessionInfo[]): SessionInfo[] {
   })
 }
 
+// 任务预览折叠：工作区分组默认只展示最新 N 个任务，其余收进「显示更多」
+export const TASK_PREVIEW_LIMIT = 5
+
+// 纯函数：expanded=false 时截取排序后前 N 个（入参须为 sortSessions 的输出）
+export function previewSessions(sessions: SessionInfo[], expanded: boolean): SessionInfo[] {
+  return expanded ? sessions : sessions.slice(0, TASK_PREVIEW_LIMIT)
+}
+
 // 菜单项统一样式
 const menuItemStyle: React.CSSProperties = {
   width: '100%',
@@ -351,6 +359,8 @@ function WorkspaceGroup({
   useEffect(() => {
     if (isCurrent) setExpanded(true)
   }, [isCurrent])
+  // 任务预览折叠：默认只显示最新 5 个，「显示更多」展开全部，「收起」折回
+  const [showAllSessions, setShowAllSessions] = useState(false)
   const [headerHovered, setHeaderHovered] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [aliasEditing, setAliasEditing] = useState(false)
@@ -778,7 +788,7 @@ function WorkspaceGroup({
       {/* 展开内容 */}
       {expanded && (
         <div style={{ paddingLeft: '4px' }}>
-          {/* 任务列表（置顶优先排序） */}
+          {/* 任务列表（置顶优先排序，默认折叠为最新 5 条预览） */}
           {group.sessions.length === 0 ? (
             <div
               style={{
@@ -791,7 +801,7 @@ function WorkspaceGroup({
               暂无项目
             </div>
           ) : (
-            sortSessions(group.sessions).map((session) => (
+            previewSessions(sortSessions(group.sessions), showAllSessions).map((session) => (
               <SessionItem
                 key={session.id}
                 session={session}
@@ -809,6 +819,28 @@ function WorkspaceGroup({
                 onTogglePin={onTogglePin}
               />
             ))
+          )}
+          {/* 超过预览上限才出现：展开全部 / 折回预览 */}
+          {group.sessions.length > TASK_PREVIEW_LIMIT && (
+            <button
+              onClick={() => setShowAllSessions((prev) => !prev)}
+              style={{
+                display: 'block',
+                padding: '6px 10px 6px 14px',
+                border: 'none',
+                background: 'transparent',
+                color: 'var(--text-tertiary)',
+                fontSize: '12px',
+                fontFamily: 'var(--font-ui)',
+                cursor: 'pointer',
+                textAlign: 'left',
+                transition: 'color var(--transition-fast)',
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--text-secondary)')}
+              onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-tertiary)')}
+            >
+              {showAllSessions ? '收起' : '显示更多'}
+            </button>
           )}
         </div>
       )}
