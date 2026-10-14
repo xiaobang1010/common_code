@@ -9,6 +9,7 @@ import {
   type WorkspaceInfo,
 } from '../api/client'
 import { useWorkspaceSignal } from '../stores/useWorkspaceSignal'
+import { pickInitialWorkspace } from '../utils/pickInitialWorkspace'
 
 /**
  * 会话和工作区管理 hook
@@ -324,9 +325,13 @@ export function useSessions() {
     const init = async () => {
       const ws = await loadWorkspaces()
       if (ws.length > 0) {
-        // 有工作区，选第一个作为当前工作区
-        setCurrentWorkspace(ws[0])
-        currentWorkspacePathRef.current = ws[0].path
+        // 有工作区，选最近使用的作为当前工作区（last_used_at 最大，
+        // 与后端启动恢复 get_last_used_workspace_path 同口径；不取列表首位，
+        // 列表排序为置顶优先+添加时间，与选中语义无关）
+        const initial = pickInitialWorkspace(ws)
+        if (!initial) return
+        setCurrentWorkspace(initial)
+        currentWorkspacePathRef.current = initial.path
 
         // 加载当前工作区的会话列表
         const path = currentWorkspacePathRef.current

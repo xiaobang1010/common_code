@@ -81,7 +81,8 @@ class SessionStore:
                     name TEXT DEFAULT '',
                     last_used_at TEXT NOT NULL,
                     pinned INTEGER DEFAULT 0,
-                    alias TEXT DEFAULT ''
+                    alias TEXT DEFAULT '',
+                    created_at TEXT DEFAULT ''
                 )
                 """
             )
@@ -162,6 +163,15 @@ class SessionStore:
             conn.execute("ALTER TABLE workspaces ADD COLUMN pinned INTEGER DEFAULT 0")
         if "alias" not in ws_cols:
             conn.execute("ALTER TABLE workspaces ADD COLUMN alias TEXT DEFAULT ''")
+        if "created_at" not in ws_cols:
+            conn.execute("ALTER TABLE workspaces ADD COLUMN created_at TEXT DEFAULT ''")
+            # 存量行回填同一基值时间戳：列表顺序由查询的 rowid DESC tie-break 保证
+            # （同值时后插入在前=旧插入序），新插入行 created_at 必晚于基值、排在存量前；
+            # created_at = '' 过滤保证重复启动幂等，不重复回填
+            conn.execute(
+                "UPDATE workspaces SET created_at = ? WHERE created_at = ''",
+                (datetime.now().isoformat(),),
+            )
 
         session_cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()}
         if "group_id" not in session_cols:
@@ -261,6 +271,7 @@ class SessionStore:
             session_count=session_count,
             pinned=bool(row["pinned"]) if "pinned" in row.keys() else False,
             alias=row["alias"] if "alias" in row.keys() else "",
+            created_at=row["created_at"] if "created_at" in row.keys() else "",
         )
 
     @staticmethod
@@ -724,7 +735,9 @@ class SessionStore:
     def list_workspaces(self) -> list[Workspace]:
         """列出所有工作区。
 
-        按 last_used_at 降序排列，包含每个工作区下的会话数量。
+        按置顶优先、添加时间（created_at）降序排列（同值按 rowid 降序兜底），
+        顺序不随切换/使用变化；last_used_at 仅作展示，不参与排序。
+        包含每个工作区下的会话数量。
 
         Returns:
             Workspace 列表
@@ -738,7 +751,7 @@ class SessionStore:
                         WHERE s.workspace_path = w.path
                           AND COALESCE(s.origin, 'chat') != 'subagent') as session_count
                 FROM workspaces w
-                ORDER BY w.last_used_at DESC
+                ORDER BY w.pinned DESC, w.created_at DESC, w.rowid DESC
                 """
             ).fetchall()
             return [
@@ -764,17 +777,17 @@ class SessionStore:
             try:
                 conn.execute(
                     """
-                    INSERT OR IGNORE INTO workspaces (path, name, last_used_at)
-                    VALUES (?, ?, ?)
+                    INSERT OR IGNORE INTO workspaces (path, name, last_used_at, created_at)
+                    VALUES (?, ?, ?, ?)
                     """,
-                    (path, name, now),
+                    (path, name, now, now),
                 )
                 conn.commit()
             finally:
                 conn.close()
 
         return Workspace(
-            path=path, name=name, last_used_at=now, session_count=0
+            path=path, name=name, last_used_at=now, session_count=0, created_at=now
         )
 
     def update_workspace_last_used(self, path: str) -> None:
@@ -797,6 +810,22 @@ class SessionStore:
                 conn.commit()
             finally:
                 conn.close()
+
+    def get_last_used_workspace_path(self) -> str | None:
+        """返回最近使用（last_used_at 最大）的工作区路径，空库返回 None。
+
+        独立单查询、不依赖 list_workspaces 的展示顺序：启动恢复的
+        「恢复最后使用者」语义与列表排序（置顶优先/添加时间）解耦，
+        排序调整不影响恢复目标。
+        """
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT path FROM workspaces ORDER BY last_used_at DESC LIMIT 1"
+            ).fetchone()
+            return row["path"] if row else None
+        finally:
+            conn.close()
 
     def update_workspace_pinned(self, path: str, pinned: bool) -> bool:
         """更新工作区置顶状态。"""
@@ -982,17 +1011,18 @@ class SessionStore:
     def list_all_sessions_grouped(self) -> list[tuple[Workspace, list[Session]]]:
         """按工作区分组返回所有会话。
 
-        先一次性查出所有工作区（按 last_used_at 降序），再对每个工作区
-        查其名下的会话（按 updated_at 降序，不含 messages，含 message_count）。
+        先一次性查出所有工作区（置顶优先、created_at 降序，同值按 rowid
+        降序兜底，顺序不随使用变化），再对每个工作区查其名下的会话
+        （按 updated_at 降序，不含 messages，含 message_count）。
 
         Returns:
             列表元素为 (工作区, 会话列表) 元组；会话列表可能为空
         """
         conn = self._get_conn()
         try:
-            # 查所有工作区，按最后使用时间降序
+            # 查所有工作区，置顶优先、添加时间降序（与 list_workspaces 同序）
             ws_rows = conn.execute(
-                "SELECT * FROM workspaces ORDER BY last_used_at DESC"
+                "SELECT * FROM workspaces ORDER BY pinned DESC, created_at DESC, rowid DESC"
             ).fetchall()
             workspaces = [self._row_to_workspace(row) for row in ws_rows]
 

@@ -128,7 +128,8 @@ def list_sessions(workspace_path: str = "") -> dict:
 def list_sessions_grouped() -> dict:
     """按工作区分组返回所有会话，附带自定义任务分组与每条会话的归属。
 
-    返回 {"groups": [{"workspace": {path, name, last_used_at},
+    返回 {"groups": [{"workspace": {path, name, last_used_at, pinned, alias,
+                                    created_at},
                        "sessions": [{id, title, workspace_path, branch,
                                      created_at, updated_at, message_count,
                                      pinned, group_id}]}],
@@ -146,6 +147,7 @@ def list_sessions_grouped() -> dict:
                     "last_used_at": workspace.last_used_at,
                     "pinned": workspace.pinned,
                     "alias": workspace.alias,
+                    "created_at": workspace.created_at,
                 },
                 "sessions": [
                     {
