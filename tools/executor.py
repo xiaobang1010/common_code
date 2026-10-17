@@ -39,6 +39,7 @@ class ToolExecutionResult:
     is_error: bool = False
     metadata: dict = field(default_factory=dict)
     new_messages: list[dict] | None = None
+    attachments: list[dict] | None = None
     context_modifier: dict | None = None
 
 
@@ -340,6 +341,7 @@ async def execute_tool_call(
         is_error=result.is_error,
         metadata=result.metadata,
         new_messages=result.new_messages,
+        attachments=result.attachments,
         context_modifier=result.context_modifier,
     )
 

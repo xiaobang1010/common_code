@@ -104,15 +104,20 @@ def ensure_child_session(
 
 
 def persist_child_messages(child_session_id: str, messages: list[dict]) -> None:
-    """把子代理当前完整消息列表整表写入子会话（每轮调用）。
+    """把子代理当前完整消息列表经事务通道写入子会话（每轮调用）。
 
+    出口清洗：在途悬空形态（中断/崩溃残留）不得原样落库。
     失败仅日志，不阻断子代理运行（转录边车仍是崩溃恢复来源）。
     """
     store = _get_session_store()
     if store is None:
         return
     try:
-        store.save_messages(child_session_id, messages)
+        from query.utils.messages import sanitize_dangling_tool_calls
+
+        store.replace_messages_tx(
+            child_session_id, sanitize_dangling_tool_calls(messages)
+        )
     except Exception as e:
         logger.warning("子会话消息落库失败: %s", e)
 

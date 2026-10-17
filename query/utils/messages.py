@@ -50,7 +50,7 @@ def extract_text_from_content(content, image_placeholder: str = "") -> str:
             btype = block.get("type")
             if btype == "text" and isinstance(block.get("text"), str):
                 parts.append(block["text"])
-            elif btype in ("image", "image_url", "input_image") and image_placeholder:
+            elif btype in ("image", "image_url", "input_image", "image_ref") and image_placeholder:
                 parts.append(image_placeholder)
         return "\n".join(parts)
     return ""
@@ -191,7 +191,7 @@ def is_skill_message(message: dict) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# 悬空 tool_calls 清洗
+# 悬空 tool_calls 清洗（两遍全表集合运算，不依赖行位置）
 # ---------------------------------------------------------------------------
 
 # 缺失工具结果补入的合成文本：中断/崩溃导致的收尾不全是事实，如实告知模型
@@ -199,62 +199,153 @@ ABORTED_TOOL_RESULT_CONTENT = "[执行被中断，无结果]"
 
 
 def _synthetic_tool_result(tool_call_id: str) -> dict:
-    """构造一条合成 tool 结果消息（形状与 tool_result_to_openai_message 对齐）。"""
+    """构造一条合成 tool 结果消息（形状与 tool_result_to_openai_message 对齐）。
+
+    _synthetic 标记供择优判定（真实结果优先于合成），随下划线剥离不发模型。
+    """
     return {
         "role": "tool",
         "tool_call_id": tool_call_id,
         "content": ABORTED_TOOL_RESULT_CONTENT,
         "_ts": time.time() * 1000,
+        "_synthetic": True,
     }
 
 
-def sanitize_dangling_tool_calls(messages: list[dict]) -> list[dict]:
-    """补齐悬空 tool_calls 缺失的工具结果，返回新的消息列表。
+def _is_synthetic_result(msg: dict) -> bool:
+    """识别合成中断结果行：新代码带 _synthetic 标记，存量行以占位正文判定。"""
+    return (
+        msg.get("_synthetic") is True
+        or msg.get("content") == ABORTED_TOOL_RESULT_CONTENT
+    )
 
-    任务被中断（/api/abort 的 task.cancel 落在工具执行阶段）或输出超限
-    恢复（finish_reason=length 的 7b 分支丢弃当轮工具结果）时，历史可能
-    存在「assistant 带 tool_calls 但没有齐全对应 tool 结果」的残缺形态。
-    这种序列发给 OpenAI 格式接口属于非法请求，部分模型服务宽容处理时会
-    补执行旧工具调用——表现即「模型执行上一条消息」。
 
-    全量扫描：每条带 tool_calls 的 assistant 消息，在其后、下一条非 tool
-    消息之前，缺失结果的 id 就地补一条合成 tool 结果（位于既有结果之后，
-    无既有结果则紧跟该 assistant）。不修改传入列表；历史合法时返回内容
-    与原列表一致的副本。
+def _tool_call_ids(msg: dict) -> list[str]:
+    """提取 assistant 消息的调用 id 列表（保持声明序）。"""
+    return [
+        tc.get("id") for tc in msg.get("tool_calls") or []
+        if isinstance(tc, dict) and tc.get("id")
+    ]
+
+
+def expand_tool_attachments(messages: list[dict]) -> list[dict]:
+    """持久形态 → 协议形态投影：把 tool 行的 _attachments 展开为紧随其后的
+    图片 parts user 行（OpenAI 形态；Anthropic 转换器的合并窗口会把它并入
+    同一 user turn）。
+
+    纯函数、幂等：输出的宿主行剥离 _attachments（投影形态），对输出重跑
+    同输出；展开行时间戳透传宿主 _ts（宿主缺省不带，避免两次构建漂移）；
+    缺文件附件（data_url 为空）跳过——结果行占位正文已说明。
+    不修改传入列表。
     """
-    sanitized: list[dict] = []
-    # 最近一条带 tool_calls 的 assistant 消息中尚未等到结果的 id 集合
-    pending_ids: set[str] = set()
-
+    out: list[dict] = []
     for msg in messages:
         if not isinstance(msg, dict):
-            sanitized.append(msg)
+            out.append(msg)
             continue
-        role = msg.get("role")
-
-        if role == "assistant" and msg.get("tool_calls"):
-            # 前一条 assistant 的悬空结果不可能再出现在另一条 assistant 之后，
-            # 先在其前补齐再切换待补集合
-            sanitized.extend(_synthetic_tool_result(i) for i in pending_ids)
-            sanitized.append(msg)
-            pending_ids = {
-                tc.get("id") for tc in msg["tool_calls"] if isinstance(tc, dict) and tc.get("id")
-            }
+        atts = msg.get("_attachments")
+        if not isinstance(atts, list) or not atts:
+            out.append(msg)
             continue
+        # 宿主行投影：剥内部附件字段，其余原样（含 _ts/_synthetic 等约定）
+        host = {k: v for k, v in msg.items() if k != "_attachments"}
+        out.append(host)
+        placeholder = str(msg.get("content") or "")
+        blocks: list[dict] = []
+        for att in atts:
+            url = att.get("data_url") if isinstance(att, dict) else None
+            if url:
+                blocks.append({"type": "text", "text": placeholder})
+                blocks.append({"type": "image_url", "image_url": {"url": url}})
+        if blocks:
+            expanded: dict = {"role": "user", "content": blocks}
+            if msg.get("_ts") is not None:
+                expanded["_ts"] = msg["_ts"]
+            out.append(expanded)
+    return out
 
-        if role == "tool" and pending_ids:
-            tool_call_id = msg.get("tool_call_id")
-            if tool_call_id in pending_ids:
-                pending_ids.discard(tool_call_id)
-            sanitized.append(msg)
-            continue
 
-        # 非 tool 消息：还有没等到结果的 id 就在它之前补合成结果
-        if pending_ids:
-            sanitized.extend(_synthetic_tool_result(i) for i in pending_ids)
-            pending_ids = set()
-        sanitized.append(msg)
+def sanitize_dangling_tool_calls(messages: list[dict]) -> list[dict]:
+    """修复异常历史序列，返回新的消息列表（两遍全表集合运算，不依赖行位置）。
 
-    # 历史以悬空 tool_calls 结尾（中断的典型形态）：在末尾补齐
-    sanitized.extend(_synthetic_tool_result(i) for i in pending_ids)
-    return sanitized
+    任务被中断（/api/abort 的 task.cancel 落在工具执行阶段）、输出超限
+    恢复（finish_reason=length 丢弃当轮工具结果）或历史经旧版位置式清洗
+    落库时，序列可能存在四类残缺形态：
+      a) assistant 带 tool_calls 但部分 id 没有对应 tool 结果；
+      b) 同一 tool_call_id 存在多条结果（历史合成与真实双份）；
+      c) tool 结果行找不到任何调用归属（孤儿）；
+      d) 历史以悬空调用结尾。
+
+    调用组 = assistant(tool_calls) 起、至下一个 assistant(tool_calls) 前的
+    全部行。修复规则：
+      - 同 id 多条结果择优保留：真实结果（正文非中断占位、无合成标记）
+        优先于合成，同优先级保首条，落选行剔除；
+      - 缺失 id 的合成结果插在组内最后一条结果行之后（无结果行则紧跟
+        调用行）——补齐位置不依赖「结果行是否被注入行隔开」，注入行
+        夹在结果之间不再诱发错位或双份；
+      - 无主结果行（id 不属于任何调用组）保持原样（沿用旧版保守语义）。
+    对合法历史逐条等价（不重排、不补写、不剔除）；幂等（对输出再跑一遍
+    结果相同）。不修改传入列表。
+    """
+    n = len(messages)
+    group_starts: list[int] = []
+    group_ids: dict[int, list[str]] = {}
+    for i, m in enumerate(messages):
+        if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls"):
+            group_starts.append(i)
+            group_ids[i] = _tool_call_ids(m)
+
+    out: list[dict] = []
+    cursor = 0  # 已消费的输入游标
+    for k, start in enumerate(group_starts):
+        group_end = group_starts[k + 1] if k + 1 < len(group_starts) else n
+        # 组起点前的独立行透传（无主结果行同样保留，见组内分支）
+        while cursor < start:
+            out.append(messages[cursor])
+            cursor += 1
+        out.append(messages[start])
+        # 组内择优：每个本组 id 保留最优结果行（真实优先、同优先级保首条）
+        best: dict[str, dict] = {}
+        for j in range(start + 1, group_end):
+            inner = messages[j]
+            if not (isinstance(inner, dict) and inner.get("role") == "tool"):
+                continue
+            cid = inner.get("tool_call_id")
+            if cid not in group_ids[start]:
+                continue  # 无主结果行不参与本组择优，重放时原样保留
+            cur = best.get(cid)
+            if cur is None or (_is_synthetic_result(cur) and not _is_synthetic_result(inner)):
+                best[cid] = inner
+        # 组内重放固定两段：结果行段（本组择优命中 + 无主结果行，原相对序）
+        # 在前，注入行段随后（原相对序），缺失合成补在结果行段尾。新写入方
+        # 的合法形态（结果行连续、注入行置组后）经此恒等；存量「注入行夹在
+        # 结果行之间」的错序形态被理顺——夹心不再可见，也不产生合成+真实双份
+        emitted: set[str] = set()
+        for j in range(start + 1, group_end):
+            inner = messages[j]
+            if not (isinstance(inner, dict) and inner.get("role") == "tool"):
+                continue
+            cid = inner.get("tool_call_id")
+            if cid in group_ids[start]:
+                if best.get(cid) is inner and cid not in emitted:
+                    out.append(inner)
+                    emitted.add(cid)
+            else:
+                out.append(inner)  # 无主结果行留在结果区（旧版保守语义）
+        out.extend(
+            _synthetic_tool_result(cid)
+            for cid in group_ids[start]
+            if cid not in best
+        )
+        for j in range(start + 1, group_end):
+            inner = messages[j]
+            if isinstance(inner, dict) and inner.get("role") == "tool" \
+                    and inner.get("tool_call_id") in group_ids[start]:
+                continue  # 本组结果行已在结果行段决策（择优落选者剔除）
+            out.append(inner)
+        cursor = group_end
+    # 尾段透传（无主结果行同样保留——与组内保守语义一致，任何输入不抛错）
+    while cursor < n:
+        out.append(messages[cursor])
+        cursor += 1
+    return out

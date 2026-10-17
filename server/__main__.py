@@ -95,6 +95,17 @@ async def main() -> None:
     # 空库或目录已不存在时回退启动目录（restore_last_workspace 返回 None）
     session_store = SessionStore()
     server_state.session_store = session_store
+    # 存量迁移与对账：快照列 → 行表（幂等，失败保原列可重跑）；
+    # promoted 队列行与消息表对账自愈（吞记录治愈）。均在起服前完成
+    try:
+        migrated = session_store.migrate_legacy_blobs()
+        if migrated:
+            logger.info("行式迁移完成：%d 个会话", migrated)
+        healed = session_store.reconcile_promoted_inputs()
+        if healed:
+            logger.warning("启动对账补写 %d 条转正未落库消息", healed)
+    except Exception:
+        logger.error("启动迁移/对账失败（存储保持原状，下次启动重试）", exc_info=True)
     restored = restore_last_workspace(session_store)
     if restored:
         # 引 server.paths 的实现（startup.bootstrap.state 有同名函数但语义不同）：
