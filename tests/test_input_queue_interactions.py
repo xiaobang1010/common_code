@@ -155,6 +155,8 @@ def test_clear_then_cancel_false(store):
 
 
 def test_take_single_and_tail(store):
+    """take 只取视图不翻状态（防双注入转移到起轮事务的认领互斥）；
+    tail 取队尾行；guide 行 take 带 _steer。"""
     sid = "sess_g"
     store.admit_session_input(sid, "sendText", "queue", {"role": "user", "content": "头"})
     q2 = store.admit_session_input(sid, "sendText", "queue", {"role": "user", "content": "尾"})
@@ -162,13 +164,22 @@ def test_take_single_and_tail(store):
     assert tail["id"] == q2
     msg = store.take_input_for_now(q2)
     assert msg["content"] == "尾" and msg["_input_id"] == q2
-    assert store.take_input_for_now(q2) is None
-    assert store.count_queued_inputs(sid) == 1  # 只取出目标行
+    # 新语义：take 是只读视图，行保持 queued（状态翻转与落库同事务）；
+    # 防双注入由 promote_inputs_tx 认领互斥承担（先翻者胜）
+    assert store.take_input_for_now(q2)["content"] == "尾"
+    assert store.count_queued_inputs(sid) == 2  # take 不改变 queued 集合
     # guide 行 take 带 _steer
     head_id = store.list_queued_inputs(sid)[0]["id"]
     store.steer_input(head_id)
     m2 = store.take_input_for_now(head_id)
     assert m2.get("_steer") is True
+    # 起轮事务认领：take 过的行在完整目标列表中被翻 promoted
+    store.promote_inputs_tx(sid, [
+        {"role": "user", "content": "尾", "_input_id": q2},
+        {"role": "user", "content": "头", "_input_id": head_id, "_steer": True},
+    ])
+    assert store.get_promoted_input(q2)["status"] == "promoted"
+    assert store.get_promoted_input(head_id)["status"] == "promoted"
 
 
 def test_reorder_self_target_is_noop(store):

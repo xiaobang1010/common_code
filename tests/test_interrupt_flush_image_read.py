@@ -254,15 +254,15 @@ def _read(path: str):
     return asyncio.run(_execute(FileReadInput(file_path=path), ToolUseContext()))
 
 
-def test_read_image_vision_injects_parts(png_ws, monkeypatch):
+def test_read_image_vision_attaches_to_result(png_ws, monkeypatch):
+    """图片宿主绑定在结果行（attachments），不再以独立 user 块注入对话。"""
     monkeypatch.setenv("COMMON_CODE_MODEL", "gpt-4o")
     r = _read("shot.png")
     assert not r.is_error
     assert r.content == "[Attached image/png: Read image]"
-    assert r.new_messages and r.new_messages[0]["role"] == "user"
-    parts = r.new_messages[0]["content"]
-    assert [b["type"] for b in parts] == ["text", "image_url"]
-    assert parts[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert r.new_messages is None, "图片不再走 new_messages 注入通道"
+    assert r.attachments and r.attachments[0]["mime"] == "image/png"
+    assert r.attachments[0]["data_url"].startswith("data:image/png;base64,")
     # data_url 不进 metadata（轮询/SSE 不回传大 base64）
     assert "data_url" not in r.metadata
     # 上下文无二进制
@@ -274,7 +274,7 @@ def test_read_image_non_vision_rejected(png_ws, monkeypatch):
     r = _read("shot.png")
     assert r.is_error
     assert "不支持图片输入" in r.content
-    assert not r.new_messages
+    assert not r.new_messages and not r.attachments
 
 
 def test_read_image_oversize_rejected(png_ws, monkeypatch):

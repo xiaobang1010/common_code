@@ -143,6 +143,19 @@ def test_unknown_tool_result_kept():
     assert result[3]["content"] == ABORTED_TOOL_RESULT_CONTENT
 
 
+def test_orphan_only_history_no_call_groups():
+    """无任何调用组、首条即无主 tool 结果的历史：原样透传不抛错
+    （该形态曾是尾段引用未定义变量的崩溃触发面，启动迁移会因此炸穿）。"""
+    messages = [
+        _tool("orphan-a", "遗留结果"),
+        {"role": "user", "content": "B"},
+        _tool("orphan-b", "遗留结果二"),
+    ]
+    result = sanitize_dangling_tool_calls(messages)
+    assert result == messages
+    assert sanitize_dangling_tool_calls(result) == result
+
+
 def test_tool_calls_without_ids_ignored():
     """tool_calls 项缺 id 的异常数据不进入待补集合，不抛错。"""
     messages = [
@@ -173,3 +186,25 @@ def test_build_api_request_sanitizes_history():
         ("user", None),
     ]
     assert request["messages"][2]["content"] == ABORTED_TOOL_RESULT_CONTENT
+
+
+def test_duplicate_results_prefer_real_over_synthetic():
+    """存量双份形态（位置式清洗遗留：合成在前、真实在后、注入行夹中间）：
+    择优保留真实结果、剔合成、注入行置组后——清洗幂等且夹心消失。"""
+    messages = [
+        {"role": "user", "content": "A"},
+        _assistant(["t1", "t2"]),
+        _tool("t1", "真实结果一"),
+        _tool("t2", ABORTED_TOOL_RESULT_CONTENT),  # 位置式清洗留下的合成（正文=占位文案）
+        {"role": "user", "content": [{"type": "text", "text": "图"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}}]},
+        _tool("t2", "真实结果二"),
+        {"role": "assistant", "content": "完成"},
+    ]
+    result = sanitize_dangling_tool_calls(messages)
+    tools = [m for m in result if m["role"] == "tool"]
+    assert [m["tool_call_id"] for m in tools] == ["t1", "t2"], "同 id 恰一条"
+    assert tools[1]["content"] == "真实结果二", "择优保留真实结果"
+    # 结果行连续在前、注入行置组后：组内不再有夹心
+    roles = [m["role"] for m in result]
+    assert roles == ["user", "assistant", "tool", "tool", "user", "assistant"]
+    assert sanitize_dangling_tool_calls(result) == result

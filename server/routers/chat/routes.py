@@ -223,7 +223,7 @@ def _build_user_content(prompt: str, images: list[dict]):
 
 
 def _omit_image_payloads(messages: Any) -> Any:
-    """/api/state 响应副本：image_url 的 base64 替换为 __omitted__ 哨兵。
+    """/api/state 响应副本：image_url 与 _attachments 的 base64 替换为哨兵。
 
     轮询高频回传，完整 data URL 会拖住渲染；前端遇哨兵复用本地缓存，
     历史接口（sessions get / switch）仍返回完整数据。不修改引擎原消息。
@@ -232,7 +232,11 @@ def _omit_image_payloads(messages: Any) -> Any:
         return messages
     out: list = []
     for msg in messages:
-        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(msg, dict):
+            out.append(msg)
+            continue
+        new_msg = msg
+        content = msg.get("content")
         if isinstance(content, list) and any(
             isinstance(b, dict) and b.get("type") == "image_url" for b in content
         ):
@@ -246,9 +250,17 @@ def _omit_image_payloads(messages: Any) -> Any:
                     )
                 else:
                     new_blocks.append(b)
-            out.append({**msg, "content": new_blocks})
-        else:
-            out.append(msg)
+            new_msg = {**msg, "content": new_blocks}
+        atts = msg.get("_attachments")
+        if isinstance(atts, list) and any(
+            isinstance(a, dict) and a.get("data_url") for a in atts
+        ):
+            slim_atts = [
+                {**a, "data_url": ""} if isinstance(a, dict) and a.get("data_url") else a
+                for a in atts
+            ]
+            new_msg = {**new_msg, "_attachments": slim_atts}
+        out.append(new_msg)
     return out
 
 
@@ -323,6 +335,7 @@ def _start_run(
     reasoning_level: str = "",
     promoted_extra: list[dict] | None = None,
     prompt_meta: dict | None = None,
+    exclude_input_ids: set[str] | None = None,
 ) -> tuple[server.state.RunContext | None, str | None]:
     """创建会话运行任务：串行守卫 → 前缀快照 → 持久化 → 引擎 → 后台任务。
 
@@ -363,7 +376,7 @@ def _start_run(
     prefix_messages: list[dict] = sanitize_dangling_tool_calls(list(session.messages))
 
     # ---- 编辑重发：截断到目标可见用户消息之前（该消息由新 prompt 替换重跑） ----
-    # 截断作用于清洗后的前缀，随下方 save_messages 一并持久化；越界在持久化前
+    # 截断作用于清洗后的前缀，随下方转正事务一并持久化；越界在持久化前
     # 拒绝，历史不受影响。sanitize 只插入 tool 消息，不改 user 消息的相对次序，
     # 可见序号与前端按块推算的一致
     if edit_user_index is not None:
@@ -374,16 +387,32 @@ def _start_run(
             or not 0 <= edit_user_index < len(visible)
         ):
             return None, '编辑位置无效，历史未被修改'
+        # 被删区间的转正队列行随截断同事务翻 discarded/truncated，
+        # 使「主动删除」与「崩溃丢失」在对账判据上可区分（防复活）
+        removed = prefix_messages[visible[edit_user_index]:]
+        truncated_input_ids = [
+            str(m["_input_id"]) for m in removed
+            if isinstance(m, dict) and m.get("_input_id")
+        ]
         prefix_messages = prefix_messages[: visible[edit_user_index]]
+    else:
+        truncated_input_ids = []
 
     # ---- 起轮转正：上一轮运行期入队、尚未等到轮次边界的 queued 行
-    # （用户消息与通知）在本条消息之前全量转正，防新消息插队旧队列；
-    # 唤起路径已自行取走的非文本消息经 promoted_extra 补位 ----
+    # （用户消息与通知）在本条消息之前全量取回，防新消息插队旧队列；
+    # 唤起路径已自行取走的非文本消息经 promoted_extra 补位。
+    # 状态翻转不在此处：与消息落库同事务（下方 promote_inputs_tx）----
     startup_promoted: list[dict] = []
     try:
-        from tools.subagent.notify import promote_queued_messages
+        from tools.subagent.notify import peek_notifications
 
-        promoted_rows = promote_queued_messages(run_session_id)
+        promoted_rows = peek_notifications(run_session_id)
+        # 单行起轮的目标行不参加队列转正（它自己作为本轮 prompt 在列表尾，
+        # 防双注入；take 已改只读视图，排除责任移到组装处）
+        if exclude_input_ids:
+            promoted_rows = [
+                m for m in promoted_rows if m.get("_input_id") not in exclude_input_ids
+            ]
         prefix_messages = [*prefix_messages, *promoted_rows]
         # 用户行记录后由前台 SSE 重放成气泡（重放仅呈现用，消息本体已在
         # 前缀进入模型上下文）；通知行维持静默
@@ -397,16 +426,21 @@ def _start_run(
     task_workspace = session.workspace_path or project_root()
 
     # ---- 用户消息立即持久化（前缀 + 本条），标题即时生成 ----
-    # 标题与空文本判定以提取后的文本为准：纯图片 parts（无 text 块）回退固定文案
+    # 转正事务：前缀（含起轮取回的队列行）与本条 user 一个事务整批重建落库，
+    # 队列行同事务翻 promoted（判据挂 _input_id）；编辑重发的截断区间
+    # 同事务翻 discarded/truncated。失败仅跳过（行保持 queued，收尾整批
+    # 落库兜底），标题与空文本判定以提取后的文本为准：纯图片 parts（无
+    # text 块）回退固定文案
     prompt_text = extract_text_from_content(prompt)
     if session_store is not None:
         try:
-            session_store.save_messages(
+            session_store.promote_inputs_tx(
                 run_session_id,
                 [
                     *prefix_messages,
                     {"role": "user", "content": prompt, "_ts": time.time() * 1000, **(prompt_meta or {})},
                 ],
+                discarded_row_ids=truncated_input_ids or None,
             )
             if not session.title:
                 if prompt_text.strip():
@@ -518,7 +552,8 @@ def _start_run(
                 # 保证 DB 里的历史序列始终合法；清洗后的列表同时用于提取 last_turn
                 # 的 user_ts（与前端重建块的 startTime 同源，才能精确相等比对）
                 sanitized_messages = sanitize_dangling_tool_calls(task_engine.mutable_messages)
-                session_store.save_messages(run_session_id, sanitized_messages)
+                # 行式整批重建：转正与落库同事务后的权威终态落库
+                session_store.replace_messages_tx(run_session_id, sanitized_messages)
                 # 压缩逃生门：全量转录与会话库同根落盘（覆盖式），续写消息引用该路径
                 try:
                     session_store.export_transcript(run_session_id, sanitized_messages)
@@ -536,7 +571,7 @@ def _start_run(
                                 session_store.update_session_title(run_session_id, _extract_session_title(content))
                                 break
                 # ---- 回合退出原因落库：前端历史重建据此恢复真实退出原因，
-                # 不再把异常回合误标为「用户主动停止」。与 save_messages 同 try：
+                # 不再把异常回合误标为「用户主动停止」。与整批落库同 try：
                 # 消息都没存上时重建本身失真，last_turn 失去意义，一并跳过 ----
                 turn_meta: dict = {"finished_at": time.time() * 1000}
                 # user_ts 归属确认：取落库列表最后一条可见 user 消息的 _ts，
@@ -648,17 +683,27 @@ def _wake_parent(session_id: str) -> None:
 async def _wake_run(session_id: str) -> None:
     """唤起任务体：取走全部队列通知合并为一条用户消息，建唤起轮次。
 
-    通知取走即负责：启动失败静默降级不回灌（回灌会在持续失败时形成
-    死循环）；take_view_pointer=False，唤起不劫持用户正在查看的会话。
+    消费是翻转型（consume_for_wake：行同事务翻 promoted 并标 merged_wake），
+    起轮点位的 peek 只取 queued 不会再见到——双消费通道闭合。合并 prompt
+    携带 `_merged_input_ids` 承载被合并行 id（对账/审计判据，防误判丢失
+    补写）；崩溃窗口（消费后、起轮落库前）由启动对账按 payload 补写自愈。
+    启动失败静默降级不回灌（回灌会在持续失败时形成死循环）；
+    take_view_pointer=False，唤起不劫持用户正在查看的会话。
     """
     try:
-        from tools.subagent.notify import drain_notifications
+        from tools.subagent.notify import consume_for_wake
 
-        notices = drain_notifications(session_id)
+        notices, consumed_ids = consume_for_wake(session_id)
         if not notices:
             return
         # 文本通知合并为一条唤起消息（现状语义）；非文本行（如入队的图片
-        # parts 消息）保持原 dict 经 promoted_extra 补进前缀，不经合并丢内容
+        # parts 消息）保持原 dict 经 promoted_extra 补进前缀（自身 _input_id
+        # 随起轮事务认领），不经合并丢内容
+        merged_ids = {
+            str(n["_input_id"]) for n in notices
+            if isinstance(n.get("content"), str) and n.get("content") and n.get("_input_id")
+        }
+        consumed_ids_set = {str(i) for i in consumed_ids} | merged_ids
         texts = [
             n.get("content", "")
             for n in notices
@@ -674,9 +719,11 @@ async def _wake_run(session_id: str) -> None:
             extras = extras[1:]
         else:
             prompt_content = merged
+        prompt_meta = {"_merged_input_ids": sorted(consumed_ids_set)} if consumed_ids_set else None
         run, error = _start_run(
             session_id, prompt_content,
             promoted_extra=extras or None, take_view_pointer=False,
+            prompt_meta=prompt_meta,
         )
         if error is not None:
             logging.getLogger(__name__).warning("唤起会话 %s 未启动: %s", session_id, error)
@@ -924,17 +971,21 @@ def _auto_pause_queue(store, session_id: str, reason: str) -> None:
 def _start_run_from_queued(store, session_id: str, row_id: str) -> str | None:
     """单行取出起轮（空闲立即/恢复起队尾行共用），返回错误文案或 None。
 
-    目标行先经 take 脱离 queued 集合（起轮点位的全量转正不会再碰它，防双注入），
-    其余 queued 行由起轮转正按 FIFO 先行注入；guide 行的 `_steer` 经
-    prompt_meta 透传进本轮 user 消息。用户显式操作，起轮带查看指针（与通知唤起的 False 区分）。
+    目标行经 take 取只读视图（take 不再翻状态），防双注入由两道承担：
+    目标行 id 传入 exclude_input_ids 从起轮 peek 中排除（它自己作为本轮
+    prompt 在列表尾），起轮事务按 _input_id 认领翻转并落库。其余 queued 行
+    由起轮转正按 FIFO 先行注入；guide 行的 `_steer` 经 prompt_meta 透传进
+    本轮 user 消息。用户显式操作，起轮带查看指针（与通知唤起的 False 区分）。
     """
     msg = store.take_input_for_now(row_id)
     if msg is None:
         return "队列项已被处理"
     meta = {k: msg[k] for k in ("_steer", "_input_id") if k in msg}
+    exclude = {str(msg["_input_id"])} if msg.get("_input_id") else None
     _run, error = _start_run(
         session_id, msg.get("content", ""),
         prompt_meta=meta or None, take_view_pointer=True,
+        exclude_input_ids=exclude,
     )
     return error
 

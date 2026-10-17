@@ -75,8 +75,9 @@ def push_notification(session_id: str, message: dict) -> None:
 def promote_queued_messages(session_id: str) -> list[dict]:
     """按准入序转正该会话全部 queued 行（用户消息 + 通知），返回消息 dict。
 
-    起轮点（routes._start_run）与轮次边界（query_loop）共用本函数；
-    行内 payload 即消息本体，转正时补 _ts 与 _input_id（前端去重标记）。
+    [遗留通道] 只翻状态不落库——起轮与轮次边界两个注入点已改走
+    peek_notifications + commit_promoted_persist（转正与落库同事务），
+    杜绝「promoted 却无消息」的吞记录窗口；本函数仅剩无行表环境的兼容用途。
     """
     store = _get_store()
     if store is None:
@@ -88,12 +89,78 @@ def promote_queued_messages(session_id: str) -> list[dict]:
         return []
 
 
+def peek_notifications(session_id: str) -> list[dict]:
+    """取回该会话全部待投递（表内 queued 视图 + 内存回退），不翻状态。
+
+    状态翻转由调用方在注入落库的同事务完成（commit_promoted_persist /
+    store.promote_inputs_tx），转正与落库之间不再存在崩溃窗口。
+    """
+    promoted: list[dict] = []
+    store = _get_store()
+    if store is not None:
+        try:
+            promoted = store.peek_queued_inputs(session_id)
+        except Exception:
+            logger.warning("队列取回失败 (session=%s)", session_id, exc_info=True)
+    with _lock:
+        legacy = _pending_notifications.pop(session_id, [])
+    return [*promoted, *legacy]
+
+
+def commit_promoted_persist(session_id: str, messages: list[dict], row_ids: list[str]) -> None:
+    """轮次边界转正落库：整批重建消息行 + 队列行翻 promoted（同事务）。
+
+    失败仅日志：行保持 queued，由回合收尾的整批落库或下次边界重试兜底，
+    不阻断对话。
+    """
+    store = _get_store()
+    if store is None or not row_ids:
+        return
+    try:
+        store.promote_inputs_tx(session_id, messages, promoted_row_ids=row_ids)
+    except Exception:
+        logger.warning(
+            "会话 %s 边界转正落库失败（行保持 queued 待重试）", session_id, exc_info=True
+        )
+
+
 def drain_notifications(session_id: str) -> list[dict]:
-    """取出该会话全部待投递：表内 queued 行（含运行中入队的用户消息）+ 内存回退。"""
+    """[遗留通道] 取出全部待投递并立即翻状态（不落库）。
+
+    仅剩无行表环境（单测/无 server）与合并唤起的历史调用；新代码用
+    peek_notifications + commit_promoted_persist。
+    """
     promoted = promote_queued_messages(session_id)
     with _lock:
         legacy = _pending_notifications.pop(session_id, [])
     return [*promoted, *legacy]
+
+
+def consume_for_wake(session_id: str) -> tuple[list[dict], list[str]]:
+    """唤醒专用消费：原子翻 promoted（status_reason=merged_wake）并返回
+    （消息列表, 行 id 列表）。
+
+    唤醒把多行文本合并为一条唤起 prompt，行 id 由 prompt 消息的
+    `_merged_input_ids` 承载（对账/审计判据）；非文本行经 promoted_extra
+    逐行进前缀（自身 _input_id 可认领）。翻转后行脱离 queued，起轮点位的
+    peek 不会再取到——双消费通道就此闭合；崩溃窗口由启动对账自愈。
+
+    暂停门对齐基线：store 侧 auto_drain 关时表行不消费（留 queued）；
+    内存回退队列沿用基线的取走语义（push_notification 入表失败的历史
+    降级路径，量级可忽略，不因暂停改变行为）。
+    """
+    store = _get_store()
+    msgs: list[dict] = []
+    ids: list[str] = []
+    if store is not None:
+        try:
+            msgs, ids = store.consume_for_wake(session_id)
+        except Exception:
+            logger.warning("唤醒消费失败 (session=%s)", session_id, exc_info=True)
+            msgs, ids = [], []
+    with _lock:
+        legacy = _pending_notifications.pop(session_id, [])
+    return [*msgs, *legacy], ids
 
 
 def pending_count(session_id: str) -> int:

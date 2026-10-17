@@ -11,7 +11,10 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -21,6 +24,8 @@ from datetime import datetime
 from pathlib import Path
 
 from session.models import Session, TaskGroup, Workspace
+
+logger = logging.getLogger(__name__)
 
 
 class SessionStore:
@@ -138,10 +143,63 @@ class SessionStore:
             )
 
             conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS message (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                    role TEXT NOT NULL DEFAULT '',
+                    sequence INTEGER NOT NULL,
+                    data TEXT NOT NULL,
+                    time_created INTEGER NOT NULL,
+                    time_updated INTEGER NOT NULL,
+                    UNIQUE(session_id, sequence)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS part (
+                    id TEXT PRIMARY KEY,
+                    message_id TEXT NOT NULL REFERENCES message(id) ON DELETE CASCADE,
+                    session_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    data TEXT NOT NULL,
+                    time_created INTEGER NOT NULL,
+                    time_updated INTEGER NOT NULL,
+                    UNIQUE(message_id, sequence)
+                )
+                """
+            )
+            # 图片字节外部化存储：行内只存 {attachment_id,mime} 引用；
+            # 身份取内容哈希（同图文件只落一份），但按会话各登记一行——
+            # 整批重建的 GC 只清理本会话不再引用且无他会话登记的附件，
+            # 不会把仍被别的会话消息引用的文件误删
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS attachment (
+                    id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    mime TEXT NOT NULL DEFAULT '',
+                    path TEXT NOT NULL,
+                    bytes INTEGER NOT NULL DEFAULT 0,
+                    time_created INTEGER NOT NULL,
+                    PRIMARY KEY (id, session_id)
+                )
+                """
+            )
+
+            conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_path)"
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_message_session ON message(session_id, sequence)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_part_session ON part(session_id)"
             )
 
             # 兼容旧库：缺列时补列（ALTER TABLE 幂等）
@@ -174,6 +232,12 @@ class SessionStore:
             )
 
         session_cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+        # 行式转录：messages_backup 保存迁移前的整表快照（回退资料），
+        # migrated_at>0 表示该会话消息真相源已切到 message/part 行表
+        if "messages_backup" not in session_cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN messages_backup TEXT DEFAULT ''")
+        if "migrated_at" not in session_cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN migrated_at INTEGER DEFAULT 0")
         if "group_id" not in session_cols:
             conn.execute("ALTER TABLE sessions ADD COLUMN group_id TEXT DEFAULT ''")
         if "spec_name" not in session_cols:
@@ -273,6 +337,22 @@ class SessionStore:
             alias=row["alias"] if "alias" in row.keys() else "",
             created_at=row["created_at"] if "created_at" in row.keys() else "",
         )
+
+    @staticmethod
+    def _parse_blob(blob: object) -> list[dict]:
+        try:
+            msgs = json.loads(blob or "[]")
+        except (json.JSONDecodeError, TypeError):
+            return []
+        return [m for m in msgs if isinstance(m, dict)]
+
+    @staticmethod
+    def _message_counts(conn: sqlite3.Connection) -> dict[str, int]:
+        """各会话行数（行式会话的 message_count 真相源，列表路径批量取）。"""
+        return {
+            r[0]: r[1]
+            for r in conn.execute("SELECT session_id, COUNT(*) FROM message GROUP BY session_id").fetchall()
+        }
 
     @staticmethod
     def _row_to_task_group(row: sqlite3.Row) -> TaskGroup:
@@ -453,7 +533,16 @@ class SessionStore:
                 """,
                 (parent_session_id,),
             ).fetchall()
-            return [self._row_to_session(row, include_messages=False) for row in rows]
+            counts = self._message_counts(conn)
+            sessions = []
+            for row in rows:
+                sess = self._row_to_session(row, include_messages=False)
+                if row["id"] in counts:
+                    sess.message_count = counts[row["id"]]
+                elif row["migrated_at"] or 0:
+                    sess.message_count = 0
+                sessions.append(sess)
+            return sessions
         finally:
             conn.close()
 
@@ -470,7 +559,16 @@ class SessionStore:
                 """,
                 (limit,),
             ).fetchall()
-            return [self._row_to_session(row, include_messages=False) for row in rows]
+            counts = self._message_counts(conn)
+            sessions = []
+            for row in rows:
+                sess = self._row_to_session(row, include_messages=False)
+                if row["id"] in counts:
+                    sess.message_count = counts[row["id"]]
+                elif row["migrated_at"] or 0:
+                    sess.message_count = 0
+                sessions.append(sess)
+            return sessions
         finally:
             conn.close()
 
@@ -488,7 +586,19 @@ class SessionStore:
             row = conn.execute(
                 "SELECT * FROM sessions WHERE id = ?", (session_id,)
             ).fetchone()
-            return self._row_to_session(row) if row else None
+            if row is None:
+                return None
+            sess = self._row_to_session(row, include_messages=False)
+            rows = self.load_messages(session_id)
+            if rows:
+                sess.messages = rows
+            elif not (row["migrated_at"] or 0):
+                # 未迁移且无行的过渡态：回退快照列（存量启动迁移前的窗口）
+                sess.messages = self._parse_blob(row["messages"])
+            else:
+                sess.messages = rows
+            sess.message_count = len(sess.messages)
+            return sess
         finally:
             conn.close()
 
@@ -515,7 +625,16 @@ class SessionStore:
                 """,
                 (workspace_path,),
             ).fetchall()
-            return [self._row_to_session(row, include_messages=False) for row in rows]
+            counts = self._message_counts(conn)
+            sessions = []
+            for row in rows:
+                sess = self._row_to_session(row, include_messages=False)
+                if row["id"] in counts:
+                    sess.message_count = counts[row["id"]]
+                elif row["migrated_at"] or 0:
+                    sess.message_count = 0
+                sessions.append(sess)
+            return sessions
         finally:
             conn.close()
 
@@ -531,13 +650,25 @@ class SessionStore:
         with self._lock:
             conn = self._get_conn()
             try:
+                # 行式转录随行清理；附件文件在提交成功后删除
+                _, file_orphans = self._replace_within(conn, session_id, [])
+                conn.execute(
+                    "DELETE FROM session_input WHERE session_id = ?", (session_id,)
+                )
+                conn.execute(
+                    "DELETE FROM session_queue_state WHERE session_id = ?", (session_id,)
+                )
                 cur = conn.execute(
                     "DELETE FROM sessions WHERE id = ?", (session_id,)
                 )
                 conn.commit()
-                return cur.rowcount > 0
+            except Exception:
+                conn.rollback()
+                raise
             finally:
                 conn.close()
+        self._unlink_files([self._attachment_path(a) for a in file_orphans])
+        return cur.rowcount > 0
 
     def update_session_title(self, session_id: str, title: str) -> bool:
         """更新会话标题。
@@ -682,31 +813,18 @@ class SessionStore:
     def save_messages(
         self, session_id: str, messages: list[dict]
     ) -> bool:
-        """保存消息列表到会话，同时更新 updated_at。
+        """[过渡壳] 旧整表接口：委托行式整批重建，保证单一真相源。
 
-        Args:
-            session_id: 会话 ID
-            messages: OpenAI 格式消息列表
-
-        Returns:
-            True 保存成功，False 表示会话不存在
+        写入方全面换轨后删除（阶段二 2.3）；调用方无需改动。
+        返回 False 仅当会话不存在。
         """
-        now = datetime.now().isoformat()
-        messages_json = json.dumps(messages, ensure_ascii=False, default=str)
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                cur = conn.execute(
-                    """
-                    UPDATE sessions SET messages = ?, updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (messages_json, now, session_id),
-                )
-                conn.commit()
-                return cur.rowcount > 0
-            finally:
-                conn.close()
+        created = self.replace_messages_tx(session_id, messages)
+        conn = self._get_conn()
+        try:
+            exists = conn.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            return exists is not None
+        finally:
+            conn.close()
 
     def export_transcript(
         self, session_id: str, messages: list[dict]
@@ -727,6 +845,648 @@ class SessionStore:
                 f.write(json.dumps(msg, ensure_ascii=False, default=str))
                 f.write("\n")
         return str(path)
+
+    # ------------------------------------------------------------------
+    # 行式转录：message/part/attachment + 事务写入通道
+    #
+    # 设计要点：
+    # - 顺序是存储坐标（sequence 列，整批重建时按列表位置重赋），读写不依赖
+    #   列表位置或追加时序，崩溃只会停在"某一完整批次"，不产生组内错序；
+    # - 图片字节内容寻址落盘（同图一份文件），行/part 只存引用；
+    # - 所有落库经 replace_messages_tx / promote_inputs_tx 单事务整批重建，
+    #   天然幂等（同一列表连续调用两次行数与内容不变）；
+    # - load_messages 返回"工作态"：image_ref 已还原为 data URL，
+    #   与改造前从快照列读出的形态逐字段兼容。
+    # ------------------------------------------------------------------
+
+    ATTACHMENT_DIRNAME = "attachments"
+
+    def _attachments_dir(self) -> Path:
+        return self.db_path.parent / self.ATTACHMENT_DIRNAME
+
+    def _attachment_path(self, attachment_id: str) -> Path:
+        return self._attachments_dir() / attachment_id
+
+    @staticmethod
+    def _parse_data_url(url: object) -> tuple[str, str] | None:
+        """解析 data URL 为 (mime, base64)；形态不符或无法解码返回 None（原样保留）。
+
+        测试与极端输入可能携带 padding 不全的伪 base64——外部化只为真实
+        图片服务，解不开的字节串留在原位，不抛错不丢块。
+        """
+        if not isinstance(url, str) or not url.startswith("data:"):
+            return None
+        head, _, body = url[5:].partition(",")
+        if not body:
+            return None
+        try:
+            base64.b64decode(body, validate=False)
+        except Exception:
+            return None
+        mime = head.split(";", 1)[0] or "image/png"
+        return mime, body
+
+    def _store_attachment(self, conn: sqlite3.Connection, session_id: str, mime: str, b64: str) -> str:
+        """附件落盘（内容哈希命名，文件已存在则跳过），并登记本会话引用行。"""
+        attachment_id = hashlib.sha1(b64.encode("utf-8")).hexdigest()[:32]
+        path = self._attachment_path(attachment_id)
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(base64.b64decode(b64, validate=False))
+        conn.execute(
+            "INSERT OR IGNORE INTO attachment (id, session_id, mime, path, bytes, time_created) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (attachment_id, session_id, mime, str(path), (len(b64) * 3) // 4, int(time.time() * 1000)),
+        )
+        return attachment_id
+
+    def _encode_message_row(
+        self, conn: sqlite3.Connection, session_id: str, msg: dict
+    ) -> tuple[dict, list[tuple[str, dict]]]:
+        """工作态消息 dict → 存储行内容 + 部件规格；不修改入参 dict。
+
+        content 的 image_url 块与 _attachments 的 data_url 项都外部化为
+        附件引用（image_ref 块 / _attachments 引用项），同时产出对应
+        part 行（宿主内定位，kind=image）。已是引用形态的原样保留。
+        """
+        stored = dict(msg)
+        parts_spec: list[tuple[str, dict]] = []
+        content = stored.get("content")
+        if isinstance(content, list):
+            blocks = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "image_url":
+                    parsed = self._parse_data_url((block.get("image_url") or {}).get("url"))
+                    if parsed is not None:
+                        mime, b64 = parsed
+                        aid = self._store_attachment(conn, session_id, mime, b64)
+                        blocks.append({"type": "image_ref", "attachment_id": aid, "mime": mime})
+                        parts_spec.append(("image", {"slot": "content", "attachment_id": aid, "mime": mime}))
+                        continue
+                blocks.append(block)
+            stored["content"] = blocks
+        att = stored.get("_attachments")
+        if isinstance(att, list):
+            refs = []
+            for item in att:
+                if isinstance(item, dict) and item.get("data_url"):
+                    parsed = self._parse_data_url(item["data_url"])
+                    if parsed is not None:
+                        mime, b64 = parsed
+                        aid = self._store_attachment(conn, session_id, mime, b64)
+                        refs.append({"attachment_id": aid, "mime": mime})
+                        parts_spec.append(("image", {"slot": "attachments", "attachment_id": aid, "mime": mime}))
+                        continue
+                refs.append(item)
+            stored["_attachments"] = refs
+        return stored, parts_spec
+
+    def _replace_within(
+        self, conn: sqlite3.Connection, session_id: str, messages: list[dict]
+    ) -> tuple[list[str], list[str]]:
+        """在调用方事务内整批重建该会话行：DELETE 全部 → 按序 INSERT。
+
+        返回 (message 行主键列表[与入参同序], 本次判定为孤儿的附件 id)；
+        附件行的删除在事务内完成，对应文件的 unlink 由调用方在提交成功后执行
+        （回滚不得删文件）。
+        """
+        old_ids = {
+            r[0] for r in conn.execute(
+                "SELECT id FROM attachment WHERE session_id = ?", (session_id,)
+            ).fetchall()
+        }
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("DELETE FROM part WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM message WHERE session_id = ?", (session_id,))
+        now_ms = int(time.time() * 1000)
+        created_ids: list[str] = []
+        for seq, msg in enumerate(messages):
+            if not isinstance(msg, dict):
+                continue
+            stored, parts_spec = self._encode_message_row(conn, session_id, msg)
+            mid = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO message (id, session_id, role, sequence, data, time_created, time_updated) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    mid,
+                    session_id,
+                    str(stored.get("role", "")),
+                    seq,
+                    json.dumps(stored, ensure_ascii=False, default=str),
+                    now_ms,
+                    now_ms,
+                ),
+            )
+            for pseq, (kind, pdata) in enumerate(parts_spec):
+                conn.execute(
+                    "INSERT INTO part (id, message_id, session_id, kind, sequence, data, time_created, time_updated) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        str(uuid.uuid4()),
+                        mid,
+                        session_id,
+                        kind,
+                        pseq,
+                        json.dumps(pdata, ensure_ascii=False),
+                        now_ms,
+                        now_ms,
+                    ),
+                )
+            created_ids.append(mid)
+        new_ids = {
+            r[0] for r in conn.execute(
+                "SELECT id FROM attachment WHERE session_id = ?", (session_id,)
+            ).fetchall()
+        }
+        orphaned = sorted(old_ids - new_ids)
+        file_orphans: list[str] = []
+        for aid in orphaned:
+            still = conn.execute(
+                "SELECT 1 FROM attachment WHERE id = ? AND session_id != ?", (aid, session_id)
+            ).fetchone()
+            conn.execute("DELETE FROM attachment WHERE id = ? AND session_id = ?", (aid, session_id))
+            if still is None:
+                file_orphans.append(aid)
+        return created_ids, file_orphans
+
+    @staticmethod
+    def _unlink_files(paths: list[Path]) -> None:
+        for p in paths:
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def replace_messages_tx(self, session_id: str, messages: list[dict]) -> list[str]:
+        """整批重建会话消息行（单事务），同时刷新 updated_at。
+
+        传入列表即完整目标态：同一列表连续调用两次行数与内容不变。
+        不修改调用方持有的 dict；孤儿附件文件在事务提交成功后删除。
+        """
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                created, orphan_aids = self._replace_within(conn, session_id, messages)
+                conn.execute(
+                    "UPDATE sessions SET updated_at = ? WHERE id = ?",
+                    (datetime.now().isoformat(), session_id),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+        self._unlink_files([self._attachment_path(a) for a in orphan_aids])
+        return created
+
+    def load_messages(self, session_id: str) -> list[dict]:
+        """读会话消息行并还原为工作态（image_ref → data URL；缺文件降级占位）。"""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT data FROM message WHERE session_id = ? ORDER BY sequence", (session_id,)
+            ).fetchall()
+        finally:
+            conn.close()
+
+        out: list[dict] = []
+        for r in rows:
+            try:
+                msg = json.loads(r["data"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(msg, dict):
+                out.append(self._decode_message_row(msg))
+        return out
+
+    def _decode_message_row(self, stored: dict) -> dict:
+        msg = dict(stored)
+        content = msg.get("content")
+        if isinstance(content, list):
+            blocks = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "image_ref":
+                    resolved = self._attachment_data_url(block.get("attachment_id", ""), block.get("mime", ""))
+                    if resolved is None:
+                        blocks.append({"type": "text", "text": "[图片文件缺失]"})
+                    else:
+                        blocks.append({"type": "image_url", "image_url": {"url": resolved}})
+                else:
+                    blocks.append(block)
+            msg["content"] = blocks
+        att = msg.get("_attachments")
+        if isinstance(att, list):
+            items = []
+            for item in att:
+                if isinstance(item, dict) and item.get("attachment_id"):
+                    resolved = self._attachment_data_url(item["attachment_id"], item.get("mime", ""))
+                    items.append(
+                        {"mime": item.get("mime", ""), "data_url": resolved or "", "missing": resolved is None}
+                    )
+                else:
+                    items.append(item)
+            msg["_attachments"] = items
+        return msg
+
+    def _attachment_data_url(self, attachment_id: str, mime: str) -> str | None:
+        path = self._attachment_path(attachment_id)
+        if not path.is_file():
+            return None
+        try:
+            b64 = base64.b64encode(path.read_bytes()).decode("ascii")
+        except OSError:
+            return None
+        return f"data:{mime or 'image/png'};base64,{b64}"
+
+    # ------------------------------------------------------------------
+    # 队列转正事务通道（转正与消息落库同事务，判据挂业务持久键 _input_id）
+    # ------------------------------------------------------------------
+
+    def peek_queued_inputs(self, session_id: str) -> list[dict]:
+        """按序取回 queued 行消息视图（不翻状态），翻转正由 promote_inputs_tx 落库时完成。
+
+        auto_drain 关时返回空——暂停门与既有 promote_queued_inputs 同位。
+        消息形态与转正产物一致：{**payload, _ts, _input_id, _kind[, _steer]}。
+        """
+        if not self.get_queue_state(session_id)["auto_drain"]:
+            return []
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM session_input "
+                "WHERE session_id = ? AND status = 'queued' "
+                "ORDER BY CASE WHEN delivery = 'guide' THEN 0 ELSE 1 END, "
+                "admitted_sequence ASC",
+                (session_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+        now = time.time() * 1000
+        out: list[dict] = []
+        for row in rows:
+            payload = json.loads(row["payload"])
+            msg = {**payload, "_ts": now, "_input_id": row["id"], "_kind": row["kind"]}
+            if row["delivery"] == "guide":
+                msg["_steer"] = True
+            out.append(msg)
+        return out
+
+    def promote_inputs_tx(
+        self,
+        session_id: str,
+        full_messages: list[dict],
+        promoted_row_ids: list[str] | None = None,
+        discarded_row_ids: list[str] | None = None,
+    ) -> None:
+        """转正事务：整批重建消息行 + 队列行翻 promoted（判据=队列行 id）。
+
+        promoted_row_ids 缺省时从 full_messages 中携带 _input_id 的行自动
+        推导（与「传入完整目标列表」语义一致，调用方无需传两份）。
+        promoted_message_id 写业务持久键 _input_id（等于队列行 id），
+        抗整批重建的行主键失效；编辑重发截断把被删区间的 promoted 行
+        经 discarded_row_ids 同事务翻 discarded/truncated，使主动删除与
+        崩溃丢失在对账判据上可区分。任一步失败整体回滚：不存在
+        「promoted 而消息不在库」的终态。
+        """
+        if promoted_row_ids is None:
+            promoted_row_ids = [
+                str(m["_input_id"]) for m in full_messages
+                if isinstance(m, dict) and m.get("_input_id")
+            ]
+        now_ms = int(time.time() * 1000)
+        with self._lock:
+            conn = self._get_conn()
+            file_orphans: list[str] = []
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                # 认领转正：行级互斥沿用「先翻者胜」。认领失败的行按当前状态
+                # 分流——仍是 queued（已被撤回/撤销）→ 消息从待重建列表剔除；
+                # 已是 promoted/discarded（历史转正行随完整列表再次进入本事务，
+                # 或截断终态行）→ 保留消息，不误伤既有历史
+                lost: set[str] = set()
+                for rid in promoted_row_ids:
+                    cur = conn.execute(
+                        "UPDATE session_input SET status='promoted', "
+                        "promoted_sequence=(SELECT admitted_sequence FROM session_input WHERE id=?), "
+                        "promoted_message_id=?, time_updated=? "
+                        "WHERE id=? AND status='queued'",
+                        (rid, rid, now_ms, rid),
+                    )
+                    if cur.rowcount == 0:
+                        state = conn.execute(
+                            "SELECT status FROM session_input WHERE id=?", (rid,)
+                        ).fetchone()
+                        if state is None or state["status"] == "cancelled":
+                            lost.add(rid)
+                if lost:
+                    full_messages = [
+                        m for m in full_messages
+                        if not (isinstance(m, dict) and m.get("_input_id") in lost)
+                    ]
+                _, file_orphans = self._replace_within(conn, session_id, full_messages)
+                for did in discarded_row_ids or []:
+                    conn.execute(
+                        "UPDATE session_input SET status='discarded', status_reason='truncated', "
+                        "time_updated=? WHERE id=? AND status='promoted'",
+                        (now_ms, did),
+                    )
+                conn.execute(
+                    "UPDATE sessions SET updated_at = ? WHERE id = ?",
+                    (datetime.now().isoformat(), session_id),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+        self._unlink_files([self._attachment_path(a) for a in file_orphans])
+
+    def promote_queued_inputs(self, session_id: str) -> list[dict]:
+        """[遗留通道] 直接翻状态并返回消息——保留给无需同批落库的观测路径，
+        新代码一律走 peek + promote_inputs_tx（转正与落库同事务）。
+        """
+        if not self.get_queue_state(session_id)["auto_drain"]:
+            return []
+        now = time.time() * 1000
+        out: list[dict] = []
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM session_input "
+                    "WHERE session_id = ? AND status = 'queued' "
+                    "ORDER BY CASE WHEN delivery = 'guide' THEN 0 ELSE 1 END, "
+                    "admitted_sequence ASC",
+                    (session_id,),
+                ).fetchall()
+                for row in rows:
+                    payload = json.loads(row["payload"])
+                    conn.execute(
+                        "UPDATE session_input SET status='promoted', "
+                        "promoted_sequence=?, promoted_message_id=?, time_updated=? "
+                        "WHERE id=?",
+                        (row["admitted_sequence"], row["id"], now, row["id"]),
+                    )
+                    msg = {**payload, "_ts": now, "_input_id": row["id"], "_kind": row["kind"]}
+                    if row["delivery"] == "guide":
+                        msg["_steer"] = True
+                    out.append(msg)
+                conn.commit()
+            finally:
+                conn.close()
+        return out
+
+    def consume_for_wake(self, session_id: str) -> tuple[list[dict], list[str]]:
+        """唤醒消费：原子翻 promoted 并返回消息与行 id（合并唤起的专用通道）。
+
+        与起轮/边界转正不同：多行文本合并为一条唤起 prompt，原行 id 无法
+        逐行挂到消息 `_input_id`——行打 `status_reason='merged_wake'` 标记，
+        合并 prompt 消息携带 `_merged_input_ids` 承载行 id 集合；对账与审计④
+        据此把「合并承载」计入判据，不误判为丢失补写。崩溃窗口（消费后、
+        起轮落库前）由启动对账按 payload 补写自愈。
+
+        暂停门：auto_drain 关（manual/error/stopped）时表行不消费、原样留
+        queued——与起轮/边界两个转正点位共享同一道门（被暂停的会话不得被
+        后台通知强行唤起并吞掉队列行）；内存回退队列的门语义在 notify 层
+        对齐基线。
+        """
+        if not self.get_queue_state(session_id)["auto_drain"]:
+            return [], []
+        now = time.time() * 1000
+        out: list[dict] = []
+        ids: list[str] = []
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM session_input "
+                    "WHERE session_id = ? AND status = 'queued' "
+                    "ORDER BY CASE WHEN delivery = 'guide' THEN 0 ELSE 1 END, "
+                    "admitted_sequence ASC",
+                    (session_id,),
+                ).fetchall()
+                for row in rows:
+                    payload = json.loads(row["payload"])
+                    conn.execute(
+                        "UPDATE session_input SET status='promoted', "
+                        "promoted_sequence=?, promoted_message_id=?, "
+                        "status_reason='merged_wake', time_updated=? "
+                        "WHERE id=?",
+                        (row["admitted_sequence"], row["id"], now, row["id"]),
+                    )
+                    msg = {**payload, "_ts": now, "_input_id": row["id"], "_kind": row["kind"]}
+                    if row["delivery"] == "guide":
+                        msg["_steer"] = True
+                    out.append(msg)
+                    ids.append(row["id"])
+                conn.commit()
+            finally:
+                conn.close()
+        return out, ids
+
+    def take_input_for_now(self, row_id: str) -> dict | None:
+        """单行取出（空闲立即/恢复起队尾行共用）：只返回消息视图，不翻状态。
+
+        状态翻转与落库合并进该行的起轮事务（promote_inputs_tx），
+        杜绝「取走即 promoted、落库靠后」的吞消息窗口。
+        """
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM session_input WHERE id = ? AND status = 'queued'", (row_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        msg = {**json.loads(row["payload"]), "_ts": time.time() * 1000, "_input_id": row_id}
+        if row["delivery"] == "guide":
+            msg["_steer"] = True
+        return msg
+
+    def get_promoted_input(self, row_id: str) -> dict | None:
+        """按 id 取队列行观测视图（对账与单测断言用）。"""
+        conn = self._get_conn()
+        try:
+            row = conn.execute("SELECT * FROM session_input WHERE id = ?", (row_id,)).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "session_id": row["session_id"],
+            "kind": row["kind"],
+            "delivery": row["delivery"],
+            "status": row["status"],
+            "status_reason": row["status_reason"],
+            "promoted_message_id": row["promoted_message_id"],
+            "promoted_sequence": row["promoted_sequence"],
+        }
+
+    # ------------------------------------------------------------------
+    # 存量迁移与启动对账
+    # ------------------------------------------------------------------
+
+    def migrate_legacy_blobs(self) -> int:
+        """把未迁移会话的整表快照重建为行表（幂等，可崩溃重跑）。
+
+        迁移顺序：读 blob → 悬空清洗 → 单事务（重建行 + 原值转存
+        messages_backup + 清 messages 列 + 打 migrated_at）。已迁移会话
+        （migrated_at>0）跳过；半路崩溃遗留的半截行由重跑整批重建覆盖。
+        """
+        from query.utils.messages import sanitize_dangling_tool_calls
+
+        migrated = 0
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT id, messages FROM sessions WHERE COALESCE(migrated_at, 0) = 0 "
+                "AND id NOT IN (SELECT DISTINCT session_id FROM message)"
+            ).fetchall()
+        finally:
+            conn.close()
+        for row in rows:
+            sid = row["id"]
+            # 清洗也在单会话防护内：脏数据不得炸穿启动迁移（单会话失败仅日志）
+            try:
+                msgs = json.loads(row["messages"] or "[]")
+                repaired = sanitize_dangling_tool_calls([m for m in msgs if isinstance(m, dict)])
+            except Exception:
+                logger.warning("会话 %s 快照解析/清洗失败，按空历史迁移保底", sid, exc_info=True)
+                repaired = []
+            with self._lock:
+                conn = self._get_conn()
+                file_orphans: list[str] = []
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    # 重跑先清半截（行表若已有该会话数据一律以快照为准重建）
+                    _, file_orphans = self._replace_within(conn, sid, repaired)
+                    conn.execute(
+                        "UPDATE sessions SET messages_backup = messages, messages = '[]', "
+                        "migrated_at = ? WHERE id = ? AND COALESCE(migrated_at, 0) = 0",
+                        (int(time.time() * 1000), sid),
+                    )
+                    conn.commit()
+                    migrated += 1
+                except Exception:
+                    conn.rollback()
+                    logger.warning("会话 %s 行式迁移失败（保留快照列，下次启动重跑）", sid, exc_info=True)
+                finally:
+                    conn.close()
+            self._unlink_files([self._attachment_path(a) for a in file_orphans])
+        return migrated
+
+    def reconcile_promoted_inputs(self) -> int:
+        """启动对账：promoted 行消息不在库 → 区分存量旧口径与真丢失后自愈。
+
+        判据挂业务持久键：队列行 id 应出现在该会话消息行的 _input_id 集合。
+        - 命中 _input_id → 无动作；
+        - 旧格式行（promoted_message_id 为 _ts 值）以消息 _ts 命中 → 给该消息行
+          打补 _input_id 并整批重建回写、同步规范化 promoted_message_id
+          ——两条判据都稳定后，二次启动复跑零动作（幂等）；
+        - 两条判据都不命中 → 真丢失：按 payload 补写消息（带 _input_id 与
+          _reconciled 标记），promoted_message_id 挂行 id、status_reason='reconciled'。
+        主动截断行已翻 discarded 不在扫描面（主动删除不复活）。
+        """
+        healed = 0
+        conn = self._get_conn()
+        try:
+            promoted = conn.execute(
+                "SELECT id, session_id, kind, payload, promoted_message_id "
+                "FROM session_input WHERE status='promoted'"
+            ).fetchall()
+        finally:
+            conn.close()
+        if not promoted:
+            return 0
+
+        per_session: dict[str, list[sqlite3.Row]] = {}
+        for row in promoted:
+            per_session.setdefault(row["session_id"], []).append(row)
+
+        for sid, rows in per_session.items():
+            existing = self._session_row_ids(sid)
+            if not existing:
+                # 未迁移/无行会话不处理：行表迁移成功后下轮启动自然纳入对账
+                continue
+            msgs = self.load_messages(sid)
+            # 判据集合：_input_id（逐行转正）+ _merged_input_ids（唤醒合并承载，
+            # 一条唤起 prompt 承载多行内容，行 id 挂在合并消息的该字段）
+            input_ids: set[str] = set()
+            for m in msgs:
+                if m.get("_input_id"):
+                    input_ids.add(str(m["_input_id"]))
+                for mid in m.get("_merged_input_ids") or []:
+                    input_ids.add(str(mid))
+            ts_map = {str(m.get("_ts")): m for m in msgs}
+            additions: list[dict] = []
+            renames: list[str] = []  # 需要规范化 promoted_message_id 的行
+            patched = False
+            for r in rows:
+                if r["id"] in input_ids:
+                    continue
+                pmid = str(r["promoted_message_id"] or "")
+                if pmid and pmid in ts_map:
+                    # 存量旧格式命中：消息确实在库，只补挂业务键使其抗重建
+                    ts_map[pmid]["_input_id"] = r["id"]
+                    input_ids.add(r["id"])
+                    renames.append(r["id"])
+                    patched = True
+                else:
+                    payload = json.loads(r["payload"])
+                    additions.append(
+                        {
+                            **payload,
+                            "_ts": time.time() * 1000,
+                            "_input_id": r["id"],
+                            "_kind": r["kind"],
+                            "_reconciled": True,
+                        }
+                    )
+                    renames.append(r["id"])
+            if not (additions or patched):
+                continue
+            self.replace_messages_tx(sid, [*msgs, *additions])
+            with self._lock:
+                conn = self._get_conn()
+                try:
+                    now_ms = int(time.time() * 1000)
+                    # 规范化 promoted_message_id（旧 _ts 命中与补写行共用）
+                    for rid in renames:
+                        conn.execute(
+                            "UPDATE session_input SET promoted_message_id=?, time_updated=? "
+                            "WHERE id=? AND status='promoted'",
+                            (rid, now_ms, rid),
+                        )
+                    for add in additions:
+                        conn.execute(
+                            "UPDATE session_input SET status_reason='reconciled', time_updated=? "
+                            "WHERE id=? AND status='promoted'",
+                            (now_ms, add["_input_id"]),
+                        )
+                    conn.commit()
+                finally:
+                    conn.close()
+            if additions:
+                healed += len(additions)
+                logger.info("会话 %s 对账补写 %d 条转正未落库消息", sid, len(additions))
+        return healed
+
+    def _session_row_ids(self, session_id: str) -> list[str]:
+        """该会话 message 行数探测（迁移标志的轻量替代：有行即已进行式存储）。"""
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT 1 FROM message WHERE session_id = ? LIMIT 1", (session_id,)
+            ).fetchall()
+            return ["x"] if rows else []
+        finally:
+            conn.close()
 
     # ------------------------------------------------------------------
     # 工作区 CRUD
@@ -867,7 +1627,17 @@ class SessionStore:
         with self._lock:
             conn = self._get_conn()
             try:
-                # 先删该工作区下的所有会话
+                # 行式转录随行清理
+                sid_rows = conn.execute(
+                    "SELECT id FROM sessions WHERE workspace_path = ?", (path,)
+                ).fetchall()
+                for r in sid_rows:
+                    conn.execute("DELETE FROM part WHERE session_id = ?", (r["id"],))
+                    conn.execute("DELETE FROM message WHERE session_id = ?", (r["id"],))
+                    conn.execute("DELETE FROM attachment WHERE session_id = ?", (r["id"],))
+                    conn.execute("DELETE FROM session_input WHERE session_id = ?", (r["id"],))
+                    conn.execute("DELETE FROM session_queue_state WHERE session_id = ?", (r["id"],))
+                # 再删该工作区下的所有会话
                 conn.execute(
                     "DELETE FROM sessions WHERE workspace_path = ?",
                     (path,),
@@ -1039,10 +1809,15 @@ class SessionStore:
                     """,
                     (ws.path,),
                 ).fetchall()
-                sessions = [
-                    self._row_to_session(row, include_messages=False)
-                    for row in session_rows
-                ]
+                counts = self._message_counts(conn)
+                sessions = []
+                for row in session_rows:
+                    sess = self._row_to_session(row, include_messages=False)
+                    if row["id"] in counts:
+                        sess.message_count = counts[row["id"]]
+                    elif row["migrated_at"] or 0:
+                        sess.message_count = 0
+                    sessions.append(sess)
                 result.append((ws, sessions))
             return result
         finally:
@@ -1089,47 +1864,6 @@ class SessionStore:
             finally:
                 conn.close()
         return row_id
-
-    def promote_queued_inputs(self, session_id: str) -> list[dict]:
-        """按序转正本会话全部 queued 行，返回消息 dict（带 _ts/_input_id）。
-
-        auto_drain=0 时直接返回空——暂停语义在 store 层统一把关，
-        起轮与轮次边界两个转正点位共享同一道门。
-        转正顺序：guide 行优先、组内按 admitted_sequence；guide 行转正消息
-        附 `_steer`（下划线字段发模型前剥离，供前端渲染「已引导对话」标）。
-        观测字段约定：promoted_sequence 沿用准入序号、promoted_message_id 取生成消息的 _ts。
-        """
-        if not self.get_queue_state(session_id)["auto_drain"]:
-            return []
-        now = time.time() * 1000
-        out: list[dict] = []
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                rows = conn.execute(
-                    "SELECT * FROM session_input "
-                    "WHERE session_id = ? AND status = 'queued' "
-                    "ORDER BY CASE WHEN delivery = 'guide' THEN 0 ELSE 1 END, "
-                    "admitted_sequence ASC",
-                    (session_id,),
-                ).fetchall()
-                for row in rows:
-                    payload = json.loads(row["payload"])
-                    conn.execute(
-                        "UPDATE session_input SET status='promoted', "
-                        "promoted_sequence=?, promoted_message_id=?, time_updated=? "
-                        "WHERE id=?",
-                        (row["admitted_sequence"], str(now), now, row["id"]),
-                    )
-                    # _kind 供前端分流呈现（用户行画气泡、通知行静默），随下划线剥离不发模型
-                    msg = {**payload, "_ts": now, "_input_id": row["id"], "_kind": row["kind"]}
-                    if row["delivery"] == "guide":
-                        msg["_steer"] = True
-                    out.append(msg)
-                conn.commit()
-            finally:
-                conn.close()
-        return out
 
     def count_queued_inputs(self, session_id: str, kind: str | None = None) -> int:
         """未转正行数（可按 kind 过滤，pending_count 唤醒补偿判定用）。"""
@@ -1367,36 +2101,6 @@ class SessionStore:
                 return cur.rowcount
             finally:
                 conn.close()
-
-    def take_input_for_now(self, row_id: str) -> dict | None:
-        """单行取出转正（空闲立即/恢复起队尾行共用），返回该行的消息 dict。
-
-        该行脱离 queued 集合，起轮点位的全量转正不会再碰它（防双注入）；
-        guide 行同样补 `_steer`（恢复路径取到的队尾行可能已被转向）。
-        """
-        now = time.time() * 1000
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                row = conn.execute(
-                    "SELECT * FROM session_input WHERE id = ? AND status = 'queued'",
-                    (row_id,),
-                ).fetchone()
-                if row is None:
-                    return None
-                conn.execute(
-                    "UPDATE session_input SET status='promoted', "
-                    "promoted_sequence=?, promoted_message_id=?, time_updated=? "
-                    "WHERE id=?",
-                    (row["admitted_sequence"], str(now), now, row_id),
-                )
-                conn.commit()
-            finally:
-                conn.close()
-        msg = {**json.loads(row["payload"]), "_ts": now, "_input_id": row_id}
-        if row["delivery"] == "guide":
-            msg["_steer"] = True
-        return msg
 
     def tail_queued_input(self, session_id: str) -> dict | None:
         """取该会话 admitted_sequence 最大的 queued 行（恢复起轮的 prompt 行）。"""

@@ -165,14 +165,15 @@ def test_clear_does_not_touch_engine_messages(monkeypatch, view_engine):
 
 
 class FakeStore:
-    """记录 save_messages / export_transcript 调用的假会话存储。"""
+    """记录 replace_messages_tx / export_transcript 调用的假会话存储。"""
 
     def __init__(self) -> None:
         self.saved: list[tuple[str, list]] = []
         self.exported: list[tuple[str, list]] = []
 
-    def save_messages(self, session_id: str, messages: list) -> None:
+    def replace_messages_tx(self, session_id: str, messages: list) -> list:
         self.saved.append((session_id, list(messages)))
+        return []
 
     def export_transcript(self, session_id: str, messages: list) -> str:
         self.exported.append((session_id, list(messages)))
