@@ -1,7 +1,8 @@
 __pycache__/
 context/
 .trae/
-.agent/
+.agent/*
+!.agent/skills/
 .env
 AGENTS.md
 
