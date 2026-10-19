@@ -8,6 +8,10 @@ export interface BrowserTab {
   tabId: string
   url: string
   title: string
+  // 建标签时捕获的导航 URL：webview 的 src 必须是一次性常量。若 src 绑活 url，
+  // 导航 commit 后 store 更新会重写 src 属性，触发对同一 URL 的第二次 loadURL，
+  // 打断进行中的导航（agent goto 收到 ERR_ABORTED）。url 字段继续随导航更新
+  initialUrl: string
 }
 
 interface BrowserState {
@@ -42,7 +46,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => ({
       set({ activeTabId: id })
     } else {
       set((s) => ({
-        tabs: [...s.tabs, { tabId: id, url: url ?? '', title: url || '新标签' }],
+        tabs: [...s.tabs, { tabId: id, url: url ?? '', initialUrl: url ?? '', title: url || '新标签' }],
         activeTabId: id,
       }))
     }

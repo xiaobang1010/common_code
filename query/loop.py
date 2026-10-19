@@ -297,9 +297,30 @@ def _harvest_completed(tool_executor: "StreamingToolExecutor", tool_result_messa
     不收割就把已跑完的真实结果误当缺口补成合成消息。
     """
     for completed in tool_executor.get_completed_results():
-        tool_result_messages.append(tool_result_to_openai_message(completed))
+        tr_msg = tool_result_to_openai_message(completed)
+        if completed.attachments:
+            tr_msg["_attachments"] = [dict(a) for a in completed.attachments]
+        tool_result_messages.append(tr_msg)
         if completed.new_messages:
             tool_result_messages.extend(completed.new_messages)
+
+
+def _attachment_display_messages(tr_msg: dict) -> list[dict]:
+    """图片附件的前端直播投影：与旧 new_messages 注入行同形（仅呈现不入对话列表）。
+
+    图片已宿主绑定在结果行（_attachments），持久列表组内不再有游离图片块；
+    SSE 直播仍按旧形态补发独立 user 行，前端渲染零改动。缺文件的附件
+    （data_url 为空）跳过——结果行占位正文已说明。
+    """
+    blocks: list[dict] = []
+    for att in tr_msg.get("_attachments") or []:
+        url = att.get("data_url") if isinstance(att, dict) else None
+        if url:
+            blocks.append({"type": "text", "text": str(tr_msg.get("content") or "")})
+            blocks.append({"type": "image_url", "image_url": {"url": url}})
+    if not blocks:
+        return []
+    return [{"role": "user", "content": blocks, "_ts": time.time() * 1000}]
 
 
 def _flush_interrupted_turn(
@@ -318,9 +339,10 @@ def _flush_interrupted_turn(
     正常提交点在流式+工具收集之后，cancel 落在这段窗口里整轮会从历史蒸发
     （在途 assistant 消息与其工具结果都只活在局部变量），后续通知沦为无源悬案。
     重建式写回以轮次起点快照为底、幂等：正常路径已提交过时内容等价。
-    顺序约束：assistant → 全部 tool-role 结果（真实在前、缺口补合成）→
-    非 tool-role 注入消息置尾——注入消息夹在工具结果之间会让收尾清洗器
-    为其后消息提前补结果，造成 id 重复。
+    顺序约束（与正常边界提交同一规则）：assistant → 全部 tool-role 结果
+    （真实在前、缺口补合成）→ 非 tool-role 注入消息置组后——注入消息夹在
+    工具结果之间曾诱发位置式清洗器提前补结果造成 id 重复；清洗器已集合化，
+    此处保持分序以维持存储形态一致。
     """
     tool_calls = collect_tool_calls(stream_events)
     if not "".join(content_parts) and not reasoning_parts and not tool_calls:
@@ -902,8 +924,14 @@ async def query_loop(
                 # 流式期间 yield 已完成的工具结果
                 for completed in tool_executor.get_completed_results():
                     tr_msg = tool_result_to_openai_message(completed)
+                    # 图片附件宿主绑定结果行（组内不产生游离图片块）
+                    if completed.attachments:
+                        tr_msg["_attachments"] = [dict(a) for a in completed.attachments]
                     yield tr_msg
                     tool_result_messages.append(tr_msg)
+                    # 图片以旧注入行形态补发前端直播（仅呈现，不入对话列表）
+                    for att_msg in _attachment_display_messages(tr_msg):
+                        yield att_msg
                     # Skill/Agent 工具可能返回 new_messages（如 skill 正文），注入对话
                     if completed.new_messages:
                         for nm in completed.new_messages:
@@ -956,8 +984,14 @@ async def query_loop(
             raise
         for result in remaining_results:
             tr_msg = tool_result_to_openai_message(result)
+            # 图片附件宿主绑定结果行（组内不产生游离图片块）
+            if result.attachments:
+                tr_msg["_attachments"] = [dict(a) for a in result.attachments]
             yield tr_msg
             tool_result_messages.append(tr_msg)
+            # 图片以旧注入行形态补发前端直播（仅呈现，不入对话列表）
+            for att_msg in _attachment_display_messages(tr_msg):
+                yield att_msg
             # Skill/Agent 工具可能返回 new_messages，注入对话
             if result.new_messages:
                 for nm in result.new_messages:
@@ -1122,20 +1156,34 @@ async def query_loop(
         # ---- 10. 工具结果已在流式期间 yield，此处仅用于状态转换 ----
 
         # ---- 11. 状态转换 ----
-        next_messages = [*messages, *tool_result_messages]
+        # 提交分序：assistant → 全部 tool 行 → 注入行（图片附件已宿主绑定在
+        # 结果行，组内只剩 tool 行；skill 正文等真实注入行置组后）——顺序约束
+        # 取代旧的「注入行就地夹入」，与集合化清洗的组尾补齐互相成立
+        tool_rows = [m for m in tool_result_messages if m.get("role") == "tool"]
+        injected_rows = [m for m in tool_result_messages if m.get("role") != "tool"]
+        next_messages = [*messages, *tool_rows, *injected_rows]
 
-        # 后台子代理完成通知（活跃通道）：父会话运行中时在本轮 drain 注入对话，
-        # 非活跃期间的通知留队列，下次运行时在此取走，不丢失
+        # 后台子代理完成通知（活跃通道）：父会话运行中时在本轮边界取回注入，
+        # 非活跃期间的通知留队列，下次运行时在此取走，不丢失。转正与落库
+        # 同事务在提交后执行——崩溃只会停在「未转正（下轮重注入）」或
+        # 「已转正已落库」两侧，不存在 promoted 却无消息的中间态
+        promoted_row_ids: list[str] = []
         try:
-            from tools.subagent.notify import drain_notifications
+            from tools.subagent.notify import commit_promoted_persist, peek_notifications
 
-            for notice in drain_notifications(getattr(engine, "session_id", "")):
+            for notice in peek_notifications(getattr(engine, "session_id", "")):
                 yield notice
                 next_messages.append(notice)
+                if notice.get("_input_id"):
+                    promoted_row_ids.append(str(notice["_input_id"]))
         except ImportError:
             pass
 
         engine.mutable_messages = next_messages
+        if promoted_row_ids:
+            commit_promoted_persist(
+                getattr(engine, "session_id", ""), next_messages, promoted_row_ids
+            )
 
         # 刷新工具列表（为未来 MCP 接入预留，当前刷新结果和初始一样）。
         # 子代理全程锁定派生时解析的工具池：跳过整体重置，

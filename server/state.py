@@ -62,6 +62,9 @@ class RunContext:
     abort_event: asyncio.Event = field(default_factory=asyncio.Event)
     # SSE 订阅者队列集合：生成器注册/注销；无订阅者时任务事件丢弃
     subscribers: set = field(default_factory=set)
+    # 起轮转正的用户行（仅 sendText kind）：用户 SSE 路径在 session_meta 后
+    # 重放为消息事件，被消化的排队行在前台以气泡可见；通知行不入此列
+    startup_promoted: list = field(default_factory=list)
 
 
 # 任务注册表：session_id -> RunContext。同一会话同时只允许一个运行任务。

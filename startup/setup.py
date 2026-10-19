@@ -90,19 +90,20 @@ def restore_last_workspace(store: SessionStore) -> str | None:
 
     启动时后端的工作区指针默认停在进程启动目录（launch 固定以代码仓库根
     派生后端），而前端初始化选中的是最近使用的工作区，两端会错位：取数
-    接口、SessionStart hooks、启动引擎都指向错误的工作区。这里取 workspaces
-    表按 last_used_at 降序的首位作为恢复目标，由调用方经 server.paths 的
-    set_project_root 生效。本函数只读：不 bump last_used_at、不动全局状态。
+    接口、SessionStart hooks、启动引擎都指向错误的工作区。这里经
+    get_last_used_workspace_path 独立查询 last_used_at 最新者作为恢复目标
+    （不依赖列表展示顺序），由调用方经 server.paths 的 set_project_root
+    生效。本函数只读：不 bump last_used_at、不动全局状态。
 
     回退语义：空库（全新安装）、目录已被外部删除/改名或任何异常都返回
     None，调用方维持启动目录现状，行为不劣于恢复前。
     """
     try:
-        workspaces = store.list_workspaces()
-        if not workspaces:
+        last_path = store.get_last_used_workspace_path()
+        if not last_path:
             return None
         # normpath 归一：DB 可能存正斜杠风格，is_within_root 前缀比较依赖归一
-        normalized = os.path.normpath(workspaces[0].path)
+        normalized = os.path.normpath(last_path)
         if not os.path.isdir(normalized):
             logger.info("最近工作区目录不存在，跳过恢复: %s", normalized)
             return None

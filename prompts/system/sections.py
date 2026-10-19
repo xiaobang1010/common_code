@@ -30,6 +30,7 @@ _SYSTEM_STATIC_SECTION_NAMES = [
     "asking-questions",
     "tool-usage-policy",
     "doing-tasks",
+    "autonomous-convergence",  # 自主执行与收敛规则（原文照抄，仅品牌与机制冲突处调整）
     "tone-and-style",
     "output-efficiency",
     "executing-actions-with-care",

@@ -34,8 +34,12 @@ class FakeEngine:
         self.started = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def submitMessage(self, prompt, user_context=None, system_context=None):
-        self.mutable_messages.append({"role": "user", "content": prompt})
+    async def submitMessage(self, prompt, user_context=None, system_context=None, message_meta=None):
+        # 与真实引擎同形：message_meta（_merged_input_ids/_steer 等观测字段）并入 user 消息
+        user_msg: dict = {"role": "user", "content": prompt}
+        if message_meta:
+            user_msg.update(message_meta)
+        self.mutable_messages.append(user_msg)
         self.started.set()
         await self.release.wait()
         self.mutable_messages.append({"role": "assistant", "content": "回复内容"})

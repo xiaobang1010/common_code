@@ -19,6 +19,12 @@ class BrowserTabManager {
     this.getWindow = null
     // 浏览器面板当前是否对用户可见（渲染侧回报）
     this.visible = false
+    // guest 视口读取器（main.js 注入 CDP 通道实现；注册表够不到 debugger，经此解耦）
+    this.viewportResolver = null
+  }
+
+  setViewportResolver(resolver) {
+    this.viewportResolver = resolver
   }
 
   init(getWindow) {
@@ -176,20 +182,19 @@ class BrowserTabManager {
     return wc && !wc.isDestroyed() ? wc : null
   }
 
-  // 控制服务 list 命令的标签摘要（viewport 取 guest 实际尺寸）
-  summaries() {
-    return Array.from(this.tabs.entries()).map(([tabId]) => this.summaryOf(tabId))
+  // 控制服务 list 命令的标签摘要（viewport 取 guest 实际视口）
+  async summaries() {
+    return await Promise.all(Array.from(this.tabs.keys()).map((tabId) => this.summaryOf(tabId)))
   }
 
-  summaryOf(tabId) {
+  // guest 是 webContents：没有任何同步尺寸 API（getSize/getBounds 均属 BrowserWindow），
+  // 视口必须经注入的 CDP 读取器获取；不可读（devtools 占用等）回退默认值而非抛错
+  async summaryOf(tabId) {
     const tab = this.tabs.get(tabId)
     if (!tab) return null
     let viewport = { width: 1280, height: 720 }
-    const wc = webContents.fromId(tab.webContentsId)
-    if (wc && !wc.isDestroyed()) {
-      const [width, height] = wc.getSize()
-      if (width > 0 && height > 0) viewport = { width, height }
-    }
+    const size = this.viewportResolver ? await this.viewportResolver(tabId) : null
+    if (size && size.width > 0 && size.height > 0) viewport = { width: size.width, height: size.height }
     return { tabId, url: tab.url, title: tab.title, active: tab.active, viewport }
   }
 }

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from query.utils.messages import sanitize_dangling_tool_calls
+from query.utils.messages import expand_tool_attachments, sanitize_dangling_tool_calls
 from tools.utils.schema import tool_to_openai_schema
 
 if TYPE_CHECKING:
@@ -147,9 +147,12 @@ def build_api_request(
     # （压缩等内部直调 query_model_with_streaming 的路径不经过这里，
     # 其失败由 query_loop 的 try/except 兜底）
     sanitized = sanitize_dangling_tool_calls(messages)
+    # 图片附件投影：宿主绑定在 tool 行的 _attachments 展开为紧随的图片
+    # parts user 行（持久形态不含游离图片块，协议形态在此处还原）
+    expanded = expand_tool_attachments(sanitized)
 
     # system 消息放在最前，然后是 user/assistant/tool 消息
-    all_messages = [*system_prompt, *sanitized]
+    all_messages = [*system_prompt, *expanded]
 
     # 转换工具 schema
     tool_schemas = [tool_to_api_schema(t) for t in tools] if tools else []

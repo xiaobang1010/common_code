@@ -22,7 +22,7 @@ router = APIRouter()
 def list_workspaces() -> dict:
     """列出所有工作区。
 
-    返回 {"workspaces": [{path, name, last_used_at, session_count}]}
+    返回 {"workspaces": [{path, name, last_used_at, session_count, pinned, alias, created_at}]}
     """
     workspaces = server.state.session_store.list_workspaces()
     return {
@@ -34,6 +34,7 @@ def list_workspaces() -> dict:
                 "session_count": w.session_count,
                 "pinned": w.pinned,
                 "alias": w.alias,
+                "created_at": w.created_at,
             }
             for w in workspaces
         ]
@@ -58,6 +59,7 @@ def add_workspace(body: dict) -> dict:
             "name": workspace.name,
             "last_used_at": workspace.last_used_at,
             "session_count": workspace.session_count,
+            "created_at": workspace.created_at,
         },
     }
 
@@ -120,6 +122,7 @@ def switch_workspace(body: dict) -> dict:
                 "name": w.name,
                 "last_used_at": w.last_used_at,
                 "session_count": w.session_count,
+                "created_at": w.created_at,
             }
             break
     if workspace_info is None:
@@ -128,6 +131,7 @@ def switch_workspace(body: dict) -> dict:
             "name": os.path.basename(path),
             "last_used_at": "",
             "session_count": 0,
+            "created_at": "",
         }
 
     return {"ok": True, "workspace": workspace_info, "current_branch": current_branch}
@@ -169,6 +173,7 @@ async def delete_workspace(body: dict) -> dict:
                 "name": w.name,
                 "last_used_at": w.last_used_at,
                 "session_count": w.session_count,
+                "created_at": w.created_at,
             }
             for w in workspaces
         ],

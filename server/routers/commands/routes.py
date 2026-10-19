@@ -79,9 +79,9 @@ def _persist_compacted_messages() -> None:
     if store is None or engine is None or not view_session:
         return
     try:
-        # 与 chat 链路收尾同口径：入库前清洗悬空 tool_calls
+        # 与 chat 链路收尾同口径：入库前清洗悬空 tool_calls，行式整批重建
         sanitized = sanitize_dangling_tool_calls(engine.mutable_messages)
-        store.save_messages(view_session, sanitized)
+        store.replace_messages_tx(view_session, sanitized)
         # 手动压缩同样导出转录，保持压缩续写的逃生门可用
         try:
             store.export_transcript(view_session, sanitized)

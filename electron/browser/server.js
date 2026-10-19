@@ -10,8 +10,11 @@ const path = require('path')
 const { BrowserError, isBrowserError } = require('./cdp')
 const { PAGE_RUNTIME_SOURCE } = require('./page-runtime')
 
-// 请求级超时：常规命令上限；locator/evaluate 类沿用 3s 预算语义，握手留余量
-const REQUEST_TIMEOUT_MS = 5000
+// 请求级超时：常规命令上限；locator/evaluate 类沿用 3s 预算语义。
+// 必须大于 tabs.js 的 TAB_CREATE_TIMEOUT_MS（5000）：渲染侧握手失败时，
+// 「等待渲染侧创建浏览器标签超时」这一业务错误要先到达，不能被含糊的「命令执行超时」抢先掩盖；
+// 同时小于技能 runner 的 execute 传输预算（15000），给回包留余量
+const REQUEST_TIMEOUT_MS = 10000
 const MAX_BODY_BYTES = 2 * 1024 * 1024
 
 // 描述符：type 固定 iab 是能力门控（按 unsupportedByDefaultIn 隐藏成员与文档）生效的前提，
@@ -148,16 +151,16 @@ class BrowserControlServer {
 
     switch (method) {
       case 'list':
-        return { ok: true, tabs: this.tabManager.summaries() }
+        return { ok: true, tabs: await this.tabManager.summaries() }
 
       case 'newTab': {
         const created = await this.tabManager.createTab(command.url)
-        return { ok: true, tab: this.summaryOf(created) }
+        return { ok: true, tab: await this.tabManager.summaryOf(created) }
       }
 
       case 'activateTab': {
         this.tabManager.activateTab(tabId)
-        return { ok: true, tab: this.summaryOf(tabId) }
+        return { ok: true, tab: await this.tabManager.summaryOf(tabId) }
       }
 
       case 'close':
@@ -187,10 +190,11 @@ class BrowserControlServer {
 
       case 'getState': {
         const wc = this.cdp.requireTab(tabId)
-        const [width, height] = wc.getSize()
+        // 视口经 CDP 页面指标读取（WebContents 无尺寸 API），不可读时回退默认值
+        const viewport = (await this.cdp.layoutMetrics(tabId)) || { width: 1280, height: 720 }
         return {
           ok: true,
-          state: { url: wc.getURL(), title: wc.getTitle(), viewport: { width, height } },
+          state: { url: wc.getURL(), title: wc.getTitle(), viewport },
         }
       }
 
@@ -311,11 +315,6 @@ class BrowserControlServer {
       default:
         throw new BrowserError('unknown_method', `未知命令：${method}`)
     }
-  }
-
-  // 注册表条目 → 协议摘要（含 viewport），供 newTab/activateTab 回包
-  summaryOf(tabId) {
-    return this.tabManager.summaryOf(tabId)
   }
 
   // ---------- playwright 命令分发 ----------
